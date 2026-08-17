@@ -4,6 +4,8 @@ export interface Role {
   file: string;
   name: string;
   description: string;
+  /** Custom personas carry their markdown; built-in roles load server-side. */
+  content?: string;
 }
 
 /** One entry from the bot's /models roster: {provider, id, label}. */

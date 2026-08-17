@@ -327,7 +327,13 @@ def require_env(key: str) -> str:
 async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> None:
     body = runner_args.body or {}
     custom_data = body.get("custom_data") or {}
-    instruction = load_instruction(custom_data.get("instruction"))
+    # Custom personas send their markdown verbatim; built-in roles pass a file
+    # name that load_instruction resolves from instructions/ (basename only).
+    instruction_content = custom_data.get("instruction_content")
+    if instruction_content:
+        instruction = instruction_content
+    else:
+        instruction = load_instruction(custom_data.get("instruction"))
     role_file = Path(custom_data.get("instruction") or DEFAULT_INSTRUCTION).name
 
     # Per-capability choices come from the client's settings panel. Anything

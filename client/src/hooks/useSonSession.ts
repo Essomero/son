@@ -26,6 +26,7 @@ import {
   errorMessage,
 } from "../lib/son";
 import { readSettings, saveSettings } from "../lib/settings";
+import { loadCustomRoles, saveCustomRoles } from "../lib/customRoles";
 
 /** Fresh session id. uuid from crypto when available (localhost is a secure
  *  context); a timestamp fallback for non-secure contexts. The id is sent in
@@ -67,6 +68,9 @@ const SPEAKING_HINT_MS = 3000; // bot text is streaming but audio hasn't arrived
 export function useSonSession() {
   const [phase, setPhase] = useState<Phase>("idle");
   const [roles, setRoles] = useState<Role[]>([]);
+  // Browser-local personas (lib/customRoles) — merged into the picker, their
+  // content rides /start as instruction_content.
+  const [customRoles, setCustomRoles] = useState<Role[]>(() => loadCustomRoles());
   const [role, setRole] = useState<Role | null>(null);
   const [models, setModels] = useState<Models | null>(null);
   const [modelsLoading, setModelsLoading] = useState(false);
@@ -168,6 +172,22 @@ export function useSonSession() {
     setStatus(`Ready to talk as “${r.name}”`);
   }, []);
 
+  const addCustomRole = useCallback((r: Role) => {
+    setCustomRoles((prev) => {
+      const next = [...prev, r];
+      saveCustomRoles(next);
+      return next;
+    });
+  }, []);
+
+  const removeCustomRole = useCallback((file: string) => {
+    setCustomRoles((prev) => {
+      const next = prev.filter((r) => r.file !== file);
+      saveCustomRoles(next);
+      return next;
+    });
+  }, []);
+
   /** opts overrides are for resumeSession: it picks the role (which may
    *  still be loading), the persisted session id, and must connect even if
    *  the current phase already looks connected/disconnected mid-switch. */
@@ -256,6 +276,9 @@ export function useSonSession() {
             body: {
               custom_data: {
                 instruction: r.file,
+                // Custom personas send their markdown; built-in roles rely on
+                // the server reading instructions/<file> (null = absent).
+                instruction_content: r.content ?? null,
                 session_id: sessionIdRef.current,
                 llm: toPlain(settings.llm),
                 stt: toPlain(settings.stt),
@@ -346,7 +369,8 @@ export function useSonSession() {
     async (meta: SessionMeta) => {
       if (meta.id === sessionIdRef.current && phase === "connected") return; // already live
       // The role may still be loading when the panel is clicked from home.
-      let r = roles.find((x) => x.file === meta.role_file) ?? null;
+      // Custom personas live in the browser, not roles.json — check those too.
+      let r = roles.find((x) => x.file === meta.role_file) ?? customRoles.find((x) => x.file === meta.role_file) ?? null;
       if (!r) {
         const loaded = await loadRoles();
         setRoles(loaded);
@@ -384,7 +408,7 @@ export function useSonSession() {
       messagesRef.current = stored;
       await connect({ role: r, sessionId: meta.id, force: true });
     },
-    [roles, connect],
+    [roles, customRoles, connect],
   );
 
   const updateSettings = useCallback((next: Settings) => {
@@ -406,6 +430,9 @@ export function useSonSession() {
   return {
     phase,
     roles,
+    customRoles,
+    addCustomRole,
+    removeCustomRole,
     role,
     models,
     modelsLoading,

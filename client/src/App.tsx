@@ -14,7 +14,9 @@ import { Hero } from "./components/Hero";
 import { SessionsPanel } from "./components/SessionsPanel";
 import { Transcript, ComposerBar } from "./components/Transcript";
 import { SettingsModal } from "./components/SettingsModal";
+import { PersonaModal } from "./components/PersonaModal";
 import { Reader } from "./components/Reader";
+import type { Role } from "./lib/types";
 import { FALLBACK_MODELS, resolveChoice } from "./lib/settings";
 
 const PANEL_KEY = "son.panel";
@@ -22,6 +24,7 @@ const PANEL_KEY = "son.panel";
 export default function App() {
   const s = useSonSession();
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [personaOpen, setPersonaOpen] = useState(false);
   const [panelOpen, setPanelOpen] = useState(() => localStorage.getItem(PANEL_KEY) !== "0");
   const [view, setView] = useState<"chat" | "reader">("chat");
 
@@ -125,14 +128,28 @@ export default function App() {
           ) : (
             <Hero
               roles={s.roles}
+              customRoles={s.customRoles}
               selected={s.role}
               phase={s.phase}
               onSelect={s.selectRole}
               onConnect={() => void s.connect()}
+              onAddCustom={() => setPersonaOpen(true)}
+              onRemoveCustom={s.removeCustomRole}
             />
           )}
         </main>
       </div>
+
+      {personaOpen && (
+        <PersonaModal
+          existingFiles={[...s.roles.map((r) => r.file), ...s.customRoles.map((r) => r.file)]}
+          onSave={(r: Role) => {
+            s.addCustomRole(r);
+            setPersonaOpen(false);
+          }}
+          onClose={() => setPersonaOpen(false)}
+        />
+      )}
 
       {settingsOpen && (
         <SettingsModal

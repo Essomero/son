@@ -534,6 +534,101 @@ code {
   color: var(--amber);
 }
 
+/* Custom persona cards: the select button fills the card; the remove button
+   appears on hover (cards are buttons for built-ins, divs here because a
+   button can't nest buttons). */
+.role-card.custom {
+  padding: 0;
+}
+
+.role-card-pick {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px;
+  text-align: left;
+  background: none;
+  border: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.role-card.custom .role-card-text {
+  padding-right: 22px; /* room for the remove button */
+}
+
+.custom-badge {
+  display: inline-block;
+  vertical-align: 2px;
+  margin-left: 8px;
+  padding: 2px 7px;
+  border: 1px solid rgba(239, 159, 67, 0.4);
+  border-radius: 999px;
+  color: var(--amber-hi);
+  font: 600 9.5px/1 var(--font-ui);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.role-card-remove {
+  position: absolute;
+  top: 50%;
+  right: 8px;
+  transform: translateY(-50%);
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  background: var(--raised);
+  color: var(--muted);
+  opacity: 0;
+  transition: opacity 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.role-card:hover .role-card-remove,
+.role-card-remove:focus-visible {
+  opacity: 1;
+}
+
+.role-card-remove:hover {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+.role-card.add {
+  border-style: dashed;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  cursor: pointer;
+}
+
+.role-card.add:hover {
+  border-color: var(--amber);
+  color: var(--ink);
+}
+
+.add-circle {
+  flex: none;
+  width: 42px;
+  height: 42px;
+  display: grid;
+  place-items: center;
+  border: 1px dashed var(--muted);
+  border-radius: 50%;
+  color: inherit;
+  transition: border-color 0.15s;
+}
+
+.role-card.add:hover .add-circle {
+  border-color: var(--amber);
+}
+
 .start-btn {
   margin-top: 26px;
   display: inline-flex;
@@ -1062,6 +1157,76 @@ code {
 
 .btn:hover {
   border-color: var(--muted);
+}
+
+.btn.primary {
+  background: var(--amber);
+  border-color: var(--amber);
+  color: var(--amber-ink);
+  font-weight: 600;
+}
+
+.btn.primary:hover {
+  border-color: var(--amber-hi);
+}
+
+.btn.primary:disabled {
+  opacity: 0.45;
+  cursor: default;
+  background: var(--raised);
+  border-color: var(--line);
+  color: var(--muted);
+}
+
+.text-input {
+  width: 100%;
+  padding: 10px 12px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  color: var(--ink);
+  font: 14.5px/1.4 var(--font-ui);
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.text-input::placeholder {
+  color: var(--faint);
+}
+
+.text-input:focus {
+  border-color: var(--amber);
+}
+
+.persona-content {
+  width: 100%;
+  min-height: 240px;
+  resize: vertical;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  color: var(--ink);
+  font: 13.5px/1.65 var(--font-mono); /* markdown source reads like code */
+  padding: 12px 14px;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.persona-content::placeholder {
+  color: var(--faint);
+}
+
+.persona-content:focus {
+  outline: none;
+  border-color: var(--amber);
+}
+
+.persona-content.dragging {
+  border-color: var(--amber);
+  background: rgba(239, 159, 67, 0.06);
+}
+
+.persona-preview {
+  min-height: 240px;
 }
 
 /* --- Custom picker --------------------------------------------------------- */

@@ -20,7 +20,7 @@ A personal real-time voice agent. You pick a "role" (a markdown instruction file
                                                   └──────────────────────────────────────────┘
 ```
 
-- **Server**: Pipecat's dev runner (`pipecat.runner.run.main()`), one FastAPI app on `:7860` with `/start` + `/sessions/{id}/api/offer`, plus custom `/models` (cached 60s; key-gated roster per capability — the readme project's `api/models.js` pattern) and `/sessions` (list/get/rename/delete) routes mounted in `__main__`. The bot function `bot(runner_args)` is called once per session; `runner_args.body.custom_data` carries `instruction`, `session_id`, and the per-capability picks `llm` / `stt` / `tts` (each `{provider, id}`).
+- **Server**: Pipecat's dev runner (`pipecat.runner.run.main()`), one FastAPI app on `:7860` with `/start` + `/sessions/{id}/api/offer`, plus custom `/models` (cached 60s; key-gated roster per capability — the readme project's `api/models.js` pattern) and `/sessions` (list/get/rename/delete) routes mounted in `__main__`. The bot function `bot(runner_args)` is called once per session; `runner_args.body.custom_data` carries `instruction`, `instruction_content`, `session_id`, and the per-capability picks `llm` / `stt` / `tts` (each `{provider, id}`). **Instruction contract**: `instruction` is a file name — `run_bot` resolves it with `load_instruction` (basename only, from `instructions/`, default fallback). `instruction_content` (custom personas, `son.customRoles` in the browser) overrides it verbatim when truthy; `role_file = Path(instruction).name` is then only a label for the log line, session naming (frontmatter `name:` via `parse_frontmatter_name`), and resume lookup — never read from disk while content is present. Empty/absent content degrades to the disk path.
 - **Client**: React 19 + Vite 7 single-page app (`client/src/`, built to `client/dist/`, served with `python -m http.server`; `npm run dev` for hot reload). All session state lives in `useSonSession` — `startBotAndConnect({endpoint, requestData: {transport: "webrtc", body: {custom_data}}}})`, with the transport deriving the offer URL from the endpoint automatically. Transcript is markdown-rendered (react-markdown + remark-gfm); voice is visualized through a shared Web Audio analyser (`useAudioAnalyzer` — the mic button's ring and the speaking bot message's ring subscribe to the same rAF loop, no per-frame React state). All pickers are custom components (`Picker.tsx`: searchable list for brains/STT, avatar cards for voices) — zero native `<select>`s. The ⚙ panel fetches `/models`, persists choices in `localStorage` (`son.settings`), and sends them on every connect.
 - **Provider gating**: a provider only appears when its key is in `.env` (`available_providers()` checks `GROQ_API_KEY` / `DEEPSEEK_API_KEY` / `GEMINI_API_KEY` / `OPENROUTER_API_KEY`). `run_bot` validates each pick, falls back to defaults (groq whisper-large-v3-turbo / groq gpt-oss-120b / kokoro af_heart) on unknown or keyless providers, and logs one line: `Session: role=… llm=… stt=… tts=…`.
 - **WebRTC** means the browser owns echo cancellation — no client-side audio processing needed.
@@ -35,7 +35,7 @@ A personal real-time voice agent. You pick a "role" (a markdown instruction file
 | TTS local | Kokoro-82M | Free, CPU-real-time, 50+ voices; quality per parameter is best-in-class. Trade-off: ~354MB model cache (kokoro-v1.0.onnx 325MB + voices 28MB), slow first-run download. |
 | Transport | SmallWebRTC (browser) | No server-side audio infra; browser handles echo cancellation. |
 | Memory | Sessions in SQLite | Transcripts persist (`son.db`) and resume with the full context seeded back into the brain. Ephemeral only when the client sends no `session_id`. |
-| Roles | Folder + frontmatter | New role = new `.md` file + `gen_roles.py`. No code. |
+| Roles | Folder + frontmatter | New role = new `.md` file + `gen_roles.py`. No code. Custom personas are browser-local (`localStorage` `son.customRoles`), added from the picker's **Add persona** card — same frontmatter fields, content rides `/start` as `instruction_content`. |
 
 ## Cost sheet (per 2026-08 research)
 
@@ -106,6 +106,7 @@ Loose ends:
 ## Extension guide
 
 - **New role**: add `instructions/<name>.md` (+ frontmatter) → `uv run scripts/gen_roles.py` → refresh picker.
+- **Custom persona** (no repo touch): the picker's **Add persona** card — load a `.md`/`.txt` or paste; `name:`/`description:` frontmatter fills the fields, the rest becomes the instructions. Saved to `localStorage` (`son.customRoles`) as `Role`s with a pseudo-filename `custom-<slug>.md` (deduped). Resume looks up built-in `roles.json` first, then custom roles; deleting a persona turns its sessions into the existing "Role not found" message.
 - **Different LLM**: already built in — add a provider key (or a `PROVIDER_ENV_KEYS` entry + a `build_llm_service` branch) and it shows up in the ⚙ panel. Same `system_instruction` pattern for any pipecat LLM service.
 - **New voice**: add to `KOKORO_VOICES` (or any TTS provider's roster) — or just pick one in ⚙.
 - **Record sessions**: done — every turn lands in `son.db` live (see Sessions above).

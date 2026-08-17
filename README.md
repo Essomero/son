@@ -74,6 +74,8 @@ uv run scripts/gen_roles.py && cd client && npm run build && cd ..
 
 `gen_roles.py` writes `client/public/roles.json`; the Vite build copies it into `dist/` (the dev server picks it up on reload). That's it — the role shows up in the picker on reload.
 
+**Custom personas** — no file on disk, no regenerate: the picker's **Add persona** card creates a role from any markdown file of instructions (load a `.md`/`.txt` or paste it in; a `name:`/`description:` frontmatter block fills the fields, the rest becomes the instructions). Personas live in the browser (`localStorage`) and work like built-in roles — pick, talk, resume sessions — they're just not shared across browsers or machines.
+
 ## Configuration
 
 | Env var | Default | Purpose |

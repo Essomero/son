@@ -53,7 +53,7 @@ During client development, `cd client && npm run dev` serves the page with hot r
 
 The **Read** toggle in the header opens a text-to-speech page: paste anything, pick a voice, press **Speak** — it reads it back with a little media player (play/pause, ±10 s, speed 0.75–2×, download as WAV). No AI, no mic, no session. Voices are the same roster as the settings panel (Kokoro runs locally on your machine; the voice you pick here is also the chat voice), and speed is a playback control — it applies instantly without re-synthesizing.
 
-The page has **Write** and **Preview** tabs — the textarea keeps whatever you paste (including raw markdown), and Preview renders it the way you'd read it in a Markdown viewer. A **Clean** toggle (on by default) strips the parts that don't read well aloud — code blocks, math, links, table cells, heading and list markers — before the text goes to the speech API, so a pasted technical article comes out as plain prose. Toggle it off to read the raw text as-is.
+The page has **Write** and **Preview** tabs — the textarea keeps whatever you paste (including raw markdown), and Preview renders it the way you'd read it in a Markdown viewer, math included (KaTeX for `$…$`, `$$…$$` and the `\(…\)` forms). A **Clean** toggle (on by default) strips the parts that don't read well aloud — code blocks, math, links, table cells, heading and list markers — before the text goes to the speech API, so a pasted technical article comes out as plain prose. Toggle it off to read the raw text as-is.
 
 ## Adding a role
 

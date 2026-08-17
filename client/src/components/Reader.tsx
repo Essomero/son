@@ -11,6 +11,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Download, Loader2, Pause, Play, RotateCcw, RotateCw, Volume2, Wand2 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import remarkMath from "remark-math";
+import rehypeKatex from "rehype-katex";
+import "katex/dist/katex.min.css";
 
 import type { Choice, Models, Settings } from "../lib/types";
 import { resolveChoice } from "../lib/settings";
@@ -26,6 +29,25 @@ function fmtTime(sec: number): string {
   const m = Math.floor(sec / 60);
   const s = Math.floor(sec % 60);
   return `${m}:${s.toString().padStart(2, "0")}`;
+}
+
+/**
+ * remark-math's flow math is fence-based: the $$ markers must sit on lines
+ * of their own — otherwise a single-line $$…$$ parses as inline math, and
+ * \(…\) / \[…\] aren't parsed at all (markdown eats the backslashes as
+ * escapes). Normalize the common forms to what remark-math understands,
+ * before ReactMarkdown sees them. The inserted fences are wrapped in blank
+ * lines so they start their own lines even when the $$…$$ span was
+ * mid-paragraph. Preview only: the textarea keeps the raw paste and the
+ * spoken text comes from cleanText, which strips all four forms anyway.
+ */
+function normalizeMath(raw: string): string {
+  // Function replacements, not $-strings: in a replacement string, $$ is an
+  // escape for a literal $, which would collapse the fences to single $.
+  return raw
+    .replace(/\\\[[\s\S]*?\\\]/g, (m) => "\n$$\n" + m.slice(2, -2) + "\n$$\n")
+    .replace(/\$\$([^$\n]+)\$\$/g, (m) => "\n$$\n" + m.slice(2, -2) + "\n$$\n")
+    .replace(/\\\(([^)\n]*)\\\)/g, "$$$1$");
 }
 
 /** "Article title — part 2" → "article-title.wav" */
@@ -230,7 +252,9 @@ export function Reader({
         </>
       ) : (
         <div className="reader-preview">
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown>
+          <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex]}>
+            {normalizeMath(text)}
+          </ReactMarkdown>
         </div>
       )}
 

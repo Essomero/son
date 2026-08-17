@@ -175,8 +175,14 @@ get a WAV back. No AI, no mic, no session — a pure one-shot synthesis.
   lone `$` survives only as a price prefix, so "costs $5 per unit" keeps
   its five dollars.
 - **Preview**: the Write/Preview tabs render the *raw* text with
-  react-markdown + remark-gfm (safe by default — raw HTML is escaped), not
-  the cleaned version; cleaning affects only what's spoken.
+  react-markdown + remark-gfm + remark-math + rehype-katex (safe by
+  default — raw HTML is escaped), not the cleaned version; cleaning
+  affects only what's spoken. `normalizeMath` runs on the text first:
+  remark-math's flow math is fence-based (a single-line `$$…$$` would
+  parse as inline), and `\(…\)`/`\[…\]` aren't parsed at all — the four
+  common forms are rewritten to the ones remark-math understands. Use
+  function replacements there, not `$`-strings — `$$` in a replacement
+  string collapses to a literal `$`.
 - **Download**: the player's download button saves the in-memory blob URL
   under a slug of the first four cleaned words (`audioName`), e.g.
   `scaling-rust-web-services.wav`. Blob URLs are revoked on unmount and on

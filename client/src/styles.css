@@ -1506,6 +1506,13 @@ code {
   color: var(--amber-hi);
 }
 
+/* Wide equations scroll inside the preview rather than overflow it. */
+.reader-preview .katex-display {
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 2px 0;
+}
+
 /* --- Write/Preview as one track — the active mode rides a sliding thumb --- */
 .reader-tabs {
   position: relative;

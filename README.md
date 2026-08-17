@@ -4,7 +4,7 @@ A personal real-time voice agent. Pick a role (instruction file), talk to it in 
 
 **Stack (Tier 3 — hybrid, ~$0/month):**
 
-| Piece | Tool | Where it runs |
+| Piece | Tool (default) | Where it runs |
 |---|---|---|
 | Speech-to-text | Groq · whisper-large-v3-turbo | Cloud (free tier) |
 | Brain | Groq · openai/gpt-oss-120b | Cloud (free tier) |
@@ -12,7 +12,7 @@ A personal real-time voice agent. Pick a role (instruction file), talk to it in 
 | Voice pipeline | Pipecat 1.7 (BSD-2) | Local |
 | Turn detection | Silero VAD | Local |
 
-Only your speech audio and text go to Groq; the voice you hear is synthesized on your machine.
+Every capability is swappable from the **⚙ settings panel**: add a DeepSeek, Gemini, or OpenRouter key and those providers appear in the picker too. Only your speech audio and text go to the provider you pick; the default voice is synthesized on your machine.
 
 ## Prerequisites
 
@@ -72,9 +72,25 @@ That's it — the role shows up in the picker on reload.
 | Env var | Default | Purpose |
 |---|---|---|
 | `GROQ_API_KEY` | — | Required. Free at console.groq.com |
-| `GROQ_MODEL` | `openai/gpt-oss-120b` | Groq LLM model |
-| `GROQ_STT_MODEL` | `whisper-large-v3-turbo` | Groq STT model |
-| `KOKORO_VOICE` | `af_heart` | Kokoro voice id |
+| `DEEPSEEK_API_KEY` | — | Optional. Enables DeepSeek brains (e.g. `deepseek-v4-flash`) |
+| `GEMINI_API_KEY` | — | Optional. Enables Gemini brains, Google speech-to-text, and Gemini voices |
+| `OPENROUTER_API_KEY` | — | Optional. Enables the curated OpenRouter brains (Claude, GPT, Grok…) |
+| `GROQ_MODEL` | `openai/gpt-oss-120b` | Default Groq LLM model |
+| `GROQ_REASONING_EFFORT` | `medium` | gpt-oss reasoning effort: `low` (fastest, ~0.45s first content) / `medium` / `high` (smartest, slower) |
+| `GROQ_STT_MODEL` | `whisper-large-v3-turbo` | Default Groq STT model |
+| `KOKORO_VOICE` | `af_heart` | Default Kokoro voice id |
+
+A provider is enabled only when its API key is present. The settings panel (⚙ in the header) lists each capability with the models that are actually available — no key, no entry.
+
+## Model settings
+
+Click ⚙ to pick, per session:
+
+- **Brain** — the reasoning/chat model (Groq, DeepSeek, Gemini, or OpenRouter).
+- **Speech-to-text** — how your voice becomes text (Groq Whisper or Google).
+- **Voice** — the voice that reads replies (local Kokoro, or Groq/Gemini cloud TTS).
+
+Choices are saved in the browser and sent with each connection; the server falls back to the defaults if a provider's key is missing. Kokoro voices are synthesized on your machine; the others stream from their provider.
 
 ## Cost
 

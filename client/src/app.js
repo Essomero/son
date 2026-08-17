@@ -9,6 +9,7 @@ import { SmallWebRTCTransport } from "@pipecat-ai/small-webrtc-transport";
 
 const params = new URLSearchParams(location.search);
 const BOT_ENDPOINT = params.get("endpoint") || "http://localhost:7860/start";
+const MODELS_URL = BOT_ENDPOINT.replace(/\/start$/, "") + "/models";
 
 const state = {
   client: null,
@@ -27,6 +28,9 @@ const connectBtn = $("connect");
 const muteBtn = $("mute");
 const disconnectBtn = $("disconnect");
 const controlsEl = $("controls");
+const settingsBtn = $("settings-btn");
+const settingsModal = $("settings-modal");
+const settingsClose = $("settings-close");
 
 // --- Transcript -------------------------------------------------------------
 
@@ -102,6 +106,116 @@ function selectRole(role, card) {
   card.classList.add("selected");
   setStatus(`Ready to talk as “${role.name}”`);
   connectBtn.disabled = false;
+}
+
+// --- Model settings ---------------------------------------------------------
+// The ⚙ gear opens a modal with one select per capability (llm/stt/tts),
+// populated from the bot's live /models endpoint. Choices are persisted in
+// localStorage and sent in custom_data on connect; the server validates them
+// (a provider whose key is missing falls back to the default).
+
+const SETTINGS_KEY = "son.settings";
+const SETTINGS_CAPS = ["llm", "stt", "tts"];
+
+// What the picker lands on with no saved choice — must mirror the server's
+// run_bot defaults, not just "the first option in the roster".
+const DEFAULT_CHOICES = {
+  llm: { provider: "groq", id: "openai/gpt-oss-120b" },
+  stt: { provider: "groq", id: "whisper-large-v3-turbo" },
+  tts: { provider: "kokoro", id: "af_heart" },
+};
+
+// If the bot isn't running the page still needs a usable picker.
+const FALLBACK_MODELS = {
+  llm: [{ provider: "groq", id: "openai/gpt-oss-120b", label: "openai/gpt-oss-120b" }],
+  stt: [{ provider: "groq", id: "whisper-large-v3-turbo", label: "whisper-large-v3-turbo" }],
+  tts: [
+    { provider: "kokoro", id: "af_heart", label: "af_heart" },
+    { provider: "kokoro", id: "af_bella", label: "af_bella" },
+    { provider: "kokoro", id: "am_adam", label: "am_adam" },
+    { provider: "kokoro", id: "bm_george", label: "bm_george" },
+  ],
+};
+
+function readSettings() {
+  try {
+    return JSON.parse(localStorage.getItem(SETTINGS_KEY)) || {};
+  } catch {
+    return {};
+  }
+}
+
+function saveSettings(settings) {
+  localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+}
+
+// Each option's value is JSON.stringify({provider, id}) — ids can contain
+// slashes (openrouter "anthropic/claude-sonnet-4.6"), so no delimiter tricks.
+function populateSelect(sel, models, current, fallback) {
+  sel.innerHTML = "";
+  const byProvider = {};
+  for (const m of models) (byProvider[m.provider] ??= []).push(m);
+  for (const [provider, list] of Object.entries(byProvider)) {
+    const group = document.createElement("optgroup");
+    group.label = provider;
+    for (const m of list) {
+      const opt = document.createElement("option");
+      opt.value = JSON.stringify({ provider: m.provider, id: m.id });
+      opt.textContent = m.label && m.label !== m.id ? `${m.label} — ${m.id}` : m.id;
+      group.append(opt);
+    }
+    sel.append(group);
+  }
+  // Restore the saved choice if it's still offered; else the default for this
+  // capability; else the first option.
+  const wanted = current ?? fallback;
+  const wantedVal = JSON.stringify({ provider: wanted?.provider, id: wanted?.id });
+  sel.value = [...sel.options].some((o) => o.value === wantedVal)
+    ? wantedVal
+    : sel.querySelector("option")?.value || "";
+}
+
+function currentChoices() {
+  const choices = {};
+  for (const cap of SETTINGS_CAPS) {
+    const v = $(`set-${cap}`).value;
+    if (v) choices[cap] = JSON.parse(v);
+  }
+  return choices;
+}
+
+function persistSettings() {
+  saveSettings(currentChoices());
+}
+
+async function initSettings() {
+  let models;
+  try {
+    const res = await fetch(MODELS_URL, { signal: AbortSignal.timeout(6000) });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    models = await res.json();
+  } catch {
+    console.warn("[Son] /models unreachable — using fallback list");
+    models = FALLBACK_MODELS;
+  }
+  const saved = readSettings();
+  for (const cap of SETTINGS_CAPS) {
+    const sel = $(`set-${cap}`);
+    populateSelect(sel, models[cap] || [], saved[cap], DEFAULT_CHOICES[cap]);
+    sel.addEventListener("change", persistSettings);
+  }
+  settingsBtn.addEventListener("click", () => {
+    settingsModal.hidden = false;
+  });
+  settingsClose.addEventListener("click", () => {
+    settingsModal.hidden = true;
+  });
+  settingsModal.addEventListener("click", (e) => {
+    if (e.target === settingsModal) settingsModal.hidden = true;
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") settingsModal.hidden = true;
+  });
 }
 
 // --- Bot connection ---------------------------------------------------------
@@ -227,7 +341,7 @@ async function connect() {
       requestData: {
         transport: "webrtc",
         body: {
-          custom_data: { instruction: state.role.file },
+          custom_data: { instruction: state.role.file, ...currentChoices() },
         },
       },
     });
@@ -263,3 +377,4 @@ disconnectBtn.addEventListener("click", disconnect);
 muteBtn.disabled = true;
 
 loadRoles().then(renderRoles).catch(() => renderRoles([]));
+initSettings();

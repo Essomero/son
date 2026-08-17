@@ -15348,6 +15348,7 @@ var $b31644dc78dca54a$var$botParticipant = (pc_id) => ({
 // src/app.js
 var params = new URLSearchParams(location.search);
 var BOT_ENDPOINT = params.get("endpoint") || "http://localhost:7860/start";
+var MODELS_URL = BOT_ENDPOINT.replace(/\/start$/, "") + "/models";
 var state = {
   client: null,
   role: null,
@@ -15363,6 +15364,9 @@ var connectBtn = $2("connect");
 var muteBtn = $2("mute");
 var disconnectBtn = $2("disconnect");
 var controlsEl = $2("controls");
+var settingsBtn = $2("settings-btn");
+var settingsModal = $2("settings-modal");
+var settingsClose = $2("settings-close");
 function addTranscript(role, text) {
   if (!text) return;
   const row = document.createElement("div");
@@ -15425,6 +15429,92 @@ function selectRole(role, card) {
   card.classList.add("selected");
   setStatus(`Ready to talk as \u201C${role.name}\u201D`);
   connectBtn.disabled = false;
+}
+var SETTINGS_KEY = "son.settings";
+var SETTINGS_CAPS = ["llm", "stt", "tts"];
+var DEFAULT_CHOICES = {
+  llm: { provider: "groq", id: "openai/gpt-oss-120b" },
+  stt: { provider: "groq", id: "whisper-large-v3-turbo" },
+  tts: { provider: "kokoro", id: "af_heart" }
+};
+var FALLBACK_MODELS = {
+  llm: [{ provider: "groq", id: "openai/gpt-oss-120b", label: "openai/gpt-oss-120b" }],
+  stt: [{ provider: "groq", id: "whisper-large-v3-turbo", label: "whisper-large-v3-turbo" }],
+  tts: [
+    { provider: "kokoro", id: "af_heart", label: "af_heart" },
+    { provider: "kokoro", id: "af_bella", label: "af_bella" },
+    { provider: "kokoro", id: "am_adam", label: "am_adam" },
+    { provider: "kokoro", id: "bm_george", label: "bm_george" }
+  ]
+};
+function readSettings() {
+  try {
+    return JSON.parse(localStorage.getItem(SETTINGS_KEY)) || {};
+  } catch {
+    return {};
+  }
+}
+function saveSettings(settings) {
+  localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+}
+function populateSelect(sel, models, current, fallback) {
+  sel.innerHTML = "";
+  const byProvider = {};
+  for (const m2 of models) (byProvider[m2.provider] ??= []).push(m2);
+  for (const [provider, list] of Object.entries(byProvider)) {
+    const group = document.createElement("optgroup");
+    group.label = provider;
+    for (const m2 of list) {
+      const opt = document.createElement("option");
+      opt.value = JSON.stringify({ provider: m2.provider, id: m2.id });
+      opt.textContent = m2.label && m2.label !== m2.id ? `${m2.label} \u2014 ${m2.id}` : m2.id;
+      group.append(opt);
+    }
+    sel.append(group);
+  }
+  const wanted = current ?? fallback;
+  const wantedVal = JSON.stringify({ provider: wanted?.provider, id: wanted?.id });
+  sel.value = [...sel.options].some((o2) => o2.value === wantedVal) ? wantedVal : sel.querySelector("option")?.value || "";
+}
+function currentChoices() {
+  const choices = {};
+  for (const cap of SETTINGS_CAPS) {
+    const v2 = $2(`set-${cap}`).value;
+    if (v2) choices[cap] = JSON.parse(v2);
+  }
+  return choices;
+}
+function persistSettings() {
+  saveSettings(currentChoices());
+}
+async function initSettings() {
+  let models;
+  try {
+    const res = await fetch(MODELS_URL, { signal: AbortSignal.timeout(6e3) });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    models = await res.json();
+  } catch {
+    console.warn("[Son] /models unreachable \u2014 using fallback list");
+    models = FALLBACK_MODELS;
+  }
+  const saved = readSettings();
+  for (const cap of SETTINGS_CAPS) {
+    const sel = $2(`set-${cap}`);
+    populateSelect(sel, models[cap] || [], saved[cap], DEFAULT_CHOICES[cap]);
+    sel.addEventListener("change", persistSettings);
+  }
+  settingsBtn.addEventListener("click", () => {
+    settingsModal.hidden = false;
+  });
+  settingsClose.addEventListener("click", () => {
+    settingsModal.hidden = true;
+  });
+  settingsModal.addEventListener("click", (e2) => {
+    if (e2.target === settingsModal) settingsModal.hidden = true;
+  });
+  document.addEventListener("keydown", (e2) => {
+    if (e2.key === "Escape") settingsModal.hidden = true;
+  });
 }
 function setStatus(text) {
   statusEl.textContent = text;
@@ -15532,7 +15622,7 @@ async function connect() {
       requestData: {
         transport: "webrtc",
         body: {
-          custom_data: { instruction: state.role.file }
+          custom_data: { instruction: state.role.file, ...currentChoices() }
         }
       }
     });
@@ -15560,6 +15650,7 @@ muteBtn.addEventListener("click", toggleMute);
 disconnectBtn.addEventListener("click", disconnect);
 muteBtn.disabled = true;
 loadRoles().then(renderRoles).catch(() => renderRoles([]));
+initSettings();
 /*! Bundled license information:
 
 @daily-co/daily-js/dist/daily-esm.js:

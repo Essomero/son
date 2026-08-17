@@ -6,7 +6,9 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.141.1",
-    "pipecat-ai[kokoro,webrtc]>=1.7.0",
+    # Extras = the providers son.py imports: kokoro/webrtc (core), google
+    # (LLM+STT+TTS), groq (LLM+STT+TTS), openrouter+cerebras+deepseek (LLM).
+    "pipecat-ai[kokoro,webrtc,google,groq,openrouter,cerebras,deepseek]>=1.7.0",
     "python-dotenv>=1.2.3",
     "uvicorn>=0.52.3",
 ]

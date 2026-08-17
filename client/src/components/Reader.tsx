@@ -8,11 +8,14 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Loader2, Pause, Play, RotateCcw, RotateCw, Volume2 } from "lucide-react";
+import { Download, Loader2, Pause, Play, RotateCcw, RotateCw, Volume2, Wand2 } from "lucide-react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 import type { Choice, Models, Settings } from "../lib/types";
 import { resolveChoice } from "../lib/settings";
 import { SPEAK_URL } from "../lib/son";
+import { cleanText } from "../lib/clean";
 import { Picker } from "./Picker";
 
 const MAX_CHARS = 8000; // mirrors _SPEAK_MAX_CHARS in son.py
@@ -25,6 +28,19 @@ function fmtTime(sec: number): string {
   return `${m}:${s.toString().padStart(2, "0")}`;
 }
 
+/** "Article title — part 2" → "article-title.wav" */
+function audioName(text: string): string {
+  const slug = cleanText(text)
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 4)
+    .join("-")
+    .toLowerCase()
+    .replace(/[^a-z0-9-]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return `${slug || "reading"}.wav`;
+}
+
 export function Reader({
   models,
   settings,
@@ -35,6 +51,8 @@ export function Reader({
   onChangeVoice: (c: Choice) => void;
 }) {
   const [text, setText] = useState("");
+  const [mode, setMode] = useState<"write" | "preview">("write");
+  const [clean, setClean] = useState(true); // strip markdown noise before speaking
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [playing, setPlaying] = useState(false);
@@ -44,6 +62,10 @@ export function Reader({
 
   const audioRef = useRef<HTMLAudioElement>(null);
   const urlRef = useRef<string | null>(null);
+
+  // The textarea keeps the raw paste; this is what Speak sends when Clean is
+  // on. memoized — it runs on every keystroke (8k chars max, cheap).
+  const cleaned = useMemo(() => cleanText(text.trim()), [text]);
   // Autoplay retry: armed while a fresh audio blob hasn't played yet, so the
   // retry only ever fires once per Speak. After the first play() the browser
   // trusts us and we never yank a user-initiated pause again.
@@ -73,7 +95,7 @@ export function Reader({
   );
 
   const speak = async () => {
-    const t = text.trim();
+    const t = clean ? cleaned : text.trim();
     if (!t || busy) return;
     setBusy(true);
     setError(null);
@@ -140,6 +162,17 @@ export function Reader({
     setTime(v);
   };
 
+  const downloadAudio = () => {
+    const url = urlRef.current;
+    if (!url) return;
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = audioName(text);
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  };
+
   return (
     <section className="reader">
       <div className="field">
@@ -153,20 +186,69 @@ export function Reader({
         </p>
       </div>
 
-      <textarea
-        className="reader-text"
-        value={text}
-        onChange={(e) => setText(e.target.value)}
-        placeholder="Paste or type something to read out…"
-        aria-label="Text to read out"
-        maxLength={MAX_CHARS}
-      />
-      <div className="reader-meta">
-        <span>{text.length.toLocaleString()} chars</span>
-        <span>Max {MAX_CHARS.toLocaleString()}</span>
+      <div className="reader-tabs" role="tablist" aria-label="Text view" data-active={mode}>
+        <div className="reader-tabs-thumb" aria-hidden />
+        <button
+          type="button"
+          role="tab"
+          aria-selected={mode === "write"}
+          className={`tab-btn${mode === "write" ? " active" : ""}`}
+          onClick={() => setMode("write")}
+        >
+          Write
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={mode === "preview"}
+          className={`tab-btn${mode === "preview" ? " active" : ""}`}
+          onClick={() => setMode("preview")}
+        >
+          Preview
+        </button>
       </div>
 
+      {mode === "write" ? (
+        <>
+          <textarea
+            className="reader-text"
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            placeholder="Paste or type something to read out…"
+            aria-label="Text to read out"
+            maxLength={MAX_CHARS}
+          />
+          <div className="reader-meta">
+            <span>
+              {text.trim().length.toLocaleString()} chars
+              {clean && cleaned && cleaned.length < text.trim().length && (
+                <> · {cleaned.length.toLocaleString()} will be read</>
+              )}
+            </span>
+            <span>Max {MAX_CHARS.toLocaleString()}</span>
+          </div>
+        </>
+      ) : (
+        <div className="reader-preview">
+          <ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown>
+        </div>
+      )}
+
       <div className="reader-actions">
+        <button
+          type="button"
+          className={`btn ghost reader-clean${clean ? " active" : ""}`}
+          onClick={() => setClean((v) => !v)}
+          aria-pressed={clean}
+          title={
+            clean
+              ? "Sending cleaned text — click to read the raw text as-is"
+              : "Strip code, math, links and heading markers before speaking"
+          }
+        >
+          <Wand2 size={14} aria-hidden />
+          Clean
+        </button>
         <button
           type="button"
           className="start-btn"
@@ -242,6 +324,15 @@ export function Reader({
                 </button>
               ))}
             </div>
+            <button
+              type="button"
+              className="icon-btn player-download"
+              onClick={downloadAudio}
+              title="Download audio"
+              aria-label="Download audio"
+            >
+              <Download size={16} />
+            </button>
           </div>
         </div>
       )}

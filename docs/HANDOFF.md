@@ -164,9 +164,26 @@ get a WAV back. No AI, no mic, no session — a pure one-shot synthesis.
 - The client's speed control is `playbackRate` only, never a re-synthesis:
   pipecat's kokoro service hardcodes `speed=1.0` (`create_stream`), and one
   playback control works uniformly across providers.
-- Client: `components/Reader.tsx` (textarea + Picker grid + player bar),
-  `SPEAK_URL` in `lib/son.ts`. The picker writes `settings.tts`, so a voice
-  chosen here is also the chat voice.
+- **Cleaning**: the textarea keeps the raw paste; when the Clean toggle is on
+  (default), `cleanText` (`client/src/lib/clean.ts`) strips code blocks, math,
+  links, table cells and heading/list markers — in that order, removals only,
+  never rewrites — and *that* string is what `speak()` POSTs. The meta line
+  shows "N chars · M will be read" so you can see the difference before
+  speaking. Inline `$…$` spans are stripped wholesale (a pasted article's
+  dollar pairs are equations, not prices — an earlier operator sniff let
+  `$\alpha$` and long equations through as literal "dollar … dollar"); a
+  lone `$` survives only as a price prefix, so "costs $5 per unit" keeps
+  its five dollars.
+- **Preview**: the Write/Preview tabs render the *raw* text with
+  react-markdown + remark-gfm (safe by default — raw HTML is escaped), not
+  the cleaned version; cleaning affects only what's spoken.
+- **Download**: the player's download button saves the in-memory blob URL
+  under a slug of the first four cleaned words (`audioName`), e.g.
+  `scaling-rust-web-services.wav`. Blob URLs are revoked on unmount and on
+  re-Speak; the player bar only exists while a blob is loaded.
+- Client: `components/Reader.tsx` (tabs + textarea + Picker grid + player
+  bar), `lib/clean.ts`, `SPEAK_URL` in `lib/son.ts`. The picker writes
+  `settings.tts`, so a voice chosen here is also the chat voice.
 
 ## How to run (reminder)
 

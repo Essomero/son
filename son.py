@@ -77,13 +77,15 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> Non
 
     stt = GroqSTTService(
         api_key=require_env("GROQ_API_KEY"),
-        model=GROQ_STT_MODEL,
+        settings=GroqSTTService.Settings(model=GROQ_STT_MODEL),
     )
 
     llm = GroqLLMService(
         api_key=require_env("GROQ_API_KEY"),
-        model=GROQ_MODEL,
-        system_instruction=instruction,
+        settings=GroqLLMService.Settings(
+            model=GROQ_MODEL,
+            system_instruction=instruction,
+        ),
     )
 
     tts = KokoroTTSService(

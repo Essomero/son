@@ -15433,18 +15433,25 @@ function setupClient() {
         connectBtn.hidden = false;
       },
       onBotReady: () => setStatus("Connected \u2014 you can talk."),
-      onError: (err) => setStatus(`Error: ${err?.message ?? err}`)
+      onError: (err) => setStatus(`Error: ${err?.message ?? err}`),
+      // Finalized user turns only (partials stream with final: false).
+      onUserTranscript: (data) => {
+        if (data?.final === false) return;
+        addTranscript("user", data?.text);
+      },
+      // botOutput streams the reply as it's spoken; update the last bot row
+      // in place so the panel shows live text.
+      onBotOutput: (data) => {
+        if (!data?.text) return;
+        const rows = transcriptEl.querySelectorAll(".row.bot");
+        const last = rows[rows.length - 1];
+        if (last) {
+          last.querySelector(".text").textContent = data.text;
+        } else {
+          addTranscript("bot", data.text);
+        }
+      }
     }
-  });
-  client.on($c1b4da4af54f4fa1$export$6b4624d233c61fcb.UserTranscript, (msg) => {
-    const d2 = msg?.data ?? {};
-    if (d2.final === false) return;
-    addTranscript("user", d2.text);
-  });
-  client.on($c1b4da4af54f4fa1$export$6b4624d233c61fcb.BotTranscript, (msg) => {
-    const d2 = msg?.data ?? {};
-    if (d2.final === false) return;
-    addTranscript("bot", d2.text);
   });
   return client;
 }

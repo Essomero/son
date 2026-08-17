@@ -46,7 +46,7 @@ uv run python son.py
 cd client/dist && python3 -m http.server 8000
 ```
 
-Open <http://localhost:8000>, pick a role, hit **Connect**, and talk. (First launch downloads the Kokoro model files — a few MB, cached after that.)
+Open <http://localhost:8000>, pick a role, hit **Connect**, and talk. (First launch downloads the Kokoro model files — ~354MB one-time, cached after that.)
 
 ## Adding a role
 

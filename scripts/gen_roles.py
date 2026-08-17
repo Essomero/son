@@ -18,7 +18,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 INSTRUCTIONS_DIR = ROOT / "instructions"
-OUT = ROOT / "client" / "roles.json"
+# Written into client/dist so the served page (client/dist) is self-contained.
+OUT = ROOT / "client" / "dist" / "roles.json"
 
 
 def parse_frontmatter(text: str) -> tuple[dict, str]:

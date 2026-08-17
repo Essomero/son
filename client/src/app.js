@@ -4,7 +4,7 @@
 // The page is served statically; the bot runs on :7860 (Pipecat runner).
 // Endpoint can be overridden with ?endpoint=http://host:7860/start
 
-import { PipecatClient, RTVIEvent } from "@pipecat-ai/client-js";
+import { PipecatClient } from "@pipecat-ai/client-js";
 import { SmallWebRTCTransport } from "@pipecat-ai/small-webrtc-transport";
 
 const params = new URLSearchParams(location.search);
@@ -91,6 +91,9 @@ function setStatus(text) {
   statusEl.textContent = text;
 }
 
+// Note: in client-js 1.13, user-transcription and bot-output messages only
+// reach their callbacks (onUserTranscript / onBotOutput) — they are not
+// emitted via client.on(RTVIEvent.*). So both transcript paths live here.
 function setupClient() {
   const client = new PipecatClient({
     transport: new SmallWebRTCTransport(),
@@ -112,18 +115,24 @@ function setupClient() {
       },
       onBotReady: () => setStatus("Connected — you can talk."),
       onError: (err) => setStatus(`Error: ${err?.message ?? err}`),
+      // Finalized user turns only (partials stream with final: false).
+      onUserTranscript: (data) => {
+        if (data?.final === false) return;
+        addTranscript("user", data?.text);
+      },
+      // botOutput streams the reply as it's spoken; update the last bot row
+      // in place so the panel shows live text.
+      onBotOutput: (data) => {
+        if (!data?.text) return;
+        const rows = transcriptEl.querySelectorAll(".row.bot");
+        const last = rows[rows.length - 1];
+        if (last) {
+          last.querySelector(".text").textContent = data.text;
+        } else {
+          addTranscript("bot", data.text);
+        }
+      },
     },
-  });
-
-  client.on(RTVIEvent.UserTranscript, (msg) => {
-    const d = msg?.data ?? {};
-    if (d.final === false) return; // only show finalized turns
-    addTranscript("user", d.text);
-  });
-  client.on(RTVIEvent.BotTranscript, (msg) => {
-    const d = msg?.data ?? {};
-    if (d.final === false) return;
-    addTranscript("bot", d.text);
   });
 
   return client;

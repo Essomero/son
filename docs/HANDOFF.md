@@ -32,7 +32,7 @@ A personal real-time voice agent. You pick a "role" (a markdown instruction file
 |---|---|---|
 | Framework | Pipecat over LiveKit | Pipeline-first Python fits a solo project; SmartTurnDetection-style turn handling via Silero VAD in the aggregator; no LiveKit server to run. LiveKit remains the upgrade path if you later need SIP/video/multi-agent. |
 | STT+LLM in cloud | Groq | ~Free at personal scale; far faster than local models on this M1 Pro (local LLM was the latency bottleneck). Trade-off: audio leaves the machine. |
-| TTS local | Kokoro-82M | Free, CPU-real-time, 50+ voices; quality per parameter is best-in-class. Trade-off: ~100MB model cache, first-run download. |
+| TTS local | Kokoro-82M | Free, CPU-real-time, 50+ voices; quality per parameter is best-in-class. Trade-off: ~354MB model cache (kokoro-v1.0.onnx 325MB + voices 28MB), slow first-run download. |
 | Transport | SmallWebRTC (browser) | No server-side audio infra; browser handles echo cancellation. |
 | Memory | Session-only | System prompt + in-session conversation only. Logs/transcripts do not persist. |
 | Roles | Folder + frontmatter | New role = new `.md` file + `gen_roles.py`. No code. |
@@ -58,16 +58,24 @@ Rough ceiling for heavy daily personal use: **$0–3/month**, vs ~$1.40/hr of pu
 
 Runbook for a live check (needs the real mic — do this with the user):
 
-1. `uv run python son.py` → banner shows transports enabled; check for the `webrtc` route line and no "disabled" warnings.
-2. Prebuilt UI smoke test: `http://localhost:7860/client` → talk → hear Kokoro voice.
-3. Custom UI: `cd client/dist && python3 -m http.server 8000` → `http://localhost:8000` → pick Study Buddy → confirm the agent stays in role (proves customData → system_instruction).
+1. `uv run python son.py` → `Uvicorn running on http://localhost:7860`; no "disabled" transport warnings.
+2. Custom UI: `cd client/dist && python3 -m http.server 8000` → `http://localhost:8000` → pick a role → Connect → talk → hear Kokoro voice. (This Pipecat runner version does not mount a prebuilt UI at `/client` — the custom page is the UI.)
+3. Pick Study Buddy → confirm the agent stays in role (proves customData → system_instruction).
 4. Watch the bot console: usage metrics print per session (`enable_usage_metrics`).
 5. Check Groq console for request counts under free limits.
 
-Known loose ends at handoff:
-- **Kokoro model download** happens on first session (needs internet; verify cache path in logs).
+Verification notes (2026-08-17, automated): WebRTC offer/ICE, customData → system_instruction (Study Buddy prompt logged verbatim), greeting LLM (0.77s steady-state) → Kokoro TTS (1.86s TTFA) → audio + `botOutput` transcript event all verified end-to-end via a CDP-driven browser. Session teardown (client disconnect → runner cancel) verified. **STT + VAD + barge-in still need a real-mic test** — that's the one thing a fake mic can't exercise.
+
+Gotchas found during verification:
+- **client-js 1.13 transcripts are callback-only**: `user-transcription` / `bot-output` messages reach `onUserTranscript` / `onBotOutput` callbacks but are NOT emitted via `client.on(RTVIEvent.*)`. `BotTranscript` is deprecated (no longer delivered). The client's transcript handlers must live in the `callbacks` object.
+- **First-run model download is 354MB** (325MB onnx + 28MB voices) at GitHub speeds (~1MB/s here); a fresh browser connection can time out and reconnect during it — it recovered cleanly. Second run is instant.
+- **Runner has no `/client` prebuilt UI** in this version (404) — the custom page is the UI.
+- `roles.json` is generated into `client/dist/` (served dir); re-run `uv run scripts/gen_roles.py` after adding roles AND after a clean checkout.
+- Python stdout → log file buffering: watch `bot.log` for flushes, or run with `PYTHONUNBUFFERED=1` for live tails.
+
+Loose ends:
 - **Groq STT latency** varies; the `ttfs_p99_latency` default (1.54s) on `GroqSTTService` may need tuning.
-- **`client-js` connect URL**: verified against source that `startBotAndConnect` + requestData reaches `runner_args.body` via the session proxy; live mic test is the final proof.
+- **Kokoro download** happens on first session (needs internet; verify cache path in logs).
 
 ## Extension guide
 

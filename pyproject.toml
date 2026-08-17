@@ -5,5 +5,8 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "fastapi>=0.141.1",
     "pipecat-ai[kokoro,webrtc]>=1.7.0",
+    "python-dotenv>=1.2.3",
+    "uvicorn>=0.52.3",
 ]

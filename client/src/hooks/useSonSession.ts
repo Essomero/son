@@ -25,7 +25,7 @@ import {
   uid,
   errorMessage,
 } from "../lib/son";
-import { FALLBACK_MODELS, readSettings, saveSettings } from "../lib/settings";
+import { readSettings, saveSettings } from "../lib/settings";
 
 /** Fresh session id. uuid from crypto when available (localhost is a secure
  *  context); a timestamp fallback for non-secure contexts. The id is sent in
@@ -58,7 +58,7 @@ async function loadModels(): Promise<Models | null> {
     return (await res.json()) as Models;
   } catch {
     console.warn("[Son] /models unreachable — using fallback list");
-    return FALLBACK_MODELS;
+    return null; // caller shows FALLBACK_MODELS and a retry affordance
   }
 }
 
@@ -69,6 +69,7 @@ export function useSonSession() {
   const [roles, setRoles] = useState<Role[]>([]);
   const [role, setRole] = useState<Role | null>(null);
   const [models, setModels] = useState<Models | null>(null);
+  const [modelsLoading, setModelsLoading] = useState(false);
   const [settings, setSettings] = useState<Settings>(() => readSettings());
   const [messages, setMessages] = useState<Msg[]>([]);
   const [muted, setMuted] = useState(false);
@@ -391,11 +392,23 @@ export function useSonSession() {
     saveSettings(next);
   }, []);
 
+  /** Re-fetch the /models roster on demand — the modal's reload button, so a
+   *  bot that was down (or slow) at page load doesn't need a page refresh. */
+  const refreshModels = useCallback(async () => {
+    setModelsLoading(true);
+    try {
+      setModels(await loadModels());
+    } finally {
+      setModelsLoading(false);
+    }
+  }, []);
+
   return {
     phase,
     roles,
     role,
     models,
+    modelsLoading,
     settings,
     messages,
     muted,
@@ -415,5 +428,6 @@ export function useSonSession() {
     toggleMute,
     sendText,
     updateSettings,
+    refreshModels,
   };
 }

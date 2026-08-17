@@ -986,6 +986,13 @@ code {
   overflow-y: auto;
 }
 
+.modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
 .modal-title {
   margin: 0;
   font: 500 22px/1.2 var(--font-display);
@@ -995,6 +1002,25 @@ code {
   margin: 6px 0 26px;
   color: var(--muted);
   font-size: 13px;
+}
+
+.modal-warn {
+  margin: -14px 0 18px;
+  padding: 9px 12px;
+  border: 1px solid rgba(239, 159, 67, 0.35);
+  border-radius: var(--r-sm);
+  background: rgba(239, 159, 67, 0.08);
+  color: var(--amber-hi);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.icon-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+  color: var(--muted);
+  background: none;
+  border-color: transparent;
 }
 
 .field {

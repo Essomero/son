@@ -127,6 +127,9 @@ export default function App() {
       {settingsOpen && (
         <SettingsModal
           models={models}
+          modelsLive={s.models !== null}
+          modelsLoading={s.modelsLoading}
+          onReloadModels={() => void s.refreshModels()}
           settings={s.settings}
           onChange={s.updateSettings}
           onClose={() => setSettingsOpen(false)}

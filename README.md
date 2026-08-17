@@ -77,7 +77,7 @@ uv run scripts/gen_roles.py && cd client && npm run build && cd ..
 | `CEREBRAS_API_KEY` | — | Optional. Enables Cerebras brains (`gpt-oss-120b`, `zai-glm-4.7`) — cloud.cerebras.ai |
 | `DEEPSEEK_API_KEY` | — | Optional. Enables DeepSeek brains (e.g. `deepseek-v4-flash`) |
 | `GEMINI_API_KEY` | — | Optional. Enables Gemini brains, Google speech-to-text, and Gemini voices |
-| `OPENROUTER_API_KEY` | — | Optional. Enables the curated OpenRouter brains (Claude, GPT, Grok…) |
+| `OPENROUTER_API_KEY` | — | Optional. Enables the curated OpenRouter brains (Claude, GPT, Grok…) and speech-to-text |
 | `GROQ_MODEL` | `openai/gpt-oss-120b` | Default Groq LLM model |
 | `GROQ_REASONING_EFFORT` | `medium` | gpt-oss reasoning effort: `low` (fastest, ~0.45s first content) / `medium` / `high` (smartest, slower) |
 | `GROQ_STT_MODEL` | `whisper-large-v3-turbo` | Default Groq STT model |
@@ -90,7 +90,7 @@ A provider is enabled only when its API key is present. The settings panel (⚙ 
 Click ⚙ to pick, per session:
 
 - **Brain** — the reasoning/chat model (Groq, Cerebras, DeepSeek, Gemini, or OpenRouter).
-- **Speech-to-text** — how your voice becomes text (Groq Whisper or Google).
+- **Speech-to-text** — how your voice becomes text (Groq Whisper, Google, or OpenRouter).
 - **Voice** — the voice that reads replies (local Kokoro, or Groq/Gemini cloud TTS).
 
 Choices are saved in the browser and sent with each connection; the server falls back to the defaults if a provider's key is missing. Kokoro voices are synthesized on your machine; the others stream from their provider.

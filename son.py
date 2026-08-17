@@ -2,7 +2,8 @@
 #
 # Default stack (every capability is swappable in the client settings panel,
 # gated by which API keys are present in .env):
-#   - STT:  Groq (whisper-large-v3-turbo)  — cloud, free tier
+#   - STT:  Groq (whisper-large-v3-turbo)  — cloud, free tier (also:
+#           OpenRouter when its key is set)
 #   - LLM:  Groq (openai/gpt-oss-120b)     — cloud, free tier (also:
 #           DeepSeek / Gemini / OpenRouter when their keys are set)
 #   - TTS:  Kokoro-82M (local, ONNX on CPU) — no cloud, no cost
@@ -39,6 +40,7 @@ from pipecat.services.groq.llm import GroqLLMService
 from pipecat.services.groq.stt import GroqSTTService
 from pipecat.services.groq.tts import GroqTTSService
 from pipecat.services.kokoro.tts import KokoroTTSService
+from pipecat.services.openai.stt import OpenAISTTService
 from pipecat.services.openrouter.llm import OpenRouterLLMService
 from pipecat.transports.base_transport import BaseTransport, TransportParams
 from pipecat.transports.smallwebrtc.connection import SmallWebRTCConnection
@@ -80,7 +82,11 @@ PROVIDER_ENV_KEYS = {
 }
 
 # Which providers offer each capability, and the key that gates them.
-STT_PROVIDER_ENV_KEYS = {"groq": "GROQ_API_KEY", "google": None}  # google: see google_stt_available()
+STT_PROVIDER_ENV_KEYS = {
+    "groq": "GROQ_API_KEY",
+    "openrouter": "OPENROUTER_API_KEY",
+    "google": None,  # google: see google_stt_available()
+}
 TTS_PROVIDER_ENV_KEYS = {"kokoro": None, "groq": "GROQ_API_KEY", "gemini": "GEMINI_API_KEY"}
 
 
@@ -184,6 +190,15 @@ def build_stt_service(provider: str, model: str):
         return GroqSTTService(
             api_key=require_env("GROQ_API_KEY"),
             settings=GroqSTTService.Settings(model=model),
+        )
+    if provider == "openrouter":
+        # OpenRouter's /audio/transcriptions is OpenAI-compatible (multipart,
+        # same request shape as Whisper), so the OpenAI STT service just needs
+        # the base URL pointed at OpenRouter's API.
+        return OpenAISTTService(
+            api_key=require_env("OPENROUTER_API_KEY"),
+            base_url="https://openrouter.ai/api/v1",
+            settings=OpenAISTTService.Settings(model=model),
         )
     if provider == "google":
         # Credentials come from GOOGLE_APPLICATION_CREDENTIALS / ADC; there is
@@ -459,6 +474,45 @@ def _fetch_models() -> dict:
         for m in data.get("data", []):
             if m["id"] in CURATED_OPENROUTER_MODELS:
                 llm.append({"provider": "openrouter", "id": m["id"], "label": m.get("name") or m["id"]})
+        # STT: the query param filters server-side (the per-model
+        # output_modalities field is empty in the response), same shape as
+        # OpenAI's roster endpoint. Sorted cheapest first — pricing.prompt is
+        # $/second for duration-based models, $/input token for token-based
+        # ones (which also bill completion); the picker label shows the rate
+        # so the order is legible.
+        stt_data = _provider_get(
+            "https://openrouter.ai/api/v1/models?output_modalities=transcription",
+            "OPENROUTER_API_KEY",
+        )
+        priced = []
+        for m in stt_data.get("data", []):
+            pricing = m.get("pricing") or {}
+            prompt = pricing.get("prompt", "0")
+            completion = pricing.get("completion", "0")
+            try:
+                in_price = float(prompt)
+                out_price = float(completion)
+            except (TypeError, ValueError):
+                in_price = out_price = float("inf")
+            def fmt(p: float) -> str:  # no trailing zeros: 0.36, not 0.36000000
+                return f"{p:.8f}".rstrip("0").rstrip(".")
+
+            if out_price > 0:  # token-based: rates per input/output token
+                suffix = f" · ${fmt(in_price)} in + ${fmt(out_price)} out/tok"
+            else:              # duration-based: $ per second of audio
+                suffix = f" · ${fmt(in_price)}/s"
+            priced.append(
+                (
+                    in_price + out_price,
+                    {
+                        "provider": "openrouter",
+                        "id": m["id"],
+                        "label": (m.get("name") or m["id"]) + suffix,
+                    },
+                )
+            )
+        for _, entry in sorted(priced, key=lambda e: e[0]):
+            stt.append(entry)
 
     for voice in KOKORO_VOICES:
         tts.append({"provider": "kokoro", "id": voice, "label": voice})

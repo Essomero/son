@@ -17,7 +17,7 @@ Every capability is swappable from the **⚙ settings panel**: add a DeepSeek, C
 ## Prerequisites
 
 - macOS / Linux, Python 3.11+ ([uv](https://docs.astral.sh/uv/))
-- Node.js 18+ (for the client bundle, build once)
+- Node.js 20.19+ (Vite 7 requirement — for the client bundle, build once)
 - A free Groq API key: https://console.groq.com
 
 ## Setup
@@ -42,11 +42,13 @@ uv run scripts/gen_roles.py
 # Terminal 1 — the agent server (Pipecat dev runner)
 uv run python son.py
 
-# Terminal 2 — the web page
+# Terminal 2 — the web page (the built bundle)
 cd client/dist && python3 -m http.server 8000
 ```
 
-Open <http://localhost:8000>, pick a role, hit **Connect**, and talk. (First launch downloads the Kokoro model files — ~354MB one-time, cached after that.)
+Open <http://localhost:8000>, pick a role, hit **Start talking**, and talk. (First launch downloads the Kokoro model files — ~354MB one-time, cached after that.)
+
+During client development, `cd client && npm run dev` serves the page with hot reload at <http://localhost:5173> (it still talks to the bot on :7860).
 
 ## Adding a role
 
@@ -62,10 +64,10 @@ You are Son in the role of a morning coach. ...
 ```
 
 ```bash
-uv run scripts/gen_roles.py
+uv run scripts/gen_roles.py && cd client && npm run build && cd ..
 ```
 
-That's it — the role shows up in the picker on reload.
+`gen_roles.py` writes `client/public/roles.json`; the Vite build copies it into `dist/` (the dev server picks it up on reload). That's it — the role shows up in the picker on reload.
 
 ## Configuration
 

@@ -15521,7 +15521,11 @@ function setStatus(text) {
 }
 function errorMessage(err) {
   const data = err?.data ?? {};
-  return typeof data === "string" ? data : data?.message ?? data?.code ?? String(err);
+  if (typeof data === "string") return data;
+  const text = data.error ?? data.message ?? data.code;
+  if (typeof text === "string") return text;
+  if (text && typeof text === "object") return JSON.stringify(text);
+  return err?.message ?? String(err);
 }
 function setupClient() {
   const client = new $364c127d152b1085$export$8f7f86a77535f7a3({

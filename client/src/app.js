@@ -225,11 +225,20 @@ function setStatus(text) {
 }
 
 // client-js hands errors (in the onError callback AND in promise rejections)
-// an RTVIMessage whose readable text lives in data.message / data.code —
-// there is no .message on the object itself, so String(err) is "[object Object]".
+// an RTVIMessage whose readable text lives in different data fields depending
+// on where the error came from:
+//   - server error frames (a pipeline ErrorFrame → RTVI Error message):
+//       data = { error: <text>, fatal: <bool> }
+//   - client-side failures (startBotAndConnect HTTP/network):
+//       data = { message: <text>, fatal: true }
+// There is no .message on the object itself, so String(err) is "[object Object]".
 function errorMessage(err) {
   const data = err?.data ?? {};
-  return typeof data === "string" ? data : data?.message ?? data?.code ?? String(err);
+  if (typeof data === "string") return data;
+  const text = data.error ?? data.message ?? data.code;
+  if (typeof text === "string") return text;
+  if (text && typeof text === "object") return JSON.stringify(text);
+  return err?.message ?? String(err);
 }
 
 // Note: in client-js 1.13, user-transcription and bot-output messages only

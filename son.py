@@ -559,6 +559,7 @@ def _fetch_models() -> dict:
 
 if __name__ == "__main__":
     from fastapi import Body, HTTPException
+    from fastapi.staticfiles import StaticFiles
     from pipecat.runner.run import app, main
 
     @app.get("/models")
@@ -597,5 +598,36 @@ if __name__ == "__main__":
         if not sessions.delete_session(session_id):
             raise HTTPException(status_code=404, detail="Session not found")
         return {"ok": True}
+
+    # Serve the built client from this same app — one process, one URL.
+    # These must be registered BEFORE main(): the runner adds its own routes
+    # (/start, /ws, /status, its "/" redirect to the prebuilt UI) during
+    # main(), so anything we register here claims these paths first — and a
+    # catch-all mount at "/" is out, it would shadow the runner's routes
+    # entirely (its exact routes only win when they come first). Vite's dist
+    # layout is fixed — index.html + assets/ + roles.json — so three
+    # registrations cover it. Rebuild the client with `cd client &&
+    # npm run build` after UI changes.
+    dist = Path(__file__).parent / "client" / "dist"
+    if (dist / "index.html").is_file():
+        from fastapi.responses import FileResponse
+
+        @app.get("/", include_in_schema=False)
+        def client_index() -> FileResponse:
+            return FileResponse(dist / "index.html")
+
+        @app.get("/roles.json", include_in_schema=False)
+        def client_roles() -> FileResponse:
+            return FileResponse(dist / "roles.json")
+
+        if (dist / "assets").is_dir():
+            app.mount("/assets", StaticFiles(directory=dist / "assets"), name="client-assets")
+
+        logger.info(f"Serving the web client from {dist} — open http://localhost:7860")
+    else:
+        logger.warning(
+            "client/dist not found — the UI won't be served here "
+            "(run `cd client && npm run build` first)"
+        )
 
     main()

@@ -119,9 +119,27 @@ Loose ends:
 4. **Gemini Live upgrade path** — if quality/understanding needs a jump later: pipecat has `GeminiLiveLLMService` (speech-to-speech, built-in barge-in); the role/instruction mechanism ports unchanged (it takes `system_instruction` in settings).
 5. **Cross-session memory** — sessions now recall their own transcripts; the next step would be memory that spans sessions (pipecat has an official `mem0` RAG example).
 
+## Serving the web client (one process, one URL)
+
+The built client is served by son.py itself — no second server:
+
+- `__main__` registers `GET /` → `client/dist/index.html`, `GET /roles.json`,
+  and mounts `/assets` **before** calling `main()`. That ordering matters:
+  the runner registers its own routes (`/start`, `/ws`, `/status`, its `/`
+  redirect to the prebuilt `/client` UI) inside `main()`, and Starlette
+  matches routes in registration order — first match wins. A catch-all
+  `app.mount("/", StaticFiles(...))` is ruled out for the same reason: it
+  claims every path and shadows the runner's endpoints (StaticFiles answers
+  non-GET with 405, missing files with 404).
+- The client talks to the bot same-origin (`BOT_ENDPOINT` defaults to
+  `http://localhost:7860/start`), so CORS is unused here; dev mode (:5173)
+  still crosses origins and relies on the runner's CORS middleware.
+- After UI changes: `cd client && npm run build`. Vite's dist layout is
+  fixed (index.html + assets/ + roles.json), which is exactly what the three
+  registrations serve.
+
 ## How to run (reminder)
 
 ```bash
-uv run python son.py                                # terminal 1 — bot :7860
-cd client && npm start                              # terminal 2 — page :8000
+uv run python son.py    # one process — bot + built web client on :7860
 ```

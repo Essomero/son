@@ -39,16 +39,13 @@ uv run scripts/gen_roles.py
 ## Run
 
 ```bash
-# Terminal 1 — the agent server (Pipecat dev runner)
+# One process — the bot AND the web page (son.py serves the built client)
 uv run python son.py
-
-# Terminal 2 — the web page (builds and serves the bundle on :8000)
-cd client && npm start
 ```
 
-Open <http://localhost:8000>, pick a role, hit **Start talking**, and talk. (First launch downloads the Kokoro model files — ~354MB one-time, cached after that.)
+Open <http://localhost:7860>, pick a role, hit **Start talking**, and talk. (First launch downloads the Kokoro model files — ~354MB one-time, cached after that.) No second server: the same app serves the UI, `/models`, `/sessions`, and the realtime endpoints. Rebuild the UI after client changes with `cd client && npm run build`.
 
-During client development, `cd client && npm run dev` serves the page with hot reload at <http://localhost:5173> (it still talks to the bot on :7860).
+During client development, `cd client && npm run dev` serves the page with hot reload at <http://localhost:5173> (it still talks to the bot on :7860). `npm start` (build + preview on :8000) also still works if you want the page served separately.
 
 ## Adding a role
 

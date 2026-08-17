@@ -45,6 +45,8 @@ uv run python son.py
 
 Open <http://localhost:7860>, pick a role, hit **Start talking**, and talk. (First launch downloads the Kokoro model files — ~354MB one-time, cached after that.) No second server: the same app serves the UI, `/models`, `/sessions`, and the realtime endpoints. Rebuild the UI after client changes with `cd client && npm run build`.
 
+Prefer a double-click over a terminal? `scripts/make_son_app.sh` builds **Son.app** in `~/Applications` — it starts the bot in a Terminal window (or reuses the running instance) and opens the page in your browser.
+
 During client development, `cd client && npm run dev` serves the page with hot reload at <http://localhost:5173> (it still talks to the bot on :7860). `npm start` (build + preview on :8000) also still works if you want the page served separately.
 
 ## Adding a role

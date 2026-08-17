@@ -192,6 +192,20 @@ get a WAV back. No AI, no mic, no session — a pure one-shot synthesis.
   bar), `lib/clean.ts`, `SPEAK_URL` in `lib/son.ts`. The picker writes
   `settings.tts`, so a voice chosen here is also the chat voice.
 
+**Chat-path cleaning (LLM → TTS)** — the chat transcripts keep raw markdown
+(live bubble renders it, `son.db` stores it verbatim for resume replay); only
+the synthesis input is cleaned. `MarkdownToSpeechFilter` (`BaseTextFilter`)
+is passed to the TTS service as `text_filters` in `build_tts_service` —
+pipecat applies it inside the TTS service after sentence aggregation,
+immediately before synthesis, so kokoro/groq/gemini all benefit and no frame
+the transcript sees is touched (the TTS forwards the original sentence frames
+downstream before filtering, with `append_to_context=False`). `clean_for_tts`
+(son.py) mirrors the client's `cleanText` philosophy — markers stripped,
+inner content kept: bold/italic/code/link/heading/quote/list markers removed
+(`**TS2322**` → "TS2322"), code blocks keep their content, escaped markers
+unescaped first, table separator rows dropped, stray unpaired markers swept.
+The `/speak` path doesn't use it — the client already cleans there.
+
 ## How to run (reminder)
 
 ```bash

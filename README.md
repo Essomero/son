@@ -121,6 +121,8 @@ Pipecat runner (:7860) — Silero VAD turn detection
 
 The chosen role's instruction file is passed from the web page in the RTVI `/start` request and becomes the LLM's system instruction for that session.
 
+Replies are markdown, and the transcript keeps it that way — the chat bubble renders it and `son.db` stores it verbatim for resume. Only the speech path is cleaned: a text filter inside the TTS service strips the markers from each sentence right before synthesis, so `**TS2322**` is spoken as "TS2322", not "asterisk asterisk TS2322" (the `/speak` page uses its own client-side clean for the same reason).
+
 ## Sessions
 
 Every conversation is a session that lives in `son.db` (SQLite, next to `son.py`) — names, timestamps, and the full transcript, written live as you talk. The left rail lists past sessions: click one to **resume it** (the transcript replays and the brain gets the full history back, so it remembers what you said — try ending, reloading, then asking "what did I just say?"). Double-click a name to rename, hover for delete, and use **New** in the header to start a clean conversation. The rail collapses from the header toggle.

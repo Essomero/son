@@ -16,6 +16,7 @@
 import asyncio
 import io
 import os
+import re
 import threading
 import time
 import wave
@@ -46,6 +47,7 @@ from pipecat.services.kokoro.tts import KokoroTTSService
 from pipecat.services.openai.stt import OpenAISTTService
 from pipecat.services.openrouter.llm import OpenRouterLLMService
 from pipecat.transports.base_transport import BaseTransport, TransportParams
+from pipecat.utils.text.base_text_filter import BaseTextFilter
 from pipecat.transports.smallwebrtc.connection import SmallWebRTCConnection
 from pipecat.transports.smallwebrtc.transport import SmallWebRTCTransport
 from pipecat.workers.runner import WorkerRunner
@@ -215,17 +217,25 @@ def build_stt_service(provider: str, model: str):
 
 
 def build_tts_service(provider: str, model: str | None, voice: str | None):
+    # MarkdownToSpeechFilter: strip markdown markers from what the TTS
+    # synthesizes, per sentence, without touching the transcript stream.
+    filters = [MarkdownToSpeechFilter()]
     if provider == "kokoro":
-        return KokoroTTSService(settings=KokoroTTSService.Settings(voice=voice or KOKORO_VOICE))
+        return KokoroTTSService(
+            settings=KokoroTTSService.Settings(voice=voice or KOKORO_VOICE),
+            text_filters=filters,
+        )
     if provider == "groq":
         return GroqTTSService(
             api_key=require_env("GROQ_API_KEY"),
             settings=GroqTTSService.Settings(model=model, voice=voice),
+            text_filters=filters,
         )
     if provider == "gemini":
         return GeminiTTSService(
             api_key=os.getenv("GEMINI_API_KEY"),
             settings=GeminiTTSService.Settings(model=model, voice=voice),
+            text_filters=filters,
         )
     raise ValueError(f"Unknown TTS provider: {provider}")
 
@@ -322,6 +332,69 @@ def require_env(key: str) -> str:
             "(free at https://console.groq.com)."
         )
     return value
+
+
+# --- Markdown-to-speech cleaning (LLM reply → TTS) ---------------------------
+# LLM replies are markdown (the transcript renders it), but Kokoro reads the
+# raw text: "**TS2322**" comes out as "asterisk asterisk TS2322". Strip the
+# markers while keeping the inner content — bold/code/link text is still
+# spoken, just without the syntax. Cleaning happens as a TTS text filter, so
+# it applies inside the TTS service at synthesis time: the frames the
+# transcripts see (live chat and stored sessions) keep the raw markdown
+# untouched. The client's cleanText (lib/clean.ts) covers the /speak path;
+# this covers every chat TTS provider (kokoro/groq/gemini).
+
+def clean_for_tts(text: str) -> str:
+    t = text
+    # Escaped markers first: \* \` \[ become literal chars, so the marker
+    # rules below see them (a stray escaped \* ends in the stray sweep).
+    t = re.sub(r"\\([\\`*_{}\[\]()#+\-.!>])", r"\1", t)
+    # Code blocks: keep the content, drop the fences (```lang … ```).
+    t = re.sub(r"```[^\n]*\n([\s\S]*?)\n?```", r"\1", t)
+    # Inline code: `code` → code.
+    t = re.sub(r"`([^`\n]+)`", r"\1", t)
+    # Images: ![alt](url) → alt; links: [text](url) → text.
+    t = re.sub(r"!\[([^\]]*)\]\([^)]*\)", r"\1", t)
+    t = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", t)
+    # Bold and italic — pairs first, then single markers, both word-adjacent
+    # so "2 * 2" (math) keeps its asterisks until the stray sweep.
+    t = re.sub(r"(\*\*|__)([^*_\n]+?)\1", r"\2", t)
+    t = re.sub(r"(?<=\S)(\*|_)([^*_\n]+?)\1(?=\S)", r"\2", t)
+    # Strikethrough: ~~x~~ → x.
+    t = re.sub(r"~~([^~\n]+?)~~", r"\1", t)
+    # Heading markers, blockquotes, list bullets and numbers.
+    t = re.sub(r"(?m)^\s{0,3}#{1,6}\s+", "", t)
+    t = re.sub(r"(?m)^\s*>\s?", "", t)
+    t = re.sub(r"(?m)^\s*[-*+]\s+", "", t)
+    t = re.sub(r"(?m)^\s*\d+[.)]\s+", "", t)
+    # Table pipes: | a | b | → a b.
+    t = re.sub(r"\|", " ", t)
+    # Footnote references: [1] / [^1].
+    t = re.sub(r"\[\^?\d+\]", "", t)
+    # Table separator rows (| --- | --- |) and other marker-only lines.
+    t = re.sub(r"[ \t]+(?=\n)", "", t)
+    t = re.sub(r"(?m)^[\s:\-]+$", "", t)
+    t = re.sub(r"(?m)^[ \t]+", "", t)
+    t = re.sub(r"\n{2,}", "\n", t)
+    # Stray markers (e.g. one half of a ** pair that never completed) and
+    # identifier underscores — never meaningful aloud.
+    t = re.sub(r"[\*`~_]{1,4}", "", t)
+    # Collapse the whitespace runs the removals leave behind.
+    t = re.sub(r"[ \t]{2,}", " ", t)
+    t = re.sub(r"\s+([.,!?;:])", r"\1", t)
+    return t.strip()
+
+
+class MarkdownToSpeechFilter(BaseTextFilter):
+    """Strips markdown markers from the text the TTS synthesizes.
+
+    Registered as a TTSService text_filter: pipecat applies these inside the
+    TTS service after sentence aggregation, immediately before synthesis. The
+    transcript never sees the cleaned text — the TTS forwards the original
+    sentence frames downstream before filtering (append_to_context=False)."""
+
+    async def filter(self, text: str) -> str:
+        return clean_for_tts(text)
 
 
 async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> None:
@@ -429,7 +502,7 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> Non
             stt,                # Groq whisper: speech -> text
             user_aggregator,    # user turns into conversation context
             llm,                # Groq llama: next assistant reply
-            tts,                # Kokoro local: text -> speech
+            tts,                # Kokoro local: text -> speech (markdown stripped in-service)
             transport.output(), # audio back to the browser
             assistant_aggregator,  # assistant turns into conversation context
         ]

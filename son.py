@@ -20,6 +20,7 @@ import re
 import threading
 import time
 import wave
+from functools import lru_cache
 from pathlib import Path
 
 import httpx
@@ -795,12 +796,33 @@ if __name__ == "__main__":
     # registrations cover it. Rebuild the client with `cd client &&
     # npm run build` after UI changes.
     dist = Path(__file__).parent / "client" / "dist"
+
+    @lru_cache(maxsize=1)
+    def _client_shell(root: Path) -> str:
+        """index.html with relocatable (./assets) URLs made root-absolute.
+
+        The chat route /s/<session_id> serves this shell: with base "./" the
+        asset URLs would resolve under /s/... and 404, so rewrite them to
+        /assets/... once and cache the result. Only the built bundle is
+        relocatable — nothing else in the page is path-relative."""
+        return (root / "index.html").read_text().replace("./assets/", "/assets/")
+
     if (dist / "index.html").is_file():
         from fastapi.responses import FileResponse
 
         @app.get("/", include_in_schema=False)
         def client_index() -> FileResponse:
             return FileResponse(dist / "index.html")
+
+        # Chat routes: /s/<session_id> is the client's "open conversation"
+        # URL — reloads (and shared links) must land back in the app shell,
+        # never a 404. A specific path, so unlike a catch-all it can't shadow
+        # the runner's routes. The id is the client's payload, not ours.
+        # The bundle is built relocatable (Vite base "./"), so its asset URLs
+        # would resolve under /s/... — rewrite them root-absolute, cached.
+        @app.get("/s/{session_id}", include_in_schema=False)
+        def client_session() -> Response:
+            return Response(content=_client_shell(dist), media_type="text/html")
 
         @app.get("/roles.json", include_in_schema=False)
         def client_roles() -> FileResponse:

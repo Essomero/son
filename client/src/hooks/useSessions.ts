@@ -23,11 +23,15 @@ export function useSessions({
   refetchKey: string;
 }) {
   const [list, setList] = useState<SessionMeta[]>([]);
+  const [loaded, setLoaded] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
       const res = await fetch(SESSIONS_URL);
-      if (res.ok) setList((await res.json()) as SessionMeta[]);
+      if (res.ok) {
+        setList((await res.json()) as SessionMeta[]);
+        setLoaded(true);
+      }
     } catch (e) {
       console.warn("[Son] /sessions unreachable:", e);
     }
@@ -79,5 +83,5 @@ export function useSessions({
     [refresh],
   );
 
-  return { list, refresh, rename, remove };
+  return { list, loaded, refresh, rename, remove };
 }

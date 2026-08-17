@@ -20,6 +20,7 @@ import {
   mergeUserText,
   BOT_ENDPOINT,
   MODELS_URL,
+  ROLES_URL,
   SESSIONS_URL,
   DEBUG,
   uid,
@@ -27,6 +28,7 @@ import {
 } from "../lib/son";
 import { readSettings, saveSettings } from "../lib/settings";
 import { loadCustomRoles, saveCustomRoles } from "../lib/customRoles";
+import { pushHomeRoute, pushSessionRoute } from "../lib/chatRoute";
 
 /** Fresh session id. uuid from crypto when available (localhost is a secure
  *  context); a timestamp fallback for non-secure contexts. The id is sent in
@@ -45,7 +47,7 @@ async function loadRoles(): Promise<Role[]> {
     // no-store: python -m http.server sends no cache headers, so browsers
     // heuristically cache roles.json and a new role never shows up on a
     // plain reload.
-    const res = await fetch("roles.json", { cache: "no-store" });
+    const res = await fetch(ROLES_URL, { cache: "no-store" });
     return await res.json();
   } catch {
     return [];
@@ -360,6 +362,7 @@ export function useSonSession() {
     stopBotAudio();
     setPhase("ready");
     setStatus(role ? `Ready to talk as “${role.name}”` : "Pick a role to start talking.");
+    pushHomeRoute(); // a fresh chat isn't any session — the URL goes back home
   }, [role, stopBotAudio]);
 
   /** Resume a past session from the panel: restore its transcript, switch to
@@ -403,9 +406,10 @@ export function useSonSession() {
       } catch (e) {
         console.warn("[Son] failed to load stored messages:", e);
       }
-      setRole(r);
+        setRole(r);
       setMessages(stored);
       messagesRef.current = stored;
+      pushSessionRoute(meta.id); // the URL now names this chat — reload reopens it
       await connect({ role: r, sessionId: meta.id, force: true });
     },
     [roles, customRoles, connect],

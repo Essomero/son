@@ -4,7 +4,7 @@
  * in the left rail (collapsible) and resume in place.
  */
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { useSonSession } from "./hooks/useSonSession";
 import { useSessions } from "./hooks/useSessions";
@@ -18,6 +18,7 @@ import { PersonaModal } from "./components/PersonaModal";
 import { Reader } from "./components/Reader";
 import type { Role } from "./lib/types";
 import { FALLBACK_MODELS, resolveChoice } from "./lib/settings";
+import { sessionIdFromPath } from "./lib/chatRoute";
 
 const PANEL_KEY = "son.panel";
 
@@ -56,6 +57,42 @@ export default function App() {
     activeCount: s.messages.length,
     refetchKey: s.phase, // connect creates the row; disconnect bumps it
   });
+
+  // Restore the URL's chat on load — /s/<id> means "this conversation is
+  // open", so a reload (or a shared link) reopens it instead of home. Runs
+  // once, once the sessions list has arrived.
+  const didRestore = useRef(false);
+  useEffect(() => {
+    if (didRestore.current) return;
+    const id = sessionIdFromPath(location.pathname);
+    if (!id || !sessions.loaded) return;
+    didRestore.current = true;
+    const meta = sessions.list.find((m) => m.id === id);
+    if (meta) {
+      void s.resumeSession(meta);
+    } else {
+      history.replaceState(null, "", "/"); // session gone — drop the stale path
+    }
+  }, [sessions.loaded, sessions.list, s.resumeSession]);
+
+  // Back/Forward: follow the URL to whichever chat it names.
+  useEffect(() => {
+    const onPop = () => {
+      const id = sessionIdFromPath(location.pathname);
+      if (!id) {
+        void s.newSession();
+        return;
+      }
+      const meta = sessions.list.find((m) => m.id === id);
+      if (meta) {
+        void s.resumeSession(meta);
+      } else {
+        history.replaceState(null, "", "/"); // session gone — drop the stale path
+      }
+    };
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, [sessions.list, s.resumeSession, s.newSession]);
 
   const inChat = s.phase === "connected" || s.phase === "disconnected";
 

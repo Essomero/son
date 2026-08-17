@@ -132,12 +132,24 @@ The built client is served by son.py itself — no second server:
   `app.mount("/", StaticFiles(...))` is ruled out for the same reason: it
   claims every path and shadows the runner's endpoints (StaticFiles answers
   non-GET with 405, missing files with 404).
+- **Chat URLs**: `GET /s/{session_id}` also serves the app shell (same
+  block, so it can't shadow anything). The bundle is built relocatable
+  (Vite `base: "./"`), so the shell is served through `_client_shell()` —
+  an `lru_cache`d copy of index.html with `./assets/` rewritten to
+  `/assets/` — otherwise the asset URLs would resolve under `/s/...` and
+  404. The client (`lib/chatRoute.ts`) pushes `/s/<id>` when a session is
+  resumed and `/` for a fresh chat; `App.tsx` restores the URL's session on
+  mount (once the sessions list has loaded) and follows Back/Forward via
+  `popstate`. Reload reopens the same chat; a stale/deleted session id
+  drops back home with a `replaceState`.
 - The client talks to the bot same-origin (`BOT_ENDPOINT` defaults to
   `http://localhost:7860/start`), so CORS is unused here; dev mode (:5173)
   still crosses origins and relies on the runner's CORS middleware.
 - After UI changes: `cd client && npm run build`. Vite's dist layout is
   fixed (index.html + assets/ + roles.json), which is exactly what the three
-  registrations serve.
+  registrations serve. The chat URL depth is why **every fetch must be
+  root-absolute** (`ROLES_URL`, `MODELS_URL`, … from `lib/son.ts`) — a
+  relative `roles.json` would resolve under `/s/...` and 404.
 
 ## The read-out page (POST /speak)
 

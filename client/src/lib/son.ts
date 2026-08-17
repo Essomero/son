@@ -12,6 +12,10 @@ const BOT_BASE = BOT_ENDPOINT.replace(/\/start$/, "");
 export const MODELS_URL = BOT_BASE + "/models";
 export const SESSIONS_URL = BOT_BASE + "/sessions";
 export const SPEAK_URL = BOT_BASE + "/speak";
+// Root-absolute like the others: the chat route /s/<id> puts the page at a
+// different depth, so a relative "roles.json" would resolve under /s/... and
+// 404. Every fetch must use these, not a bare relative path.
+export const ROLES_URL = BOT_BASE + "/roles.json";
 export const DEBUG = params.has("debug");
 
 let uidCounter = 0;

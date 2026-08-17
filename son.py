@@ -78,8 +78,33 @@ PROVIDER_ENV_KEYS = {
 }
 
 # Which providers offer each capability, and the key that gates them.
-STT_PROVIDER_ENV_KEYS = {"groq": "GROQ_API_KEY", "google": "GEMINI_API_KEY"}
+STT_PROVIDER_ENV_KEYS = {"groq": "GROQ_API_KEY", "google": None}  # google: see google_stt_available()
 TTS_PROVIDER_ENV_KEYS = {"kokoro": None, "groq": "GROQ_API_KEY", "gemini": "GEMINI_API_KEY"}
+
+
+def google_stt_available() -> bool:
+    """Cloud Speech-to-Text V2 needs real, usable Google credentials — a
+    service account via GOOGLE_APPLICATION_CREDENTIALS, or `gcloud auth
+    application-default login`. Pipecat's GoogleSTTService has no API-key
+    auth, so GEMINI_API_KEY alone can NOT drive it. File existence isn't
+    enough: an expired ADC token ("Reauthentication is needed") still fails
+    at request time, so probe by refreshing the credentials."""
+    adc_file = os.getenv("GOOGLE_APPLICATION_CREDENTIALS") or str(
+        Path.home() / ".config/gcloud/application_default_credentials.json"
+    )
+    if not Path(adc_file).is_file():
+        return False
+    try:
+        from google.auth import default as adc_default
+        from google.auth.transport.requests import Request
+
+        creds, _ = adc_default(scopes=["https://www.googleapis.com/auth/cloud-platform"])
+        if not creds.valid:
+            creds.refresh(Request())
+        return True
+    except Exception as e:
+        logger.warning(f"Google credentials not usable ({type(e).__name__}: {e}); Google STT disabled")
+        return False
 
 # Fallbacks for manual /start calls that don't name a model.
 DEFAULT_MODELS = {
@@ -153,10 +178,9 @@ def build_stt_service(provider: str, model: str):
             settings=GroqSTTService.Settings(model=model),
         )
     if provider == "google":
-        return GoogleSTTService(
-            api_key=os.getenv("GEMINI_API_KEY"),
-            settings=GoogleSTTService.Settings(model=model),
-        )
+        # Credentials come from GOOGLE_APPLICATION_CREDENTIALS / ADC; there is
+        # no API-key auth for Cloud Speech (see google_stt_available()).
+        return GoogleSTTService(settings=GoogleSTTService.Settings(model=model))
     raise ValueError(f"Unknown STT provider: {provider}")
 
 
@@ -221,9 +245,14 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> Non
         llm_choice["model"] = llm_choice["id"]  # client sends /models entries ({provider, id}); id wins over the default model
 
     stt_choice = {**defaults["stt"], **(custom_data.get("stt") or {})}
-    stt_key = STT_PROVIDER_ENV_KEYS.get(stt_choice.get("provider"))
-    if stt_key is None or not os.getenv(stt_key):
-        logger.warning(f"STT provider '{stt_choice.get('provider')}' unavailable; using groq")
+    stt_provider = stt_choice.get("provider")
+    stt_available = (
+        google_stt_available()
+        if stt_provider == "google"
+        else bool(os.getenv(STT_PROVIDER_ENV_KEYS.get(stt_provider, "")))
+    )
+    if not stt_available:
+        logger.warning(f"STT provider '{stt_provider}' unavailable; using groq")
         stt_choice = defaults["stt"]
     if stt_choice.get("id"):
         stt_choice["model"] = stt_choice["id"]  # client sends /models entries ({provider, id}); id wins over the default model
@@ -371,9 +400,11 @@ def _fetch_models() -> dict:
             f"https://generativelanguage.googleapis.com/v1beta/models?key={os.getenv('GEMINI_API_KEY')}",
             None,
         )
-        # Google's speech-to-text API aliases (short-form = voice-turn length).
-        stt.append({"provider": "google", "id": "latest_short", "label": "latest_short"})
-        stt.append({"provider": "google", "id": "latest_long", "label": "latest_long"})
+        # Google's speech-to-text aliases (short-form = voice-turn length) —
+        # only when real Google credentials exist (no API-key auth for STT).
+        if google_stt_available():
+            stt.append({"provider": "google", "id": "latest_short", "label": "latest_short"})
+            stt.append({"provider": "google", "id": "latest_long", "label": "latest_long"})
         # The list endpoint doesn't report output modalities (always None),
         # so classify from id/displayName. Capability slots (STT/TTS) get
         # their models first, whatever their preview/version status; the

@@ -1,0 +1,17 @@
+[
+  {
+    "file": "bro.md",
+    "name": "Bro",
+    "description": "A colleague to chat with \u2014 casual, real, work-friend energy."
+  },
+  {
+    "file": "default.md",
+    "name": "Son",
+    "description": "The default assistant \u2014 general help and conversation."
+  },
+  {
+    "file": "study-buddy.md",
+    "name": "Study Buddy",
+    "description": "Quizzes you on any topic, one question at a time."
+  }
+]

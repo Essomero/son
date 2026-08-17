@@ -18,8 +18,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 INSTRUCTIONS_DIR = ROOT / "instructions"
-# Written into client/dist so the served page (client/dist) is self-contained.
-OUT = ROOT / "client" / "dist" / "roles.json"
+# Written into client/public so the Vite build copies it into dist/ (and the
+# dev server serves it) — the served page is self-contained in client/dist.
+OUT = ROOT / "client" / "public" / "roles.json"
 
 
 def parse_frontmatter(text: str) -> tuple[dict, str]:

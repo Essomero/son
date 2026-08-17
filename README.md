@@ -12,7 +12,7 @@ A personal real-time voice agent. Pick a role (instruction file), talk to it in 
 | Voice pipeline | Pipecat 1.7 (BSD-2) | Local |
 | Turn detection | Silero VAD | Local |
 
-Every capability is swappable from the **⚙ settings panel**: add a DeepSeek, Gemini, or OpenRouter key and those providers appear in the picker too. Only your speech audio and text go to the provider you pick; the default voice is synthesized on your machine.
+Every capability is swappable from the **⚙ settings panel**: add a DeepSeek, Cerebras, Gemini, or OpenRouter key and those providers appear in the picker too. Only your speech audio and text go to the provider you pick; the default voice is synthesized on your machine.
 
 ## Prerequisites
 
@@ -72,6 +72,7 @@ That's it — the role shows up in the picker on reload.
 | Env var | Default | Purpose |
 |---|---|---|
 | `GROQ_API_KEY` | — | Required. Free at console.groq.com |
+| `CEREBRAS_API_KEY` | — | Optional. Enables Cerebras brains (`gpt-oss-120b`, `zai-glm-4.7`) — cloud.cerebras.ai |
 | `DEEPSEEK_API_KEY` | — | Optional. Enables DeepSeek brains (e.g. `deepseek-v4-flash`) |
 | `GEMINI_API_KEY` | — | Optional. Enables Gemini brains, Google speech-to-text, and Gemini voices |
 | `OPENROUTER_API_KEY` | — | Optional. Enables the curated OpenRouter brains (Claude, GPT, Grok…) |
@@ -86,7 +87,7 @@ A provider is enabled only when its API key is present. The settings panel (⚙ 
 
 Click ⚙ to pick, per session:
 
-- **Brain** — the reasoning/chat model (Groq, DeepSeek, Gemini, or OpenRouter).
+- **Brain** — the reasoning/chat model (Groq, Cerebras, DeepSeek, Gemini, or OpenRouter).
 - **Speech-to-text** — how your voice becomes text (Groq Whisper or Google).
 - **Voice** — the voice that reads replies (local Kokoro, or Groq/Gemini cloud TTS).
 

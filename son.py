@@ -30,6 +30,7 @@ from pipecat.processors.aggregators.llm_response_universal import (
     LLMUserAggregatorParams,
 )
 from pipecat.runner.types import RunnerArguments
+from pipecat.services.cerebras.llm import CerebrasLLMService
 from pipecat.services.deepseek.llm import DeepSeekLLMService
 from pipecat.services.google.llm import GoogleLLMService
 from pipecat.services.google.stt import GoogleSTTService
@@ -72,6 +73,7 @@ GROQ_REASONING_EFFORT = os.getenv("GROQ_REASONING_EFFORT", "medium")
 
 PROVIDER_ENV_KEYS = {
     "groq": "GROQ_API_KEY",
+    "cerebras": "CEREBRAS_API_KEY",
     "deepseek": "DEEPSEEK_API_KEY",
     "gemini": "GEMINI_API_KEY",
     "openrouter": "OPENROUTER_API_KEY",
@@ -109,6 +111,7 @@ def google_stt_available() -> bool:
 # Fallbacks for manual /start calls that don't name a model.
 DEFAULT_MODELS = {
     "groq": GROQ_MODEL,
+    "cerebras": "gpt-oss-120b",
     "deepseek": "deepseek-v4-flash",
     "gemini": "gemini-flash-latest",
     "openrouter": "anthropic/claude-sonnet-4.6",
@@ -152,6 +155,11 @@ def build_llm_service(provider: str, model: str, instruction: str):
                 system_instruction=instruction,
                 extra={"reasoning_effort": GROQ_REASONING_EFFORT},
             ),
+        )
+    if provider == "cerebras":
+        return CerebrasLLMService(
+            api_key=os.getenv("CEREBRAS_API_KEY"),
+            settings=CerebrasLLMService.Settings(model=model, system_instruction=instruction),
         )
     if provider == "deepseek":
         return DeepSeekLLMService(
@@ -375,6 +383,18 @@ def _fetch_models() -> dict:
     llm: list[dict] = []
     stt: list[dict] = []
     tts: list[dict] = []
+
+    if "cerebras" in providers:
+        # Cerebras is chat-only (no STT/TTS). /v1/models is OpenAI-shaped and
+        # lists what's live — it rotated llama3.1-8b and qwen-3-235b out in
+        # May 2026 (they now 400 with deprecation errors), so show the roster
+        # as-is and let the client surface any residual 400s verbatim.
+        data = _provider_get("https://api.cerebras.ai/v1/models", "CEREBRAS_API_KEY")
+        for m in data.get("data", []):
+            mid = m["id"]
+            if "embed" in mid.lower():
+                continue
+            llm.append({"provider": "cerebras", "id": mid, "label": mid})
 
     if "deepseek" in providers:
         data = _provider_get("https://api.deepseek.com/v1/models", "DEEPSEEK_API_KEY")

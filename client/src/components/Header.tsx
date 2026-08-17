@@ -1,10 +1,10 @@
 /**
  * Top bar: wordmark, live status, role chip (re-pickable when not in a
- * session), end-session and settings actions.
+ * session), and the session actions — new session, panel toggle, end, settings.
  */
 
 import { useState } from "react";
-import { ChevronDown, PhoneOff, Settings2 } from "lucide-react";
+import { ChevronDown, PanelLeft, PhoneOff, Plus, Settings2 } from "lucide-react";
 
 import type { Phase, Role } from "../lib/types";
 import { RoleAvatar } from "./Avatar";
@@ -15,7 +15,10 @@ export function Header({
   speaking,
   role,
   roles,
+  panelOpen,
   onSelectRole,
+  onNewSession,
+  onTogglePanel,
   onEndSession,
   onOpenSettings,
 }: {
@@ -24,7 +27,10 @@ export function Header({
   speaking: boolean;
   role: Role | null;
   roles: Role[];
+  panelOpen: boolean;
   onSelectRole: (r: Role) => void;
+  onNewSession: () => void;
+  onTogglePanel: () => void;
   onEndSession: () => void;
   onOpenSettings: () => void;
 }) {
@@ -80,12 +86,34 @@ export function Header({
             )}
           </div>
         )}
+        {(phase === "connected" || phase === "disconnected") && (
+          <button
+            type="button"
+            className="icon-btn"
+            onClick={onNewSession}
+            title="New session"
+            aria-label="New session"
+          >
+            <Plus size={16} />
+            <span className="icon-btn-label">New</span>
+          </button>
+        )}
         {phase === "connected" && (
           <button type="button" className="icon-btn" onClick={onEndSession} title="End session" aria-label="End session">
             <PhoneOff size={16} />
             <span className="icon-btn-label">End</span>
           </button>
         )}
+        <button
+          type="button"
+          className={`icon-btn${panelOpen ? " active" : ""}`}
+          onClick={onTogglePanel}
+          title={panelOpen ? "Hide sessions" : "Show sessions"}
+          aria-label={panelOpen ? "Hide sessions" : "Show sessions"}
+          aria-pressed={panelOpen}
+        >
+          <PanelLeft size={16} />
+        </button>
         <button
           type="button"
           className="icon-btn"

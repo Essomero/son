@@ -1,0 +1,117 @@
+/**
+ * Left rail of past sessions. Click a row to resume it (role restored, stored
+ * transcript replayed, brain seeded); double-click the name to rename; hover
+ * to delete. The panel collapses to zero width from the header toggle; the
+ * inner div keeps its width so the rows don't reflow mid-transition.
+ */
+
+import { useState } from "react";
+import { Trash2 } from "lucide-react";
+
+import type { SessionMeta } from "../lib/types";
+
+function relativeTime(iso: string): string {
+  const d = new Date(iso); // server writes local ISO, no tz — parses as local
+  if (Number.isNaN(d.getTime())) return "";
+  const now = new Date();
+  if (d.toDateString() === now.toDateString())
+    return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  if (d.getFullYear() === now.getFullYear())
+    return d.toLocaleDateString([], { day: "numeric", month: "short" });
+  return d.toLocaleDateString([], { day: "numeric", month: "short", year: "numeric" });
+}
+
+export function SessionsPanel({
+  open,
+  sessions,
+  activeId,
+  onResume,
+  onRename,
+  onDelete,
+}: {
+  open: boolean;
+  sessions: SessionMeta[];
+  activeId: string | null;
+  onResume: (s: SessionMeta) => void;
+  onRename: (id: string, name: string) => void;
+  onDelete: (id: string) => void;
+}) {
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [draft, setDraft] = useState("");
+
+  const startEdit = (s: SessionMeta) => {
+    setEditingId(s.id);
+    setDraft(s.name);
+  };
+  const commitEdit = () => {
+    if (editingId) {
+      const name = draft.trim();
+      if (name && name !== sessions.find((m) => m.id === editingId)?.name) onRename(editingId, name);
+      setEditingId(null);
+    }
+  };
+  const cancelEdit = () => setEditingId(null);
+
+  return (
+    <aside className={`sessions-panel${open ? "" : " closed"}`} aria-label="Sessions">
+      <div className="sessions-panel-inner">
+        <h2 className="sessions-title">Sessions</h2>
+        {sessions.length === 0 ? (
+          <p className="sessions-empty">
+            No sessions yet. Start talking — conversations collect here and can be resumed
+            anytime.
+          </p>
+        ) : (
+          <ul className="sessions-list">
+            {sessions.map((s) => {
+              const active = s.id === activeId;
+              const editing = editingId === s.id;
+              return (
+                <li key={s.id} className={`sess-row${active ? " active" : ""}`}>
+                  {editing ? (
+                    <input
+                      className="sess-rename"
+                      value={draft}
+                      autoFocus
+                      onChange={(e) => setDraft(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") commitEdit();
+                        if (e.key === "Escape") cancelEdit();
+                      }}
+                      onBlur={commitEdit}
+                      aria-label="Session name"
+                    />
+                  ) : (
+                    <button
+                      type="button"
+                      className="sess-main"
+                      onClick={() => onResume(s)}
+                      onDoubleClick={() => startEdit(s)}
+                      title={active ? "This session is live" : "Resume this session"}
+                    >
+                      <span className="sess-name">{s.name}</span>
+                      <span className="sess-meta">
+                        {s.message_count} {s.message_count === 1 ? "msg" : "msgs"} ·{" "}
+                        {relativeTime(s.updated_at)}
+                      </span>
+                      {s.preview && <span className="sess-preview">{s.preview}</span>}
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    className="sess-del"
+                    onClick={() => onDelete(s.id)}
+                    title="Delete session"
+                    aria-label={`Delete ${s.name}`}
+                  >
+                    <Trash2 size={13} aria-hidden />
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </div>
+    </aside>
+  );
+}

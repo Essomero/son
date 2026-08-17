@@ -31,6 +31,18 @@ export type Models = Record<Capability, ModelOption[]>;
 
 export type Phase = "idle" | "ready" | "connecting" | "connected" | "disconnected";
 
+/** One row of the bot's /sessions list. */
+export interface SessionMeta {
+  id: string;
+  name: string;
+  role_file: string;
+  role_name: string | null;
+  created_at: string;
+  updated_at: string;
+  message_count: number;
+  preview: string | null;
+}
+
 /** A transcript row. Mirrors the vanilla client's DOM-row semantics: */
 export interface Msg {
   id: string;

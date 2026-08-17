@@ -12,7 +12,7 @@ A personal real-time voice agent. Pick a role (instruction file), talk to it in 
 | Voice pipeline | Pipecat 1.7 (BSD-2) | Local |
 | Turn detection | Silero VAD | Local |
 
-Every capability is swappable from the **⚙ settings panel**: add a DeepSeek, Cerebras, Gemini, or OpenRouter key and those providers appear in the picker too. Only your speech audio and text go to the provider you pick; the default voice is synthesized on your machine.
+Every capability is swappable from the **⚙ settings panel**: add a DeepSeek, Cerebras, Gemini, or OpenRouter key and those providers appear in the picker too. Only your speech audio and text go to the provider you pick; the default voice is synthesized on your machine. Conversations persist in `son.db` and can be resumed from the sessions rail (see below).
 
 ## Prerequisites
 
@@ -42,8 +42,8 @@ uv run scripts/gen_roles.py
 # Terminal 1 — the agent server (Pipecat dev runner)
 uv run python son.py
 
-# Terminal 2 — the web page (the built bundle)
-cd client/dist && python3 -m http.server 8000
+# Terminal 2 — the web page (builds and serves the bundle on :8000)
+cd client && npm start
 ```
 
 Open <http://localhost:8000>, pick a role, hit **Start talking**, and talk. (First launch downloads the Kokoro model files — ~354MB one-time, cached after that.)
@@ -112,4 +112,8 @@ Pipecat runner (:7860) — Silero VAD turn detection
    └─ reply text → Kokoro (local ONNX) → audio back to browser
 ```
 
-The chosen role's instruction file is passed from the web page in the RTVI `/start` request and becomes the LLM's system instruction for that session. Sessions are ephemeral — no memory persists between them.
+The chosen role's instruction file is passed from the web page in the RTVI `/start` request and becomes the LLM's system instruction for that session.
+
+## Sessions
+
+Every conversation is a session that lives in `son.db` (SQLite, next to `son.py`) — names, timestamps, and the full transcript, written live as you talk. The left rail lists past sessions: click one to **resume it** (the transcript replays and the brain gets the full history back, so it remembers what you said — try ending, reloading, then asking "what did I just say?"). Double-click a name to rename, hover for delete, and use **New** in the header to start a clean conversation. The rail collapses from the header toggle.

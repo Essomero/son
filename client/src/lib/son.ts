@@ -8,11 +8,13 @@ import type { Msg } from "./types";
 
 const params = new URLSearchParams(location.search);
 export const BOT_ENDPOINT = params.get("endpoint") || "http://localhost:7860/start";
-export const MODELS_URL = BOT_ENDPOINT.replace(/\/start$/, "") + "/models";
+const BOT_BASE = BOT_ENDPOINT.replace(/\/start$/, "");
+export const MODELS_URL = BOT_BASE + "/models";
+export const SESSIONS_URL = BOT_BASE + "/sessions";
 export const DEBUG = params.has("debug");
 
 let uidCounter = 0;
-function uid(): string {
+export function uid(): string {
   uidCounter += 1;
   return `m${Date.now().toString(36)}-${uidCounter}`;
 }
@@ -73,10 +75,13 @@ export function mergeUserText(msgs: Msg[], text: string, final: boolean): Msg[] 
  *   - text extends the current text (cumulative growth): replace
  *   - otherwise it's a genuinely new segment: append
  */
-export function mergeBotText(msgs: Msg[], text: string): Msg[] {
+export function mergeBotText(msgs: Msg[], text: string, fresh = false): Msg[] {
   if (!text) return msgs;
   const last = msgs[msgs.length - 1];
-  if (!last || last.role !== "bot") {
+  // fresh: a connection boundary — the bot speaks without an intervening
+  // user row (the greeting, a resumed session's continuation, "Talk again").
+  // Those must open their own bubble, not continue the last stored one.
+  if (fresh || !last || last.role !== "bot") {
     return [...msgs, { id: uid(), role: "bot", text, final: true, base: "" }];
   }
   const cur = last.text;

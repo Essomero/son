@@ -20,7 +20,7 @@ A personal real-time voice agent. You pick a "role" (a markdown instruction file
                                                   └──────────────────────────────────────────┘
 ```
 
-- **Server**: Pipecat's dev runner (`pipecat.runner.run.main()`), one FastAPI app on `:7860` with `/start` + `/sessions/{id}/api/offer`, plus a custom `/models` route mounted in `__main__` (cached 60s; key-gated roster per capability — the readme project's `api/models.js` pattern). The bot function `bot(runner_args)` is called once per session; `runner_args.body.custom_data` carries `instruction` + the per-capability picks `llm` / `stt` / `tts` (each `{provider, id}`).
+- **Server**: Pipecat's dev runner (`pipecat.runner.run.main()`), one FastAPI app on `:7860` with `/start` + `/sessions/{id}/api/offer`, plus custom `/models` (cached 60s; key-gated roster per capability — the readme project's `api/models.js` pattern) and `/sessions` (list/get/rename/delete) routes mounted in `__main__`. The bot function `bot(runner_args)` is called once per session; `runner_args.body.custom_data` carries `instruction`, `session_id`, and the per-capability picks `llm` / `stt` / `tts` (each `{provider, id}`).
 - **Client**: React 19 + Vite 7 single-page app (`client/src/`, built to `client/dist/`, served with `python -m http.server`; `npm run dev` for hot reload). All session state lives in `useSonSession` — `startBotAndConnect({endpoint, requestData: {transport: "webrtc", body: {custom_data}}}})`, with the transport deriving the offer URL from the endpoint automatically. Transcript is markdown-rendered (react-markdown + remark-gfm); voice is visualized through a shared Web Audio analyser (`useAudioAnalyzer` — the mic button's ring and the speaking bot message's ring subscribe to the same rAF loop, no per-frame React state). All pickers are custom components (`Picker.tsx`: searchable list for brains/STT, avatar cards for voices) — zero native `<select>`s. The ⚙ panel fetches `/models`, persists choices in `localStorage` (`son.settings`), and sends them on every connect.
 - **Provider gating**: a provider only appears when its key is in `.env` (`available_providers()` checks `GROQ_API_KEY` / `DEEPSEEK_API_KEY` / `GEMINI_API_KEY` / `OPENROUTER_API_KEY`). `run_bot` validates each pick, falls back to defaults (groq whisper-large-v3-turbo / groq gpt-oss-120b / kokoro af_heart) on unknown or keyless providers, and logs one line: `Session: role=… llm=… stt=… tts=…`.
 - **WebRTC** means the browser owns echo cancellation — no client-side audio processing needed.
@@ -34,7 +34,7 @@ A personal real-time voice agent. You pick a "role" (a markdown instruction file
 | STT+LLM in cloud | Groq, swappable | ~Free at personal scale; far faster than local models on this M1 Pro (local LLM was the latency bottleneck). Trade-off: audio leaves the machine. DeepSeek/Gemini/OpenRouter unlock in the ⚙ panel as keys are added — gating by key presence (readme project pattern). |
 | TTS local | Kokoro-82M | Free, CPU-real-time, 50+ voices; quality per parameter is best-in-class. Trade-off: ~354MB model cache (kokoro-v1.0.onnx 325MB + voices 28MB), slow first-run download. |
 | Transport | SmallWebRTC (browser) | No server-side audio infra; browser handles echo cancellation. |
-| Memory | Session-only | System prompt + in-session conversation only. Logs/transcripts do not persist. |
+| Memory | Sessions in SQLite | Transcripts persist (`son.db`) and resume with the full context seeded back into the brain. Ephemeral only when the client sends no `session_id`. |
 | Roles | Folder + frontmatter | New role = new `.md` file + `gen_roles.py`. No code. |
 
 ## Cost sheet (per 2026-08 research)
@@ -54,13 +54,23 @@ Rough ceiling for heavy daily personal use: **$0–3/month**, vs ~$1.40/hr of pu
 - Levers if slower: Silero VAD thresholds in `LLMUserAggregatorParams` (faster endpointing), `whisper-large-v3` → `whisper-3`-class smaller models, or moving TTS to Groq's TTS API (removes local synth but adds a cloud hop).
 - Barge-in comes from the VAD + aggregator; if the agent talks over you, tune Silero params (see pipecat docs on `SileroVADAnalyzer` params: activation/silence thresholds).
 
+## Sessions (SQLite persistence + resume)
+
+`son.db` (next to `son.py`, WAL mode) holds `sessions` (id, name, role_file, role_name, timestamps, message_count, preview) and `messages` (role user/assistant, text, created_at, FK cascade).
+
+- **Capture is write-through, zero pipeline changes**: `sessions_store.PersistedContext(LLMContext)` overrides `add_message`/`add_messages`/`set_messages`. The context aggregators commit every finalized turn through those (`push_aggregation` for speech at `llm_response_universal.py:838`, `_handle_llm_messages_append` for typed send-text at `:1115`, the assistant commit at `:1601`), so one DB row per turn lands live — no final dump needed after disconnect. `set_messages` is not persisted (the pipeline never replaces wholesale in this app). Only `user`/`assistant` with string content persist; developer messages (greeting, resume note) never do, so they can't replay as transcript.
+- **The client owns the session id**: `runner_args.session_id` is a fresh server uuid per `/start` (`runner/run.py:704`), useless for resuming. The client sends `crypto.randomUUID()` in `custom_data.session_id`; `run_bot` creates the row if unknown, or seeds `PersistedContext(messages=[stored…])` and swaps the greeting for a developer note — *"The user is continuing this conversation — do not re-introduce yourself."* (its reply audibly confirms the resume and is a separate transcript row). No `session_id` → fully ephemeral, pre-sessions behavior.
+- **REST**: `GET /sessions` (updated_at DESC), `GET /sessions/{id}` (meta + messages), `PATCH {name}` (400 on empty), `DELETE` (404 if absent). sqlite3 stdlib, one connection per operation (async loop + FastAPI threadpool), `PRAGMA busy_timeout=3000`, foreign_keys ON.
+- **Client**: `useSessions` refetches on every phase change (connect creates the row, disconnect bumps updated_at → reorder) and patches the active row's preview/count live; `SessionsPanel` = resume (click), rename (double-click → inline input), delete (hover trash). `newSession()` disconnects, drops the transcript, mints a fresh id. Panel open-state persists in `localStorage` (`son.panel`).
+- **Gotcha — bot rows at connection boundaries**: on resume the bot speaks without an intervening user row, so `mergeBotText` would fold its reply into the last stored bubble. `connect()` sets a `freshBotRowRef` flag; the first `onBotOutput` opens a new row (covers greeting, resume continuation, "Talk again"). Within one reply, subsequent segments merge as before.
+
 ## Verify
 
 Runbook for a live check (needs the real mic — do this with the user):
 
 1. `uv run python son.py` → `Uvicorn running on http://localhost:7860`; no "disabled" transport warnings.
 2. Sanity-check the roster: `curl localhost:7860/models` → llm/stt/tts lists per provider, key-gated.
-3. Custom UI: `cd client/dist && python3 -m http.server 8000` → `http://localhost:8000` → open ⚙ → pick a Brain (e.g. `deepseek-v4-flash` if that key is set — the search box filters) → pick a role card → Start talking → talk → hear the voice. (This Pipecat runner version does not mount a prebuilt UI at `/client` — the custom page is the UI.)
+3. Custom UI: `cd client && npm start` → `http://localhost:8000` → open ⚙ → pick a Brain (e.g. `deepseek-v4-flash` if that key is set — the search box filters) → pick a role card → Start talking → talk → hear the voice. (This Pipecat runner version does not mount a prebuilt UI at `/client` — the custom page is the UI.)
 4. Watch the bot console: the `Session: role=… llm=… stt=… tts=…` line confirms the picks reached the server; usage metrics print per session (`enable_usage_metrics`).
 5. Check the provider consoles for request counts under free limits.
 
@@ -83,7 +93,7 @@ Gotchas found during verification:
 - **Mute is a client-side trap**: client-js `enableMic()` returns nothing and the small-webrtc-transport's live-mic MediaManager doesn't implement it — the naive `const muted = await enableMic(...)` toggle is inverted (first click calls `enableMic(true)`, a no-op) AND one-way (undefined return keeps the state stuck). Mute at the track level (`localMicTrack.enabled = false` — the encoder then emits silence, so server VAD/STT hears nothing) and treat `enableMic` as best-effort signaling wrapped in try/catch. The local mic track arrives in `onTrackStarted` with a participant arg.
 - **Client default ≠ first roster option**: the ⚙ pickers must land on the server's defaults (groq gpt-oss-120b / whisper-large-v3-turbo / kokoro af_heart), not the roster's first item — roster order is arbitrary API order (whisper-large-v3 sorts before `-turbo`). Resolution is `resolveChoice(cap, roster, saved)`: saved → server default → first; this bug hit the React rewrite as the transcript avatars showing the fallback 🎙️ glyph because `tts[0]` was a cloud voice.
 - **client-js `Serializable` rejects interfaces and `undefined`**: `custom_data` is typed against a non-exported `Serializable` that requires an index signature — TS interfaces (`Choice`) don't satisfy it, and optional fields (`id?: string`) break it too. Pass inline object literals (`{provider, id}`), and send absent picks as `null` (which IS `Serializable`; the server treats it as unset via `or {}`).
-- **Bot transcript merge rules (streaming + session reconnect)**: `mergeBotText` keeps a row when the new text is a prefix/suffix of it (duplicate segment), replaces it when it starts with the current text (cumulative growth), appends a new row otherwise. Bot rows merge into the LAST bot row only — a late-arriving greeting on reconnect (the bot's greeting pipeline can outlive the connect handshake) lands as its own row after the previous session's text, it does not clobber it.
+- **Bot transcript merge rules (streaming + session reconnect)**: `mergeBotText` keeps a row when the new text is a prefix/suffix of it (duplicate segment), replaces it when it starts with the current text (cumulative growth), appends a new row otherwise. Bot rows merge into the LAST bot row only — a late-arriving greeting on reconnect (the bot's greeting pipeline can outlive the connect handshake) lands as its own row after the previous session's text, it does not clobber it. `mergeBotText(msgs, text, fresh)` forces a new row at connection boundaries (see Sessions above) — without it, a resumed session's first reply silently merges into the last stored bubble.
 - **First-run model download is 354MB** (325MB onnx + 28MB voices) at GitHub speeds (~1MB/s here); a fresh browser connection can time out and reconnect during it — it recovered cleanly. Second run is instant.
 - **Runner has no `/client` prebuilt UI** in this version (404) — the custom page is the UI.
 - `roles.json` is generated into `client/public/` and the Vite build copies it to `client/dist/`; after adding roles re-run `uv run scripts/gen_roles.py && cd client && npm run build`. The client fetches it with `cache: "no-store"` — plain `python -m http.server` sends no cache headers, so browsers heuristically cache it and a new role otherwise never shows up on reload.
@@ -98,7 +108,7 @@ Loose ends:
 - **New role**: add `instructions/<name>.md` (+ frontmatter) → `uv run scripts/gen_roles.py` → refresh picker.
 - **Different LLM**: already built in — add a provider key (or a `PROVIDER_ENV_KEYS` entry + a `build_llm_service` branch) and it shows up in the ⚙ panel. Same `system_instruction` pattern for any pipecat LLM service.
 - **New voice**: add to `KOKORO_VOICES` (or any TTS provider's roster) — or just pick one in ⚙.
-- **Record sessions**: pipe `BotTranscript`/`UserTranscript` events from the client to a file (client-side) — no server change.
+- **Record sessions**: done — every turn lands in `son.db` live (see Sessions above).
 - **Tool use**: `GroqLLMService` supports pipecat tool calling (function schemas) — e.g., a "fetch the news" tool later.
 
 ## Share-later roadmap (v2, not started)
@@ -107,11 +117,11 @@ Loose ends:
 2. **Multi-user roles** — per-role public pages; roles.json already generic.
 3. **Deployment** — Docker the bot (`pipecat-ai` has container docs); host the client on any static host; CORS is already `*` by default.
 4. **Gemini Live upgrade path** — if quality/understanding needs a jump later: pipecat has `GeminiLiveLLMService` (speech-to-speech, built-in barge-in); the role/instruction mechanism ports unchanged (it takes `system_instruction` in settings).
-5. **Persistent memory** — pipecat has official `mem0` RAG example if sessions should remember.
+5. **Cross-session memory** — sessions now recall their own transcripts; the next step would be memory that spans sessions (pipecat has an official `mem0` RAG example).
 
 ## How to run (reminder)
 
 ```bash
 uv run python son.py                                # terminal 1 — bot :7860
-cd client/dist && python3 -m http.server 8000       # terminal 2 — page
+cd client && npm start                              # terminal 2 — page :8000
 ```

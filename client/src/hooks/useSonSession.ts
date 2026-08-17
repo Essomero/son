@@ -14,9 +14,30 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { PipecatClient, type RTVIMessage } from "@pipecat-ai/client-js";
 import { SmallWebRTCTransport } from "@pipecat-ai/small-webrtc-transport";
 
-import type { Choice, Msg, Models, Phase, Role, Settings } from "../lib/types";
-import { mergeBotText, mergeUserText, BOT_ENDPOINT, MODELS_URL, DEBUG, errorMessage } from "../lib/son";
+import type { Choice, Msg, Models, Phase, Role, SessionMeta, Settings } from "../lib/types";
+import {
+  mergeBotText,
+  mergeUserText,
+  BOT_ENDPOINT,
+  MODELS_URL,
+  SESSIONS_URL,
+  DEBUG,
+  uid,
+  errorMessage,
+} from "../lib/son";
 import { FALLBACK_MODELS, readSettings, saveSettings } from "../lib/settings";
+
+/** Fresh session id. uuid from crypto when available (localhost is a secure
+ *  context); a timestamp fallback for non-secure contexts. The id is sent in
+ *  /start custom_data so the server persists the transcript under it. */
+function newId(): string {
+  try {
+    if (typeof crypto !== "undefined" && crypto.randomUUID) return crypto.randomUUID();
+  } catch {
+    /* non-secure context — fall back */
+  }
+  return `s-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
 
 async function loadRoles(): Promise<Role[]> {
   try {
@@ -30,7 +51,7 @@ async function loadRoles(): Promise<Role[]> {
   }
 }
 
-async function loadModels(): Promise<Models> {
+async function loadModels(): Promise<Models | null> {
   try {
     const res = await fetch(MODELS_URL, { signal: AbortSignal.timeout(6000) });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -55,6 +76,7 @@ export function useSonSession() {
   const [status, setStatus] = useState("Pick a role to start talking.");
   const [micTrack, setMicTrack] = useState<MediaStreamTrack | null>(null);
   const [activeBotId, setActiveBotId] = useState<string | null>(null);
+  const [sessionId, setSessionId] = useState<string>(() => newId());
 
   const clientRef = useRef<PipecatClient | null>(null);
   const botAudioRef = useRef<HTMLAudioElement | null>(null);
@@ -62,6 +84,13 @@ export function useSonSession() {
   const micTrackRef = useRef<MediaStreamTrack | null>(null);
   const messagesRef = useRef<Msg[]>([]);
   const speakingHintRef = useRef<number | null>(null);
+  // sessionId read at connect() time; resumeSession sets it directly (a state
+  // update wouldn't be visible to connect in the same tick).
+  const sessionIdRef = useRef(sessionId);
+  // Set on every connect: the bot's first utterance opens a fresh row even
+  // when the transcript already ends with a bot row (greeting / resume
+  // continuation / "Talk again"). Cleared by the first botOutput.
+  const freshBotRowRef = useRef(false);
 
   useEffect(() => {
     void loadRoles().then(setRoles);
@@ -76,6 +105,9 @@ export function useSonSession() {
   useEffect(() => {
     micTrackRef.current = micTrack;
   }, [micTrack]);
+  useEffect(() => {
+    sessionIdRef.current = sessionId;
+  }, [sessionId]);
 
   // Autoplay-policy insurance: if the audio element's first play() was
   // blocked (no user gesture yet), retry on the next click on the page.
@@ -98,8 +130,9 @@ export function useSonSession() {
       settings,
       messages,
       muted,
+      sessionId: sessionIdRef.current,
     };
-  }, [phase, role, settings, messages, muted]);
+  }, [phase, role, settings, messages, muted, sessionId]);
 
   const stopBotAudio = useCallback(() => {
     const el = botAudioRef.current;
@@ -134,96 +167,111 @@ export function useSonSession() {
     setStatus(`Ready to talk as “${r.name}”`);
   }, []);
 
-  const connect = useCallback(async () => {
-    if (!role || phase === "connected" || phase === "connecting") return;
-    setPhase("connecting");
-    setStatus("Connecting…");
+  /** opts overrides are for resumeSession: it picks the role (which may
+   *  still be loading), the persisted session id, and must connect even if
+   *  the current phase already looks connected/disconnected mid-switch. */
+  const connect = useCallback(
+    async (opts?: { role?: Role; sessionId?: string; force?: boolean }) => {
+      const roleOverride = opts?.role ?? null;
+      const r = roleOverride ?? role;
+      if (!r) return;
+      if (!opts?.force && (phase === "connected" || phase === "connecting")) return;
+      if (opts?.sessionId) sessionIdRef.current = opts.sessionId;
+      setSessionId(sessionIdRef.current);
+      setPhase("connecting");
+      setStatus("Connecting…");
+      freshBotRowRef.current = true;
 
-    const client = new PipecatClient({
-      transport: new SmallWebRTCTransport(),
-      enableMic: true,
-      enableCam: false,
-      callbacks: {
-        onConnected: () => {
-          setPhase("connected");
-          setStatus("Connected — you can talk.");
-        },
-        onDisconnected: () => {
-          setPhase("disconnected");
-          setStatus("Disconnected.");
-          stopBotAudio();
-          setMicTrack(null); // fresh session = fresh mic state
-          setMuted(false);
-          mutedRef.current = false;
-          setActiveBotId(null);
-          setSpeaking(false);
-        },
-        onBotReady: () => setStatus("Connected — you can talk."),
-        onError: (err: RTVIMessage) => {
-          console.error("[Son] connect error", err);
-          setStatus(`Error: ${errorMessage(err)}`);
-        },
-        onTrackStarted: (track: MediaStreamTrack, participant?: unknown) => {
-          // The LOCAL mic track also arrives here (with a participant arg) —
-          // keep it so Mute can disable it at the track level; it never
-          // belongs in the speakers.
-          if (participant) {
-            if (track?.kind === "audio") setMicTrack(track);
-            return;
-          }
-          if (track?.kind !== "audio" || botAudioRef.current?.srcObject) return;
-          console.log("[Son] bot audio track received");
-          const el = botAudioRef.current;
-          if (!el) return;
-          el.srcObject = new MediaStream([track]);
-          void el.play().catch((e) => console.warn("[Son] audio play blocked:", e));
-        },
-        onTrackStopped: () => stopBotAudio(),
-        onUserTranscript: (data: { text?: string; final?: boolean }) => {
-          if (!data?.text) return;
-          const next = mergeUserText(messagesRef.current, data.text, !!data.final);
-          messagesRef.current = next;
-          setMessages(next);
-        },
-        onBotOutput: (data: { text?: string }) => {
-          if (!data?.text) return;
-          const next = mergeBotText(messagesRef.current, data.text);
-          messagesRef.current = next;
-          setMessages(next);
-          const last = next[next.length - 1];
-          if (last?.role === "bot") setActiveBotId(last.id);
-          hintSpeaking();
-        },
-      },
-    });
-
-    clientRef.current = client;
-    try {
-      // Inline literals: client-js's Serializable requires an index
-      // signature, which TS interfaces (Choice) don't satisfy. Absent picks
-      // go as null (Serializable; the server treats them as unset).
-      const toPlain = (c?: Choice) => (c ? { provider: c.provider, id: c.id } : null);
-      await client.startBotAndConnect({
-        endpoint: BOT_ENDPOINT,
-        requestData: {
-          transport: "webrtc",
-          body: {
-            custom_data: {
-              instruction: role.file,
-              llm: toPlain(settings.llm),
-              stt: toPlain(settings.stt),
-              tts: toPlain(settings.tts),
-            },
+      const client = new PipecatClient({
+        transport: new SmallWebRTCTransport(),
+        enableMic: true,
+        enableCam: false,
+        callbacks: {
+          onConnected: () => {
+            setPhase("connected");
+            setStatus("Connected — you can talk.");
+          },
+          onDisconnected: () => {
+            setPhase("disconnected");
+            setStatus("Disconnected.");
+            stopBotAudio();
+            setMicTrack(null); // fresh session = fresh mic state
+            setMuted(false);
+            mutedRef.current = false;
+            setActiveBotId(null);
+            setSpeaking(false);
+          },
+          onBotReady: () => setStatus("Connected — you can talk."),
+          onError: (err: RTVIMessage) => {
+            console.error("[Son] connect error", err);
+            setStatus(`Error: ${errorMessage(err)}`);
+          },
+          onTrackStarted: (track: MediaStreamTrack, participant?: unknown) => {
+            // The LOCAL mic track also arrives here (with a participant arg) —
+            // keep it so Mute can disable it at the track level; it never
+            // belongs in the speakers.
+            if (participant) {
+              if (track?.kind === "audio") setMicTrack(track);
+              return;
+            }
+            if (track?.kind !== "audio" || botAudioRef.current?.srcObject) return;
+            console.log("[Son] bot audio track received");
+            const el = botAudioRef.current;
+            if (!el) return;
+            el.srcObject = new MediaStream([track]);
+            void el.play().catch((e) => console.warn("[Son] audio play blocked:", e));
+          },
+          onTrackStopped: () => stopBotAudio(),
+          onUserTranscript: (data: { text?: string; final?: boolean }) => {
+            if (!data?.text) return;
+            const next = mergeUserText(messagesRef.current, data.text, !!data.final);
+            messagesRef.current = next;
+            setMessages(next);
+          },
+          onBotOutput: (data: { text?: string }) => {
+            if (!data?.text) return;
+            const fresh = freshBotRowRef.current;
+            freshBotRowRef.current = false;
+            const next = mergeBotText(messagesRef.current, data.text, fresh);
+            messagesRef.current = next;
+            setMessages(next);
+            const last = next[next.length - 1];
+            if (last?.role === "bot") setActiveBotId(last.id);
+            hintSpeaking();
           },
         },
       });
-    } catch (err) {
-      console.error("[Son] connect rejected", err);
-      clientRef.current = null;
-      setPhase("ready");
-      setStatus(`Connection failed: ${errorMessage(err)}`);
-    }
-  }, [role, phase, settings, stopBotAudio, hintSpeaking]);
+
+      clientRef.current = client;
+      try {
+        // Inline literals: client-js's Serializable requires an index
+        // signature, which TS interfaces (Choice) don't satisfy. Absent picks
+        // go as null (Serializable; the server treats them as unset).
+        const toPlain = (c?: Choice) => (c ? { provider: c.provider, id: c.id } : null);
+        await client.startBotAndConnect({
+          endpoint: BOT_ENDPOINT,
+          requestData: {
+            transport: "webrtc",
+            body: {
+              custom_data: {
+                instruction: r.file,
+                session_id: sessionIdRef.current,
+                llm: toPlain(settings.llm),
+                stt: toPlain(settings.stt),
+                tts: toPlain(settings.tts),
+              },
+            },
+          },
+        });
+      } catch (err) {
+        console.error("[Son] connect rejected", err);
+        clientRef.current = null;
+        setPhase("ready");
+        setStatus(`Connection failed: ${errorMessage(err)}`);
+      }
+    },
+    [role, phase, settings, stopBotAudio, hintSpeaking],
+  );
 
   const toggleMute = useCallback(async () => {
     const client = clientRef.current;
@@ -267,6 +315,77 @@ export function useSonSession() {
     clientRef.current = null;
   }, []);
 
+  /** End the current conversation (if any) and start a fresh session id. The
+   *  finished session's row is already in sqlite — written live by the
+   *  server's write-through context — so it stays in the panel. */
+  const newSession = useCallback(async () => {
+    const client = clientRef.current;
+    if (client) {
+      await client.disconnect().catch(() => {});
+      clientRef.current = null;
+    }
+    sessionIdRef.current = newId();
+    setSessionId(sessionIdRef.current);
+    setMessages([]);
+    messagesRef.current = [];
+    setActiveBotId(null);
+    setSpeaking(false);
+    setMuted(false);
+    mutedRef.current = false;
+    setMicTrack(null);
+    stopBotAudio();
+    setPhase("ready");
+    setStatus(role ? `Ready to talk as “${role.name}”` : "Pick a role to start talking.");
+  }, [role, stopBotAudio]);
+
+  /** Resume a past session from the panel: restore its transcript, switch to
+   *  its role, and connect — the server seeds the brain with the stored
+   *  messages, so the conversation continues where it left off. */
+  const resumeSession = useCallback(
+    async (meta: SessionMeta) => {
+      if (meta.id === sessionIdRef.current && phase === "connected") return; // already live
+      // The role may still be loading when the panel is clicked from home.
+      let r = roles.find((x) => x.file === meta.role_file) ?? null;
+      if (!r) {
+        const loaded = await loadRoles();
+        setRoles(loaded);
+        r = loaded.find((x) => x.file === meta.role_file) ?? null;
+      }
+      // End any live call before switching — the write-through context has
+      // already persisted everything finalized.
+      const client = clientRef.current;
+      if (client) {
+        await client.disconnect().catch(() => {});
+        clientRef.current = null;
+      }
+      if (!r) {
+        setStatus(`Role “${meta.role_file}” not found — pick a role to resume.`);
+        return;
+      }
+      let stored: Msg[] = [];
+      try {
+        const res = await fetch(`${SESSIONS_URL}/${meta.id}`);
+        if (res.ok) {
+          const data = (await res.json()) as { messages: { role: string; text: string }[] };
+          stored = (data.messages ?? []).map((m) => ({
+            id: uid(),
+            role: m.role === "assistant" ? "bot" : "user",
+            text: m.text,
+            final: true,
+            base: m.role === "user" ? m.text : "",
+          }));
+        }
+      } catch (e) {
+        console.warn("[Son] failed to load stored messages:", e);
+      }
+      setRole(r);
+      setMessages(stored);
+      messagesRef.current = stored;
+      await connect({ role: r, sessionId: meta.id, force: true });
+    },
+    [roles, connect],
+  );
+
   const updateSettings = useCallback((next: Settings) => {
     setSettings(next);
     saveSettings(next);
@@ -290,6 +409,9 @@ export function useSonSession() {
     selectRole,
     connect,
     disconnect,
+    newSession,
+    resumeSession,
+    sessionId,
     toggleMute,
     sendText,
     updateSettings,

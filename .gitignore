@@ -12,3 +12,8 @@ uv.lock.tmp
 
 # Pipecat runtime
 .runtime/
+
+# Session database (runtime data)
+son.db
+son.db-shm
+son.db-wal

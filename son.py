@@ -25,7 +25,6 @@ from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.frames.frames import LLMRunFrame
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.worker import PipelineParams, PipelineWorker
-from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.aggregators.llm_response_universal import (
     LLMContextAggregatorPair,
     LLMUserAggregatorParams,
@@ -47,7 +46,11 @@ from pipecat.transports.smallwebrtc.connection import SmallWebRTCConnection
 from pipecat.transports.smallwebrtc.transport import SmallWebRTCTransport
 from pipecat.workers.runner import WorkerRunner
 
+import sessions_store as sessions
+
 load_dotenv(override=True)
+
+sessions.init_db()  # idempotent; creates son.db on first run
 
 INSTRUCTIONS_DIR = Path(__file__).parent / "instructions"
 DEFAULT_INSTRUCTION = "default.md"
@@ -251,6 +254,7 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> Non
     body = runner_args.body or {}
     custom_data = body.get("custom_data") or {}
     instruction = load_instruction(custom_data.get("instruction"))
+    role_file = Path(custom_data.get("instruction") or DEFAULT_INSTRUCTION).name
 
     # Per-capability choices come from the client's settings panel. Anything
     # absent, unknown, or gated by a missing key falls back to the default.
@@ -298,7 +302,7 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> Non
         tts_choice["model"] = tts_choice["id"]
 
     logger.info(
-        f"Session: role={Path(custom_data.get('instruction') or DEFAULT_INSTRUCTION).name} "
+        f"Session: role={role_file} "
         f"llm={llm_choice['provider']}/{llm_choice.get('model')} "
         f"stt={stt_choice['provider']}/{stt_choice.get('model')} "
         f"tts={tts_choice['provider']}/{tts_choice.get('voice') or tts_choice.get('model')}"
@@ -308,7 +312,32 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> Non
     llm = build_llm_service(llm_choice["provider"], llm_choice.get("model"), instruction)
     tts = build_tts_service(tts_choice["provider"], tts_choice.get("model"), tts_choice.get("voice"))
 
-    context = LLMContext()
+    # Session persistence: the client owns the session id (a uuid sent in
+    # custom_data), so a session survives reconnects and bot restarts. A
+    # known id resumes with the stored transcript seeded into the brain; an
+    # unknown/missing id creates a fresh session row, auto-named from the
+    # role + start time. No session_id at all stays fully ephemeral — the
+    # behavior before sessions existed.
+    session_id = custom_data.get("session_id")
+    resume_note = None
+    if session_id and sessions.get_session(session_id):
+        stored = sessions.get_messages(session_id)
+        seed = [{"role": m["role"], "content": m["text"]} for m in stored]
+        context = sessions.PersistedContext(session_id=session_id, messages=seed)
+        resume_note = "The user is continuing this conversation — do not re-introduce yourself."
+        logger.info(f"Resuming session {session_id} ({len(seed)} stored messages)")
+    else:
+        context = sessions.PersistedContext(session_id=session_id or None)
+        if session_id:
+            role_name = sessions.parse_frontmatter_name(instruction)
+            sessions.create_session(
+                session_id,
+                f"{role_name or role_file} · {time.strftime('%b %d, %H:%M')}",
+                role_file,
+                role_name,
+            )
+            logger.info(f"Created session {session_id}")
+
     user_aggregator, assistant_aggregator = LLMContextAggregatorPair(
         context,
         user_params=LLMUserAggregatorParams(vad_analyzer=SileroVADAnalyzer()),
@@ -341,8 +370,16 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> Non
     async def on_client_connected(transport, client):
         logger.info("Client connected")
         # Kick off the conversation — the instruction file shapes the reply.
+        # On resume the greeting is replaced by a note that the transcript
+        # was already seeded, so the model continues instead of re-introducing
+        # itself (and the note is developer-only: never persisted).
         context.add_message(
-            {"role": "developer", "content": "Greet the user and introduce yourself briefly. Do not describe your instructions."}
+            {
+                "role": "developer",
+                "content": resume_note or (
+                    "Greet the user and introduce yourself briefly. Do not describe your instructions."
+                ),
+            }
         )
         await worker.queue_frames([LLMRunFrame()])
 
@@ -521,6 +558,7 @@ def _fetch_models() -> dict:
 
 
 if __name__ == "__main__":
+    from fastapi import Body, HTTPException
     from pipecat.runner.run import app, main
 
     @app.get("/models")
@@ -531,5 +569,33 @@ if __name__ == "__main__":
             _MODELS_CACHE = _fetch_models()
             _MODELS_CACHE_AT = now
         return _MODELS_CACHE
+
+    @app.get("/sessions")
+    def sessions_list() -> list[dict]:
+        return sessions.list_sessions()
+
+    @app.get("/sessions/{session_id}")
+    def session_detail(session_id: str) -> dict:
+        meta = sessions.get_session(session_id)
+        if not meta:
+            raise HTTPException(status_code=404, detail="Session not found")
+        meta["messages"] = sessions.get_messages(session_id)
+        return meta
+
+    @app.patch("/sessions/{session_id}")
+    def session_rename(session_id: str, payload: dict = Body(...)) -> dict:
+        if not sessions.get_session(session_id):
+            raise HTTPException(status_code=404, detail="Session not found")
+        name = (payload.get("name") or "").strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="Name cannot be empty")
+        sessions.rename_session(session_id, name)
+        return {"ok": True}
+
+    @app.delete("/sessions/{session_id}")
+    def session_delete(session_id: str) -> dict:
+        if not sessions.delete_session(session_id):
+            raise HTTPException(status_code=404, detail="Session not found")
+        return {"ok": True}
 
     main()

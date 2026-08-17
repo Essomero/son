@@ -16,7 +16,11 @@ const state = {
   role: null,
   connected: false,
   botAudio: null, // <audio> element playing the bot's WebRTC audio track
+  localMicTrack: null, // the user's live mic track, for track-level muting
 };
+
+// Lightweight test hook: ?debug exposes internal state for CDP verification.
+if (new URLSearchParams(location.search).has("debug")) window.__son = state;
 
 // --- DOM refs ---------------------------------------------------------------
 
@@ -295,6 +299,11 @@ function setupClient() {
         controlsEl.hidden = true;
         connectBtn.hidden = false;
         stopBotAudio();
+        // Fresh session = fresh mic state.
+        state.localMicTrack = null;
+        muteBtn.dataset.muted = "";
+        muteBtn.textContent = "Mute";
+        muteBtn.disabled = true;
       },
       onBotReady: () => setStatus("Connected — you can talk."),
       onError: (err) => {
@@ -309,7 +318,14 @@ function setupClient() {
       // belongs in the speakers; attaching the mic track plays the user's own
       // voice back at them.
       onTrackStarted: (track, participant) => {
-        if (participant || track?.kind !== "audio" || state.botAudio) return;
+        // The LOCAL mic track also arrives here (with a participant arg) —
+        // keep it so Mute can disable it at the track level; it never
+        // belongs in the speakers (see the note above).
+        if (participant) {
+          if (track?.kind === "audio") state.localMicTrack = track;
+          return;
+        }
+        if (track?.kind !== "audio" || state.botAudio) return;
         console.log("[Son] bot audio track received");
         const audio = new Audio();
         audio.autoplay = true;
@@ -426,9 +442,20 @@ sendBtn.addEventListener("click", sendTextMessage);
 
 async function toggleMute() {
   if (!state.client) return;
-  const muted = await state.client.enableMic(!muteBtn.dataset.muted);
-  muteBtn.dataset.muted = muted ? "" : "1";
-  muteBtn.textContent = muted ? "Mute" : "Unmute";
+  const mute = !muteBtn.dataset.muted; // what the user is asking for next
+  // Mute at the track level: a disabled track makes the encoder emit
+  // silence, so the server's VAD/STT hears nothing while the connection
+  // stays up. Mirror it to client-js's enableMic for the server-side
+  // trackStatus signalling — best effort; some transports return nothing
+  // or throw, and that must never wedge the button.
+  if (state.localMicTrack) state.localMicTrack.enabled = !mute;
+  try {
+    await state.client.enableMic(!mute);
+  } catch (e) {
+    console.warn("[Son] transport enableMic failed (track-level mute still active):", e);
+  }
+  muteBtn.dataset.muted = mute ? "1" : "";
+  muteBtn.textContent = mute ? "Unmute" : "Mute";
 }
 
 async function disconnect() {

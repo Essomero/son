@@ -106,7 +106,10 @@ document.addEventListener("pointerdown", () => {
 
 async function loadRoles() {
   try {
-    const res = await fetch("roles.json");
+    // no-store: python -m http.server sends no cache headers, so browsers
+    // heuristically cache roles.json and a new role never shows up on a
+    // plain reload.
+    const res = await fetch("roles.json", { cache: "no-store" });
     return await res.json();
   } catch {
     return [];

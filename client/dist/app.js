@@ -15422,7 +15422,7 @@ document.addEventListener("pointerdown", () => {
 });
 async function loadRoles() {
   try {
-    const res = await fetch("roles.json");
+    const res = await fetch("roles.json", { cache: "no-store" });
     return await res.json();
   } catch {
     return [];

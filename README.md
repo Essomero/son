@@ -6,7 +6,7 @@ A personal real-time voice agent. Pick a role (instruction file), talk to it in 
 
 | Piece | Tool (default) | Where it runs |
 |---|---|---|
-| Speech-to-text | Groq · whisper-large-v3-turbo | Cloud (free tier) |
+| Speech-to-text | Groq · whisper-large-v3-turbo (or **Parakeet TDT local**) | Cloud (free tier) / Local |
 | Brain | Groq · openai/gpt-oss-120b | Cloud (free tier) |
 | Text-to-speech | Kokoro-82M | **Local** (ONNX on CPU) |
 | Voice pipeline | Pipecat 1.7 (BSD-2) | Local |
@@ -97,14 +97,14 @@ A provider is enabled only when its API key is present. The settings panel (⚙ 
 Click ⚙ to pick, per session:
 
 - **Brain** — the reasoning/chat model (Groq, Cerebras, DeepSeek, Gemini, or OpenRouter).
-- **Speech-to-text** — how your voice becomes text (Groq Whisper, Google, or OpenRouter).
+- **Speech-to-text** — how your voice becomes text (Groq Whisper, Google, OpenRouter, or **NVIDIA Parakeet TDT** — a fully local ONNX model, no API key; the ~660 MB model downloads once on first use into `~/.cache/son/parakeet`).
 - **Voice** — the voice that reads replies (local Kokoro, or Groq/Gemini cloud TTS).
 
 Choices are saved in the browser and sent with each connection; the server falls back to the defaults if a provider's key is missing. Kokoro voices are synthesized on your machine; the others stream from their provider.
 
 ## Cost
 
-Groq's free tier covers personal use: 30 requests/min, 14,400/day across STT + LLM, plus a daily Whisper transcription quota. Kokoro is free (local). See `docs/HANDOFF.md` for the numbers and the paid tier, which starts at ~$0.05/M tokens.
+Groq's free tier covers personal use: 30 requests/min, 14,400/day across STT + LLM, plus a daily Whisper transcription quota. Kokoro is free (local). Pick **Parakeet TDT** in ⚙ → Speech-to-text and the whole voice path runs on your machine — only the text you send to the brain leaves it. See `docs/HANDOFF.md` for the numbers and the paid tier, which starts at ~$0.05/M tokens.
 
 ## How it works
 

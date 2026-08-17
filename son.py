@@ -3,7 +3,7 @@
 # Default stack (every capability is swappable in the client settings panel,
 # gated by which API keys are present in .env):
 #   - STT:  Groq (whisper-large-v3-turbo)  — cloud, free tier (also:
-#           OpenRouter when its key is set)
+#           OpenRouter when its key is set, Parakeet TDT local ONNX)
 #   - LLM:  Groq (openai/gpt-oss-120b)     — cloud, free tier (also:
 #           DeepSeek / Gemini / OpenRouter when their keys are set)
 #   - TTS:  Kokoro-82M (local, ONNX on CPU) — no cloud, no cost
@@ -53,6 +53,7 @@ from pipecat.transports.smallwebrtc.connection import SmallWebRTCConnection
 from pipecat.transports.smallwebrtc.transport import SmallWebRTCTransport
 from pipecat.workers.runner import WorkerRunner
 
+import parakeet_stt
 import sessions_store as sessions
 
 load_dotenv(override=True)
@@ -214,6 +215,10 @@ def build_stt_service(provider: str, model: str):
         # Credentials come from GOOGLE_APPLICATION_CREDENTIALS / ADC; there is
         # no API-key auth for Cloud Speech (see google_stt_available()).
         return GoogleSTTService(settings=GoogleSTTService.Settings(model=model))
+    if provider == "parakeet":
+        # Local NVIDIA Parakeet TDT via sherpa-onnx (ONNX on CPU). The model
+        # (~660 MB) downloads once into ~/.cache/son/parakeet on first use.
+        return parakeet_stt.ParakeetSTTService(model=model)
     raise ValueError(f"Unknown STT provider: {provider}")
 
 
@@ -430,6 +435,8 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> Non
     stt_available = (
         google_stt_available()
         if stt_provider == "google"
+        else parakeet_stt.parakeet_stt_available()
+        if stt_provider == "parakeet"
         else bool(os.getenv(STT_PROVIDER_ENV_KEYS.get(stt_provider, "")))
     )
     if not stt_available:
@@ -704,6 +711,12 @@ def _fetch_models() -> dict:
             )
         for _, entry in sorted(priced, key=lambda e: e[0]):
             stt.append(entry)
+
+    # Local STT needs no API key — listed when sherpa-onnx is installed
+    # (same pattern as the Kokoro voices below).
+    if parakeet_stt.parakeet_stt_available():
+        for mid, label in parakeet_stt.PARAKEET_MODELS.items():
+            stt.append({"provider": "parakeet", "id": mid, "label": label})
 
     for voice in KOKORO_VOICES:
         tts.append({"provider": "kokoro", "id": voice, "label": voice})

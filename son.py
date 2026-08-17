@@ -13,8 +13,12 @@
 # The web client passes {"instruction": ..., "llm": ..., "stt": ..., "tts": ...}
 # in the RTVI /start request body; this bot reads them from runner_args.body.
 
+import asyncio
+import io
 import os
+import threading
 import time
+import wave
 from pathlib import Path
 
 import httpx
@@ -22,7 +26,7 @@ from dotenv import load_dotenv
 from loguru import logger
 
 from pipecat.audio.vad.silero import SileroVADAnalyzer
-from pipecat.frames.frames import LLMRunFrame
+from pipecat.frames.frames import AudioRawFrame, LLMRunFrame
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.worker import PipelineParams, PipelineWorker
 from pipecat.processors.aggregators.llm_response_universal import (
@@ -224,6 +228,76 @@ def build_tts_service(provider: str, model: str | None, voice: str | None):
             settings=GeminiTTSService.Settings(model=model, voice=voice),
         )
     raise ValueError(f"Unknown TTS provider: {provider}")
+
+
+# --- One-shot TTS for the client's "Read out" page (POST /speak) ------------
+# The read-out page needs a complete audio file, not a stream: synthesize the
+# whole text, collect the PCM frames, wrap them in a WAV. All three providers
+# yield AudioRawFrame chunks (TTSAudioRawFrame subclasses it), so one
+# collector covers them. Kokoro synthesizes at its hardcoded speed=1.0 — the
+# client applies speed at playback time (playbackRate), never here.
+
+_SPEAK_MAX_CHARS = 8000  # a paragraph at a time; kokoro is ~real-time on CPU
+
+# Constructing KokoroTTSService loads the ONNX model (~1 GB RAM, seconds), so
+# cache services per (provider, voice) instead of building per request. The
+# per-service lock serializes synthesis: run_tts streams through the
+# service's own resampler, which isn't safe under concurrency.
+_tts_services: dict = {}
+_tts_services_guard = threading.Lock()
+
+
+def _get_tts_service(provider: str, model: str | None, voice: str | None):
+    key = (provider, voice)
+    with _tts_services_guard:
+        entry = _tts_services.get(key)
+        if entry is None:
+            svc = build_tts_service(provider, model, voice)
+            if provider != "groq":
+                # A service in a pipeline adopts its output sample rate from
+                # the transport's StartFrame; standalone (here) that never
+                # happens and the rate stays 0, which soxr rejects. Set the
+                # same field the pipeline would. 24000 Hz: kokoro's native
+                # rate (no-op resample) and what cloud voices answer in.
+                # Groq is exempt — it reports the rate from its own API WAV.
+                svc._sample_rate = 24000
+            entry = (svc, threading.Lock())
+            _tts_services[key] = entry
+        return entry
+
+
+def _synthesize_to_wav(service, text: str) -> bytes:
+    """Run one synthesis and collect the frames into a WAV file."""
+    chunks: list[bytes] = []
+    sample_rate = 0
+
+    async def run():
+        nonlocal sample_rate
+        async for frame in service.run_tts(text, "speak"):
+            if isinstance(frame, AudioRawFrame):
+                chunks.append(frame.audio)
+                sample_rate = sample_rate or frame.sample_rate
+
+    # The route handler runs in FastAPI's threadpool (a sync def), so there's
+    # no running loop here — asyncio.run is safe, and the model/network work
+    # never blocks the event loop (chat sessions stay smooth mid-read).
+    asyncio.run(run())
+    if not chunks or not sample_rate:
+        raise RuntimeError("TTS produced no audio")
+    pcm = b"".join(chunks)
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(sample_rate)
+        w.writeframes(pcm)
+    return buf.getvalue()
+
+
+def speak_audio(text: str, provider: str, model: str | None, voice: str | None) -> bytes:
+    service, lock = _get_tts_service(provider, model, voice)
+    with lock:
+        return _synthesize_to_wav(service, text)
 
 
 def load_instruction(name: str | None) -> str:
@@ -559,6 +633,7 @@ def _fetch_models() -> dict:
 
 if __name__ == "__main__":
     from fastapi import Body, HTTPException
+    from fastapi.responses import Response
     from fastapi.staticfiles import StaticFiles
     from pipecat.runner.run import app, main
 
@@ -598,6 +673,38 @@ if __name__ == "__main__":
         if not sessions.delete_session(session_id):
             raise HTTPException(status_code=404, detail="Session not found")
         return {"ok": True}
+
+    @app.post("/speak", include_in_schema=False)
+    def speak(payload: dict = Body(...)) -> Response:
+        """One-shot TTS for the read-out page: {text, voice: {provider, id}} →
+        a WAV file. Voice mapping mirrors run_bot — kokoro id → voice id,
+        cloud id → model name (the roster's tts entries are models there).
+        Unavailable providers fall back to the local kokoro voice, same as
+        the chat path."""
+        text = (payload.get("text") or "").strip()
+        if not text:
+            raise HTTPException(status_code=400, detail="Nothing to read — paste some text first.")
+        if len(text) > _SPEAK_MAX_CHARS:
+            raise HTTPException(
+                status_code=400, detail=f"Text is too long (max {_SPEAK_MAX_CHARS} characters)."
+            )
+        choice = payload.get("voice") or {}
+        provider = choice.get("provider") or "kokoro"
+        if provider not in TTS_PROVIDER_ENV_KEYS or (
+            TTS_PROVIDER_ENV_KEYS[provider] and not os.getenv(TTS_PROVIDER_ENV_KEYS[provider])
+        ):
+            logger.warning(f"/speak: TTS provider '{provider}' unavailable; using kokoro")
+            provider = "kokoro"
+        if provider == "kokoro":
+            model, voice = None, choice.get("id")
+        else:
+            model, voice = choice.get("id"), None
+        try:
+            wav = speak_audio(text, provider, model, voice)
+        except Exception as e:
+            logger.warning(f"/speak failed ({provider}): {e}")
+            raise HTTPException(status_code=502, detail=f"Speech failed: {e}")
+        return Response(content=wav, media_type="audio/wav")
 
     # Serve the built client from this same app — one process, one URL.
     # These must be registered BEFORE main(): the runner adds its own routes

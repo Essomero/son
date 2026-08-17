@@ -138,6 +138,36 @@ The built client is served by son.py itself — no second server:
   fixed (index.html + assets/ + roles.json), which is exactly what the three
   registrations serve.
 
+## The read-out page (POST /speak)
+
+The header's **Read** toggle swaps the stage for a text-to-speech page: paste
+text, pick a voice from the same `/models` roster the settings panel uses,
+get a WAV back. No AI, no mic, no session — a pure one-shot synthesis.
+
+- `POST /speak` (registered in `__main__` with the other routes) takes
+  `{text, voice: {provider, id}}` and returns `audio/wav`. Voice mapping
+  mirrors `run_bot`'s: for kokoro the id is the voice id; for groq/gemini the
+  id is the model name (their voice stays the service default). Unavailable
+  providers fall back to kokoro, same as the chat path.
+- All three providers yield `AudioRawFrame` (TTSAudioRawFrame subclasses it),
+  so one collector gathers PCM chunks and `wave` wraps them — the client
+  never deals with codecs.
+- **Caching**: services are cached per `(provider, voice)` — building
+  KokoroTTSService loads the ONNX model (~1 GB RAM, seconds) — with a
+  per-service lock: `run_tts` streams through the service's own resampler,
+  which isn't safe under concurrency. Different voices load separate models.
+- **Sample-rate gotcha**: a TTS service adopted its output rate from the
+  pipeline's StartFrame; standalone it stays 0 and soxr raises "Sample rate
+  should be over 0". `_get_tts_service` sets `svc._sample_rate = 24000`
+  (kokoro's native rate, no-op resample; cloud voices answer at it too).
+  Groq is exempt — it reports the rate from its own API WAV.
+- The client's speed control is `playbackRate` only, never a re-synthesis:
+  pipecat's kokoro service hardcodes `speed=1.0` (`create_stream`), and one
+  playback control works uniformly across providers.
+- Client: `components/Reader.tsx` (textarea + Picker grid + player bar),
+  `SPEAK_URL` in `lib/son.ts`. The picker writes `settings.tts`, so a voice
+  chosen here is also the chat voice.
+
 ## How to run (reminder)
 
 ```bash

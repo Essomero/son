@@ -28,6 +28,8 @@ const connectBtn = $("connect");
 const muteBtn = $("mute");
 const disconnectBtn = $("disconnect");
 const controlsEl = $("controls");
+const textInput = $("text-input");
+const sendBtn = $("send");
 const settingsBtn = $("settings-btn");
 const settingsModal = $("settings-modal");
 const settingsClose = $("settings-close");
@@ -52,6 +54,35 @@ function addTranscript(role, text) {
 
 function lastRow() {
   return transcriptEl.querySelector(".row:last-child");
+}
+
+// One "You" row per consecutive user run: a new utterance (an STT segment or
+// a typed message) that follows a completed user row continues that row
+// instead of opening another — consecutive user turns share one identifier.
+// Partial STT frames grow the current utterance in place; the finalized text
+// is kept in dataset.base so the next utterance can append to it (partials of
+// a fresh utterance only ever replace their own span, not earlier ones).
+function addUserText(text, final) {
+  if (!text) return;
+  const last = lastRow();
+  if (last?.classList.contains("user")) {
+    const el = last.querySelector(".text");
+    const base = last.dataset.base || "";
+    el.textContent = base ? `${base} ${text}` : text;
+    if (final) {
+      last.dataset.base = el.textContent;
+      last.dataset.final = "1";
+    }
+    return last;
+  }
+  const row = addTranscript("user", text);
+  if (final) {
+    // Keep the finalized text in base (same as the merge path) so a follow-up
+    // message appends to it instead of replacing it.
+    row.dataset.base = text;
+    row.dataset.final = "1";
+  }
+  return row;
 }
 
 function stopBotAudio() {
@@ -256,6 +287,7 @@ function setupClient() {
         controlsEl.hidden = false;
         connectBtn.hidden = true;
         muteBtn.disabled = false;
+        textInput.focus();
       },
       onDisconnected: () => {
         state.connected = false;
@@ -294,11 +326,7 @@ function setupClient() {
       // user row in place; the final transcription locks it in.
       onUserTranscript: (data) => {
         if (!data?.text) return;
-        const last = lastRow();
-        const inProgressUser = last?.classList.contains("user") && !last.dataset.final;
-        const row = inProgressUser ? last : addTranscript("user", data.text);
-        row.querySelector(".text").textContent = data.text;
-        if (data.final) row.dataset.final = "1";
+        addUserText(data.text, !!data.final);
       },
       // botOutput streams each reply as the LLM generates it. A reply always
       // follows a user turn (or the greeting), so when the last row is NOT a
@@ -363,6 +391,38 @@ async function connect() {
 }
 
 // --- Controls ---------------------------------------------------------------
+
+// Typed messages ride the RTVI send-text message: the server appends the text
+// as a user turn and (with run_immediately) answers it right away, barging in
+// like speech would. The text has no outbound transcription event, so we
+// mirror it into the transcript ourselves — through the same row-merging
+// path as STT so consecutive typed/spoken turns share one "You" row.
+function sendTextMessage() {
+  const text = textInput.value.trim();
+  if (!text || !state.client || !state.connected) return;
+  state.client.sendText(text, { run_immediately: true }).catch((e) => {
+    console.warn("[Son] sendText failed:", e);
+  });
+  addUserText(text, true);
+  textInput.value = "";
+  textInput.style.height = "auto";
+  textInput.focus();
+}
+
+textInput.addEventListener("keydown", (e) => {
+  // Enter sends; Shift+Enter inserts a newline (for pasted markdown you want
+  // to review before sending).
+  if (e.key === "Enter" && !e.shiftKey) {
+    e.preventDefault();
+    sendTextMessage();
+  }
+});
+textInput.addEventListener("input", () => {
+  // Auto-grow for pasted content: fit up to ~160px, then scroll inside.
+  textInput.style.height = "auto";
+  textInput.style.height = Math.min(textInput.scrollHeight, 160) + "px";
+});
+sendBtn.addEventListener("click", sendTextMessage);
 
 async function toggleMute() {
   if (!state.client) return;

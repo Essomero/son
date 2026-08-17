@@ -153,7 +153,25 @@
     .row.bot .who { color: var(--bot); }
     .text { word-break: break-word; }
 
-    #controls { margin-top: 12px; display: flex; gap: 10px; }
+    #controls { margin-top: 12px; display: flex; flex-direction: column; gap: 10px; }
+    #compose { display: flex; gap: 10px; align-items: flex-end; }
+    #text-input {
+      flex: 1;
+      background: var(--panel-2);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 8px 12px;
+      font: inherit;
+      resize: none;
+      overflow-y: auto;
+      min-height: 38px;
+      max-height: 160px;
+      line-height: 1.4;
+    }
+    #text-input:focus { outline: none; border-color: var(--muted); }
+    #text-input::placeholder { color: var(--muted); }
+    #controls-actions { display: flex; gap: 10px; }
     #controls button {
       background: var(--panel-2);
       color: var(--text);
@@ -203,8 +221,14 @@
     <button id="connect" disabled>Connect</button>
     <div id="transcript" aria-live="polite"></div>
     <div id="controls" hidden>
-      <button id="mute" disabled>Mute</button>
-      <button id="disconnect">End session</button>
+      <div id="compose">
+        <textarea id="text-input" rows="1" placeholder="Type or paste a message… (Enter to send, Shift+Enter for a new line)"></textarea>
+        <button id="send">Send</button>
+      </div>
+      <div id="controls-actions">
+        <button id="mute" disabled>Mute</button>
+        <button id="disconnect">End session</button>
+      </div>
     </div>
   </main>
   <script type="module" src="app.js"></script>

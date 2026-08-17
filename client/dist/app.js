@@ -15364,6 +15364,8 @@ var connectBtn = $2("connect");
 var muteBtn = $2("mute");
 var disconnectBtn = $2("disconnect");
 var controlsEl = $2("controls");
+var textInput = $2("text-input");
+var sendBtn = $2("send");
 var settingsBtn = $2("settings-btn");
 var settingsModal = $2("settings-modal");
 var settingsClose = $2("settings-close");
@@ -15384,6 +15386,26 @@ function addTranscript(role, text) {
 }
 function lastRow() {
   return transcriptEl.querySelector(".row:last-child");
+}
+function addUserText(text, final) {
+  if (!text) return;
+  const last = lastRow();
+  if (last?.classList.contains("user")) {
+    const el = last.querySelector(".text");
+    const base = last.dataset.base || "";
+    el.textContent = base ? `${base} ${text}` : text;
+    if (final) {
+      last.dataset.base = el.textContent;
+      last.dataset.final = "1";
+    }
+    return last;
+  }
+  const row = addTranscript("user", text);
+  if (final) {
+    row.dataset.base = text;
+    row.dataset.final = "1";
+  }
+  return row;
 }
 function stopBotAudio() {
   if (!state.botAudio) return;
@@ -15539,6 +15561,7 @@ function setupClient() {
         controlsEl.hidden = false;
         connectBtn.hidden = true;
         muteBtn.disabled = false;
+        textInput.focus();
       },
       onDisconnected: () => {
         state.connected = false;
@@ -15576,11 +15599,7 @@ function setupClient() {
       // user row in place; the final transcription locks it in.
       onUserTranscript: (data) => {
         if (!data?.text) return;
-        const last = lastRow();
-        const inProgressUser = last?.classList.contains("user") && !last.dataset.final;
-        const row = inProgressUser ? last : addTranscript("user", data.text);
-        row.querySelector(".text").textContent = data.text;
-        if (data.final) row.dataset.final = "1";
+        addUserText(data.text, !!data.final);
       },
       // botOutput streams each reply as the LLM generates it. A reply always
       // follows a user turn (or the greeting), so when the last row is NOT a
@@ -15637,6 +15656,28 @@ async function connect() {
     connectBtn.disabled = false;
   }
 }
+function sendTextMessage() {
+  const text = textInput.value.trim();
+  if (!text || !state.client || !state.connected) return;
+  state.client.sendText(text, { run_immediately: true }).catch((e2) => {
+    console.warn("[Son] sendText failed:", e2);
+  });
+  addUserText(text, true);
+  textInput.value = "";
+  textInput.style.height = "auto";
+  textInput.focus();
+}
+textInput.addEventListener("keydown", (e2) => {
+  if (e2.key === "Enter" && !e2.shiftKey) {
+    e2.preventDefault();
+    sendTextMessage();
+  }
+});
+textInput.addEventListener("input", () => {
+  textInput.style.height = "auto";
+  textInput.style.height = Math.min(textInput.scrollHeight, 160) + "px";
+});
+sendBtn.addEventListener("click", sendTextMessage);
 async function toggleMute() {
   if (!state.client) return;
   const muted = await state.client.enableMic(!muteBtn.dataset.muted);

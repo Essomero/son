@@ -189,7 +189,11 @@ function setupClient() {
       onBotOutput: (data) => {
         if (!data?.text) return;
         const last = lastRow();
-        const row = last?.classList.contains("bot") ? last : addTranscript("bot", "");
+        // NOTE: addTranscript guards against empty text (returns undefined),
+        // so a new bot row must be created with a non-empty first chunk —
+        // passing "" would throw on querySelector below.
+        let row = last?.classList.contains("bot") ? last : null;
+        if (!row) row = addTranscript("bot", data.text);
         const el = row.querySelector(".text");
         const cur = el.textContent;
         el.textContent = !cur || data.text.startsWith(cur) ? data.text : cur + " " + data.text;

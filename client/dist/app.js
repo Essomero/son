@@ -15500,7 +15500,8 @@ function setupClient() {
       onBotOutput: (data) => {
         if (!data?.text) return;
         const last = lastRow();
-        const row = last?.classList.contains("bot") ? last : addTranscript("bot", "");
+        let row = last?.classList.contains("bot") ? last : null;
+        if (!row) row = addTranscript("bot", data.text);
         const el = row.querySelector(".text");
         const cur = el.textContent;
         el.textContent = !cur || data.text.startsWith(cur) ? data.text : cur + " " + data.text;

@@ -7,7 +7,7 @@ A personal real-time voice agent. Pick a role (instruction file), talk to it in 
 | Piece | Tool | Where it runs |
 |---|---|---|
 | Speech-to-text | Groq · whisper-large-v3-turbo | Cloud (free tier) |
-| Brain | Groq · llama-3.3-70b-versatile | Cloud (free tier) |
+| Brain | Groq · openai/gpt-oss-120b | Cloud (free tier) |
 | Text-to-speech | Kokoro-82M | **Local** (ONNX on CPU) |
 | Voice pipeline | Pipecat 1.7 (BSD-2) | Local |
 | Turn detection | Silero VAD | Local |
@@ -72,7 +72,7 @@ That's it — the role shows up in the picker on reload.
 | Env var | Default | Purpose |
 |---|---|---|
 | `GROQ_API_KEY` | — | Required. Free at console.groq.com |
-| `GROQ_MODEL` | `llama-3.3-70b-versatile` | Groq LLM model |
+| `GROQ_MODEL` | `openai/gpt-oss-120b` | Groq LLM model |
 | `GROQ_STT_MODEL` | `whisper-large-v3-turbo` | Groq STT model |
 | `KOKORO_VOICE` | `af_heart` | Kokoro voice id |
 
@@ -89,7 +89,7 @@ browser (mic/speakers, WebRTC)
 Pipecat runner (:7860) — Silero VAD turn detection
    │
    ├─ audio → Groq whisper → text
-   ├─ text  → Groq llama (system prompt = instruction file) → reply text
+   ├─ text  → Groq gpt-oss (system prompt = instruction file) → reply text
    └─ reply text → Kokoro (local ONNX) → audio back to browser
 ```
 

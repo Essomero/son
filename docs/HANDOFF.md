@@ -24,7 +24,7 @@ A personal real-time voice agent. You pick a "role" (a markdown instruction file
 - **Server**: Pipecat's dev runner (`pipecat.runner.run.main()`), one FastAPI app on `:7860` with `/start` + `/sessions/{id}/api/offer`. The bot function `bot(runner_args)` is called once per session; `runner_args.body.custom_data.instruction` selects the role.
 - **Client**: static page (`python -m http.server 8000`), `startBotAndConnect({endpoint, requestData: {transport: "webrtc", body: {custom_data: {instruction}}}})`. The transport derives the offer URL from the endpoint automatically.
 - **WebRTC** means the browser owns echo cancellation — no client-side audio processing needed.
-- **STT**: Groq whisper-large-v3-turbo. **LLM**: Groq llama-3.3-70b-versatile (OpenAI-compatible, `system_instruction` kwarg). **TTS**: Kokoro-82M, local ONNX runtime, auto-downloaded to the pipecat cache on first use.
+- **STT**: Groq whisper-large-v3-turbo. **LLM**: Groq openai/gpt-oss-120b (OpenAI-compatible, `system_instruction` kwarg; `reasoning_effort: low` keeps first-content latency ~0.45s). **TTS**: Kokoro-82M, local ONNX runtime, auto-downloaded to the pipecat cache on first use.
 
 ## Key decisions & trade-offs
 
@@ -41,7 +41,7 @@ A personal real-time voice agent. You pick a "role" (a markdown instruction file
 
 | Item | Free tier | Paid tier |
 |---|---|---|
-| Groq LLM (llama-3.3-70b) | 30 req/min, 14,400 req/day | from $0.05–0.90/M tokens |
+| Groq LLM (gpt-oss-120b) | 30 req/min, 14,400 req/day | from $0.05–0.90/M tokens |
 | Groq Whisper (large-v3-turbo) | daily transcription quota | per-second-ish billing, pennies/hr |
 | Kokoro TTS | local, $0 | $0 |
 | Pipecat | open source, $0 | $0 (managed Pipecat Cloud optional) |
@@ -68,6 +68,9 @@ Verification notes (2026-08-17, automated): WebRTC offer/ICE, customData → sys
 
 Gotchas found during verification:
 - **client-js 1.13 transcripts are callback-only**: `user-transcription` / `bot-output` messages reach `onUserTranscript` / `onBotOutput` callbacks but are NOT emitted via `client.on(RTVIEvent.*)`. `BotTranscript` is deprecated (no longer delivered). The client's transcript handlers must live in the `callbacks` object.
+- **small-webrtc-transport never plays bot audio**: the installed version (1.10.6) stores received remote tracks (`_incomingTracks`) but attaches no sink — no audio element, no `addFrame` callers. Silence is the default. The client must take the track from `onTrackStarted` and play it through its own `<audio>` element (see `client/src/app.js`).
+- **`onTrackStarted` also fires for the LOCAL mic track** (with a `participant` argument) — attach that and the user hears their own voice in the speakers. Guard on the participant arg; only the remote track (`participant` undefined) belongs in the speakers.
+- **Groq rotates its model roster**: `llama-3.3-70b-versatile` was removed mid-2026 (404 `model_not_found` on every LLM call, surfacing as a cryptic `Error: [object Object]` because RTVIMessage has no `.message` — read `data.message`/`data.code`). If a model 404s again, `GET https://api.groq.com/openai/v1/models` lists what's live. `gpt-oss-120b` with `reasoning_effort: low` streams first content in ~0.45s.
 - **First-run model download is 354MB** (325MB onnx + 28MB voices) at GitHub speeds (~1MB/s here); a fresh browser connection can time out and reconnect during it — it recovered cleanly. Second run is instant.
 - **Runner has no `/client` prebuilt UI** in this version (404) — the custom page is the UI.
 - `roles.json` is generated into `client/dist/` (served dir); re-run `uv run scripts/gen_roles.py` after adding roles AND after a clean checkout.

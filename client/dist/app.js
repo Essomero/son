@@ -4370,9 +4370,9 @@ var $364c127d152b1085$export$8f7f86a77535f7a3 = class extends $364c127d152b1085$
         options?.callbacks?.onScreenTrackStopped?.(track2, p2);
         this.emit((0, $c1b4da4af54f4fa1$export$6b4624d233c61fcb).ScreenTrackStopped, track2, p2);
       },
-      onScreenShareError: (errorMessage) => {
-        options?.callbacks?.onScreenShareError?.(errorMessage);
-        this.emit((0, $c1b4da4af54f4fa1$export$6b4624d233c61fcb).ScreenShareError, errorMessage);
+      onScreenShareError: (errorMessage2) => {
+        options?.callbacks?.onScreenShareError?.(errorMessage2);
+        this.emit((0, $c1b4da4af54f4fa1$export$6b4624d233c61fcb).ScreenShareError, errorMessage2);
       },
       onUnsupportedFeature: (error) => {
         options?.callbacks?.onUnsupportedFeature?.(error);
@@ -15351,7 +15351,9 @@ var BOT_ENDPOINT = params.get("endpoint") || "http://localhost:7860/start";
 var state = {
   client: null,
   role: null,
-  connected: false
+  connected: false,
+  botAudio: null
+  // <audio> element playing the bot's WebRTC audio track
 };
 var $2 = (id) => document.getElementById(id);
 var roleGrid = $2("roles");
@@ -15374,7 +15376,21 @@ function addTranscript(role, text) {
   row.append(who, body);
   transcriptEl.append(row);
   transcriptEl.scrollTop = transcriptEl.scrollHeight;
+  return row;
 }
+function lastRow() {
+  return transcriptEl.querySelector(".row:last-child");
+}
+function stopBotAudio() {
+  if (!state.botAudio) return;
+  state.botAudio.pause();
+  state.botAudio.srcObject = null;
+  state.botAudio = null;
+}
+document.addEventListener("pointerdown", () => {
+  if (state.botAudio?.paused) state.botAudio.play().catch(() => {
+  });
+});
 async function loadRoles() {
   try {
     const res = await fetch("roles.json");
@@ -15413,6 +15429,10 @@ function selectRole(role, card) {
 function setStatus(text) {
   statusEl.textContent = text;
 }
+function errorMessage(err) {
+  const data = err?.data ?? {};
+  return typeof data === "string" ? data : data?.message ?? data?.code ?? String(err);
+}
 function setupClient() {
   const client = new $364c127d152b1085$export$8f7f86a77535f7a3({
     transport: new $b31644dc78dca54a$export$62043589d053a879(),
@@ -15431,25 +15451,59 @@ function setupClient() {
         setStatus("Disconnected.");
         controlsEl.hidden = true;
         connectBtn.hidden = false;
+        stopBotAudio();
       },
       onBotReady: () => setStatus("Connected \u2014 you can talk."),
-      onError: (err) => setStatus(`Error: ${err?.message ?? err}`),
-      // Finalized user turns only (partials stream with final: false).
-      onUserTranscript: (data) => {
-        if (data?.final === false) return;
-        addTranscript("user", data?.text);
+      onError: (err) => {
+        console.error("[Son] connect error", err);
+        setStatus(`Error: ${errorMessage(err)}`);
       },
-      // botOutput streams the reply as it's spoken; update the last bot row
-      // in place so the panel shows live text.
+      // The small-webrtc transport receives the bot's audio track but never
+      // attaches it to any sink, so nothing would be audible. We take the
+      // track from onTrackStarted and play it through our own <audio> element.
+      // CAUTION: this callback fires for the LOCAL mic track too (with a
+      // participant arg) — only the remote bot track (participant undefined)
+      // belongs in the speakers; attaching the mic track plays the user's own
+      // voice back at them.
+      onTrackStarted: (track2, participant) => {
+        if (participant || track2?.kind !== "audio" || state.botAudio) return;
+        console.log("[Son] bot audio track received");
+        const audio = new Audio();
+        audio.autoplay = true;
+        audio.srcObject = new MediaStream([track2]);
+        audio.style.position = "fixed";
+        audio.style.left = "-9999px";
+        document.body.append(audio);
+        audio.play().catch((e2) => console.warn("[Son] audio play blocked:", e2));
+        state.botAudio = audio;
+      },
+      onTrackStopped: () => stopBotAudio(),
+      // User speech: partials stream in (final: false) and grow the current
+      // user row in place; the final transcription locks it in.
+      onUserTranscript: (data) => {
+        if (!data?.text) return;
+        const last = lastRow();
+        const inProgressUser = last?.classList.contains("user") && !last.dataset.final;
+        const row = inProgressUser ? last : addTranscript("user", data.text);
+        row.querySelector(".text").textContent = data.text;
+        if (data.final) row.dataset.final = "1";
+      },
+      // botOutput streams each reply as the LLM generates it. A reply always
+      // follows a user turn (or the greeting), so when the last row is NOT a
+      // bot row, this is a new reply: start a fresh row. Otherwise grow the
+      // current bot row in place — never overwrite an earlier reply.
+      //
+      // Message granularity is per-segment: with sentence-split TTS each
+      // sentence can arrive as its own message whose text does not extend the
+      // previous one. Merge both shapes: replace when the new text grows the
+      // current text (startsWith), append when it's a new segment.
       onBotOutput: (data) => {
         if (!data?.text) return;
-        const rows = transcriptEl.querySelectorAll(".row.bot");
-        const last = rows[rows.length - 1];
-        if (last) {
-          last.querySelector(".text").textContent = data.text;
-        } else {
-          addTranscript("bot", data.text);
-        }
+        const last = lastRow();
+        const row = last?.classList.contains("bot") ? last : addTranscript("bot", "");
+        const el = row.querySelector(".text");
+        const cur = el.textContent;
+        el.textContent = !cur || data.text.startsWith(cur) ? data.text : cur + " " + data.text;
       }
     }
   });
@@ -15470,7 +15524,8 @@ async function connect() {
       }
     });
   } catch (err) {
-    setStatus(`Connection failed: ${err?.message ?? err}`);
+    console.error("[Son] connect rejected", err);
+    setStatus(`Connection failed: ${errorMessage(err)}`);
     state.client = null;
     connectBtn.disabled = false;
   }

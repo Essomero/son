@@ -2,7 +2,7 @@
 #
 # Tier 3 hybrid stack:
 #   - STT:  Groq (whisper-large-v3-turbo)  — cloud, free tier
-#   - LLM:  Groq (llama-3.3-70b-versatile) — cloud, free tier
+#   - LLM:  Groq (openai/gpt-oss-120b) — cloud, free tier
 #   - TTS:  Kokoro-82M (local, ONNX on CPU) — no cloud, no cost
 #   - Turn detection: Silero VAD via LLMContextAggregatorPair
 #
@@ -40,7 +40,10 @@ INSTRUCTIONS_DIR = Path(__file__).parent / "instructions"
 DEFAULT_INSTRUCTION = "default.md"
 
 # Groq is OpenAI-compatible; these live on the base service.
-GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+# Note: Groq rotates its model roster — llama-3.3-70b-versatile was removed
+# in Aug 2026 (404 model_not_found). gpt-oss-120b streams first content in
+# ~0.45s with reasoning_effort=low (see GroqLLMService.Settings below).
+GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
 GROQ_STT_MODEL = os.getenv("GROQ_STT_MODEL", "whisper-large-v3-turbo")
 KOKORO_VOICE = os.getenv("KOKORO_VOICE", "af_heart")
 

@@ -374,12 +374,23 @@ def _fetch_models() -> dict:
         # Google's speech-to-text API aliases (short-form = voice-turn length).
         stt.append({"provider": "google", "id": "latest_short", "label": "latest_short"})
         stt.append({"provider": "google", "id": "latest_long", "label": "latest_long"})
+        # The list endpoint doesn't report output modalities (always None),
+        # so classify from id/displayName: stable, text-only chat models only —
+        # no previews, no image/audio/video/music/robot/agent models in the
+        # picker. (Nano Banana / Lyria / Omni / robotics are display names,
+        # hence the keyword match over both id and displayName.)
+        NON_TEXT = (
+            "image", "nano banana", "audio", "lyria", "veo", "robotics",
+            "tts", "transcribe", "speech", "omni", "antigravity", "deep-research",
+        )
         for m in data.get("models", []):
             mid = m.get("name", "").replace("models/", "")
             hay = (mid + " " + m.get("displayName", "")).lower()
             if "generateContent" not in (m.get("supportedGenerationMethods") or []):
                 continue
             if mid.startswith("gemma") or "gemini-2." in mid:
+                continue
+            if "preview" in hay or any(k in hay for k in NON_TEXT):
                 continue
             label = m.get("displayName") or mid
             if "transcribe" in hay or "speech-to-text" in hay:

@@ -49,6 +49,15 @@ Prefer a double-click over a terminal? `scripts/make_son_app.sh` builds **Son.ap
 
 During client development, `cd client && npm run dev` serves the page with hot reload at <http://localhost:5173> (it still talks to the bot on :7860). `npm start` (build + preview on :8000) also still works if you want the page served separately.
 
+## Ubuntu
+
+Son runs on Ubuntu out of the box — no GPU, no audio drivers. The `uv sync` above resolves on Linux (manylinux wheels for both x86_64 and aarch64, Python 3.11–3.14), and both local models run on CPU: Parakeet STT idles around 480 MB RAM with short CPU bursts during a turn, Kokoro TTS the same. The server does no local audio I/O — the browser handles mic and speakers over WebRTC — so nothing ALSA/PulseAudio-related needs installing.
+
+Run it the same way: `uv run python son.py` (wrap it in systemd or tmux if you want it daemonized; `scripts/make_son_app.sh` is macOS-only). Two footguns worth knowing:
+
+- If `import sherpa_onnx` fails with a missing `libgomp.so`, fix it with `sudo apt install libgomp1`.
+- The `sherpa-onnx-core==1.13.5` pin in `pyproject.toml` exists because the *macOS* wheel ships without its C++ core; on Linux the wheel is self-contained, so the pin is just an extra package (harmless — leave it so the same file keeps working on both).
+
 ## Read out (no AI)
 
 The **Read** toggle in the header opens a text-to-speech page: paste anything, pick a voice, press **Speak** — it reads it back with a little media player (play/pause, ±10 s, speed 0.75–2×, download as WAV). No AI, no mic, no session. Voices are the same roster as the settings panel (Kokoro runs locally on your machine; the voice you pick here is also the chat voice), and speed is a playback control — it applies instantly without re-synthesizing.

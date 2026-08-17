@@ -375,30 +375,33 @@ def _fetch_models() -> dict:
         stt.append({"provider": "google", "id": "latest_short", "label": "latest_short"})
         stt.append({"provider": "google", "id": "latest_long", "label": "latest_long"})
         # The list endpoint doesn't report output modalities (always None),
-        # so classify from id/displayName: stable, text-only chat models only —
-        # no previews, no image/audio/video/music/robot/agent models in the
-        # picker. (Nano Banana / Lyria / Omni / robotics are display names,
-        # hence the keyword match over both id and displayName.)
+        # so classify from id/displayName. Capability slots (STT/TTS) get
+        # their models first, whatever their preview/version status; the
+        # brain picker then gets only stable, text-only chat models — no
+        # previews, no image/audio/video/music/robot/agent models. (Nano
+        # Banana / Lyria / Omni / robotics are display names, hence the
+        # keyword match over both id and displayName.)
         NON_TEXT = (
-            "image", "nano banana", "audio", "lyria", "veo", "robotics",
-            "tts", "transcribe", "speech", "omni", "antigravity", "deep-research",
+            "image", "nano banana", "lyria", "veo", "robotics",
+            "omni", "antigravity", "deep-research",
         )
         for m in data.get("models", []):
             mid = m.get("name", "").replace("models/", "")
             hay = (mid + " " + m.get("displayName", "")).lower()
             if "generateContent" not in (m.get("supportedGenerationMethods") or []):
                 continue
+            label = m.get("displayName") or mid
+            if "transcribe" in hay or "speech-to-text" in hay or "speech" in hay:
+                stt.append({"provider": "google", "id": mid, "label": label})
+                continue
+            if "tts" in hay or ("audio" in hay and "speech" in hay):
+                tts.append({"provider": "gemini", "id": mid, "label": label})
+                continue
             if mid.startswith("gemma") or "gemini-2." in mid:
                 continue
             if "preview" in hay or any(k in hay for k in NON_TEXT):
                 continue
-            label = m.get("displayName") or mid
-            if "transcribe" in hay or "speech-to-text" in hay:
-                stt.append({"provider": "google", "id": mid, "label": label})
-            elif "tts" in hay or ("audio" in hay and "speech" in hay):
-                tts.append({"provider": "gemini", "id": mid, "label": label})
-            else:
-                llm.append({"provider": "gemini", "id": mid, "label": label})
+            llm.append({"provider": "gemini", "id": mid, "label": label})
 
     if "openrouter" in providers:
         data = _provider_get("https://openrouter.ai/api/v1/models", "OPENROUTER_API_KEY")

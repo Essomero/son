@@ -15493,10 +15493,15 @@ function setupClient() {
       // bot row, this is a new reply: start a fresh row. Otherwise grow the
       // current bot row in place — never overwrite an earlier reply.
       //
-      // Message granularity is per-segment: with sentence-split TTS each
-      // sentence can arrive as its own message whose text does not extend the
-      // previous one. Merge both shapes: replace when the new text grows the
-      // current text (startsWith), append when it's a new segment.
+      // The server can send the same segment text more than once: per
+      // sentence from the TTS side, again from the LLM-response aggregator,
+      // and (for legacy clients) word-level frames — possibly out of order.
+      // Merge rules, in order:
+      //   - empty row: take the first chunk
+      //   - data.text already present as a prefix or suffix of the row
+      //     (a duplicate segment): keep the row unchanged
+      //   - data.text extends the current text (cumulative growth): replace
+      //   - otherwise it's a genuinely new segment: append
       onBotOutput: (data) => {
         if (!data?.text) return;
         const last = lastRow();
@@ -15504,7 +15509,14 @@ function setupClient() {
         if (!row) row = addTranscript("bot", data.text);
         const el = row.querySelector(".text");
         const cur = el.textContent;
-        el.textContent = !cur || data.text.startsWith(cur) ? data.text : cur + " " + data.text;
+        if (!cur) {
+          el.textContent = data.text;
+        } else if (cur.startsWith(data.text) || cur.endsWith(data.text)) {
+        } else if (data.text.startsWith(cur)) {
+          el.textContent = data.text;
+        } else {
+          el.textContent = cur + " " + data.text;
+        }
       }
     }
   });

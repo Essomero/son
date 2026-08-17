@@ -798,13 +798,15 @@ if __name__ == "__main__":
     dist = Path(__file__).parent / "client" / "dist"
 
     @lru_cache(maxsize=1)
-    def _client_shell(root: Path) -> str:
+    def _client_shell(root: Path, mtime: float) -> str:
         """index.html with relocatable (./assets) URLs made root-absolute.
 
         The chat route /s/<session_id> serves this shell: with base "./" the
         asset URLs would resolve under /s/... and 404, so rewrite them to
         /assets/... once and cache the result. Only the built bundle is
-        relocatable — nothing else in the page is path-relative."""
+        relocatable — nothing else in the page is path-relative. Keyed on the
+        file's mtime so a client rebuild invalidates it — otherwise the cached
+        shell keeps naming asset files the rebuild just deleted."""
         return (root / "index.html").read_text().replace("./assets/", "/assets/")
 
     if (dist / "index.html").is_file():
@@ -822,7 +824,8 @@ if __name__ == "__main__":
         # would resolve under /s/... — rewrite them root-absolute, cached.
         @app.get("/s/{session_id}", include_in_schema=False)
         def client_session() -> Response:
-            return Response(content=_client_shell(dist), media_type="text/html")
+            index = dist / "index.html"
+            return Response(content=_client_shell(dist, index.stat().st_mtime), media_type="text/html")
 
         @app.get("/roles.json", include_in_schema=False)
         def client_roles() -> FileResponse:

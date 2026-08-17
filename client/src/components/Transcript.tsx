@@ -125,6 +125,15 @@ export function ComposerBar({
     if (phase === "connected") areaRef.current?.focus();
   }, [phase]);
 
+  // Grow the input with its content, up to the CSS cap (170px) — beyond
+  // that it scrolls in place instead of hiding everything behind one line.
+  useEffect(() => {
+    const el = areaRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, 170)}px`;
+  }, [draft]);
+
   const send = () => {
     const text = draft.trim();
     if (!text) return;

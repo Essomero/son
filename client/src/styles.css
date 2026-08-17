@@ -729,6 +729,7 @@ code {
   display: flex;
   flex-direction: column;
   gap: 5px;
+  min-width: 0; /* shrink below content's min-content (wide images, long words) */
 }
 
 .row-avatar {
@@ -754,6 +755,7 @@ code {
   border-radius: 4px var(--r-md) var(--r-md) var(--r-md);
   padding: 10px 14px;
   font-size: 14.5px;
+  max-width: 100%; /* never wider than the row-body — long content scrolls inside */
 }
 
 .row.user .bubble {
@@ -775,6 +777,12 @@ code {
 
 .md {
   overflow-wrap: break-word;
+}
+
+.md img {
+  max-width: 100%;
+  height: auto;
+  border-radius: var(--r-sm);
 }
 
 .md > :first-child {

@@ -4,7 +4,7 @@
  */
 
 import { useState } from "react";
-import { ChevronDown, PanelLeft, PhoneOff, Plus, Settings2 } from "lucide-react";
+import { ChevronDown, PanelLeft, PhoneOff, Plus, Settings2, Volume2 } from "lucide-react";
 
 import type { Phase, Role } from "../lib/types";
 import { RoleAvatar } from "./Avatar";
@@ -16,9 +16,11 @@ export function Header({
   role,
   roles,
   panelOpen,
+  view,
   onSelectRole,
   onNewSession,
   onTogglePanel,
+  onToggleView,
   onEndSession,
   onOpenSettings,
 }: {
@@ -28,9 +30,11 @@ export function Header({
   role: Role | null;
   roles: Role[];
   panelOpen: boolean;
+  view: "chat" | "reader";
   onSelectRole: (r: Role) => void;
   onNewSession: () => void;
   onTogglePanel: () => void;
+  onToggleView: () => void;
   onEndSession: () => void;
   onOpenSettings: () => void;
 }) {
@@ -104,6 +108,17 @@ export function Header({
             <span className="icon-btn-label">End</span>
           </button>
         )}
+        <button
+          type="button"
+          className={`icon-btn${view === "reader" ? " active" : ""}`}
+          onClick={onToggleView}
+          title={view === "reader" ? "Back to the chat" : "Read out text — no AI, just speech"}
+          aria-label={view === "reader" ? "Back to the chat" : "Read out text"}
+          aria-pressed={view === "reader"}
+        >
+          <Volume2 size={16} />
+          <span className="icon-btn-label">Read</span>
+        </button>
         <button
           type="button"
           className={`icon-btn${panelOpen ? " active" : ""}`}

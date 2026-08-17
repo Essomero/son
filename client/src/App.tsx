@@ -14,6 +14,7 @@ import { Hero } from "./components/Hero";
 import { SessionsPanel } from "./components/SessionsPanel";
 import { Transcript, ComposerBar } from "./components/Transcript";
 import { SettingsModal } from "./components/SettingsModal";
+import { Reader } from "./components/Reader";
 import { FALLBACK_MODELS, resolveChoice } from "./lib/settings";
 
 const PANEL_KEY = "son.panel";
@@ -22,6 +23,7 @@ export default function App() {
   const s = useSonSession();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [panelOpen, setPanelOpen] = useState(() => localStorage.getItem(PANEL_KEY) !== "0");
+  const [view, setView] = useState<"chat" | "reader">("chat");
 
   useEffect(() => {
     localStorage.setItem(PANEL_KEY, panelOpen ? "1" : "0");
@@ -65,9 +67,11 @@ export default function App() {
         role={s.role}
         roles={s.roles}
         panelOpen={panelOpen}
+        view={view}
         onSelectRole={s.selectRole}
         onNewSession={() => void s.newSession()}
         onTogglePanel={() => setPanelOpen((v) => !v)}
+        onToggleView={() => setView((v) => (v === "chat" ? "reader" : "chat"))}
         onEndSession={() => void s.disconnect()}
         onOpenSettings={() => setSettingsOpen(true)}
       />
@@ -83,7 +87,13 @@ export default function App() {
         />
 
         <main className="stage">
-          {inChat ? (
+          {view === "reader" ? (
+            <Reader
+              models={models}
+              settings={s.settings}
+              onChangeVoice={(c) => s.updateSettings({ ...s.settings, tts: c })}
+            />
+          ) : inChat ? (
             <>
               <Transcript
                 messages={s.messages}

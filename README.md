@@ -49,6 +49,10 @@ Prefer a double-click over a terminal? `scripts/make_son_app.sh` builds **Son.ap
 
 During client development, `cd client && npm run dev` serves the page with hot reload at <http://localhost:5173> (it still talks to the bot on :7860). `npm start` (build + preview on :8000) also still works if you want the page served separately.
 
+## Read out (no AI)
+
+The **Read** toggle in the header opens a text-to-speech page: paste anything, pick a voice, press **Speak** — it reads it back with a little media player (play/pause, ±10 s, speed 0.75–2×). No AI, no mic, no session. Voices are the same roster as the settings panel (Kokoro runs locally on your machine; the voice you pick here is also the chat voice), and speed is a playback control — it applies instantly without re-synthesizing.
+
 ## Adding a role
 
 Drop a new file in `instructions/` with optional frontmatter, then regenerate the picker:

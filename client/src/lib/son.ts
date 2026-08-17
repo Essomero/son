@@ -11,6 +11,7 @@ export const BOT_ENDPOINT = params.get("endpoint") || "http://localhost:7860/sta
 const BOT_BASE = BOT_ENDPOINT.replace(/\/start$/, "");
 export const MODELS_URL = BOT_BASE + "/models";
 export const SESSIONS_URL = BOT_BASE + "/sessions";
+export const SPEAK_URL = BOT_BASE + "/speak";
 export const DEBUG = params.has("debug");
 
 let uidCounter = 0;

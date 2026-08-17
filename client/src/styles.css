@@ -1140,6 +1140,7 @@ code {
 .modal-actions {
   display: flex;
   justify-content: flex-end;
+  gap: 10px;
   margin-top: 14px;
 }
 
@@ -1227,6 +1228,13 @@ code {
 
 .persona-preview {
   min-height: 240px;
+}
+
+/* The Reader page separates tabs from its textarea with the flex-column
+   gap on .reader; the modal has no such container, so give the tabs their
+   own margin here. */
+.modal .reader-tabs {
+  margin-bottom: 10px;
 }
 
 /* --- Custom picker --------------------------------------------------------- */

@@ -5,6 +5,7 @@
   "version": "2.0.0",
   "scripts": {
     "dev": "vite",
+    "start": "npm run build && python3 -m http.server 8000 --directory dist",
     "build": "vite build",
     "typecheck": "tsc --noEmit",
     "preview": "vite preview"

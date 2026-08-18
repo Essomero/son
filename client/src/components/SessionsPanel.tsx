@@ -6,9 +6,10 @@
  */
 
 import { useState } from "react";
-import { Trash2 } from "lucide-react";
+import { Check, Copy, Trash2 } from "lucide-react";
 
 import type { SessionMeta } from "../lib/types";
+import { SESSIONS_URL } from "../lib/son";
 
 function relativeTime(iso: string): string {
   const d = new Date(iso); // server writes local ISO, no tz — parses as local
@@ -19,6 +20,24 @@ function relativeTime(iso: string): string {
   if (d.getFullYear() === now.getFullYear())
     return d.toLocaleDateString([], { day: "numeric", month: "short" });
   return d.toLocaleDateString([], { day: "numeric", month: "short", year: "numeric" });
+}
+
+/** Fetch a session's stored messages and format them as plain text. */
+async function copyTranscript(s: SessionMeta): Promise<boolean> {
+  try {
+    const res = await fetch(`${SESSIONS_URL}/${s.id}`);
+    if (!res.ok) return false;
+    const detail = (await res.json()) as {
+      messages: { role: string; text: string }[];
+    };
+    const text = detail.messages
+      .map((m) => `${m.role === "user" ? "You" : "Son"}: ${m.text}`)
+      .join("\n");
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function SessionsPanel({
@@ -38,6 +57,17 @@ export function SessionsPanel({
 }) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+
+  const handleCopy = async (s: SessionMeta) => {
+    if (await copyTranscript(s)) {
+      setCopiedId(s.id);
+      window.setTimeout(
+        () => setCopiedId((cur) => (cur === s.id ? null : cur)),
+        1500,
+      );
+    }
+  };
 
   const startEdit = (s: SessionMeta) => {
     setEditingId(s.id);
@@ -97,6 +127,19 @@ export function SessionsPanel({
                       {s.preview && <span className="sess-preview">{s.preview}</span>}
                     </button>
                   )}
+                  <button
+                    type="button"
+                    className="sess-copy"
+                    onClick={() => void handleCopy(s)}
+                    title="Copy transcript"
+                    aria-label={`Copy transcript of ${s.name}`}
+                  >
+                    {copiedId === s.id ? (
+                      <Check size={13} aria-hidden />
+                    ) : (
+                      <Copy size={13} aria-hidden />
+                    )}
+                  </button>
                   <button
                     type="button"
                     className="sess-del"

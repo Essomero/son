@@ -1771,6 +1771,11 @@ code {
   border-color: var(--amber);
   color: var(--amber-hi);
 }
+
+.reader-copy.copied {
+  border-color: var(--amber);
+  color: var(--amber-hi);
+}
 .reader-actions .start-btn {
   margin-left: auto;
 }

@@ -8,7 +8,7 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Download, Loader2, Pause, Play, RotateCcw, RotateCw, Volume2, Wand2 } from "lucide-react";
+import { Check, Copy, Download, Loader2, Pause, Play, RotateCcw, RotateCw, Volume2, Wand2 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
@@ -19,6 +19,7 @@ import type { Choice, Models, Settings } from "../lib/types";
 import { resolveChoice } from "../lib/settings";
 import { SPEAK_URL } from "../lib/son";
 import { cleanText } from "../lib/clean";
+import { AUDIO_PROMPT } from "../lib/audioPrompt";
 import { Picker } from "./Picker";
 
 const MAX_CHARS = 8000; // mirrors _SPEAK_MAX_CHARS in son.py
@@ -75,6 +76,7 @@ export function Reader({
   const [text, setText] = useState("");
   const [mode, setMode] = useState<"write" | "preview">("write");
   const [clean, setClean] = useState(true); // strip markdown noise before speaking
+  const [promptCopied, setPromptCopied] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [playing, setPlaying] = useState(false);
@@ -115,6 +117,27 @@ export function Reader({
     },
     [],
   );
+
+  /** Copy the audio-formatting prompt (lib/audioPrompt.ts) for use with any
+   *  LLM. The app is served over plain http on a LAN, where navigator.clipboard
+   *  doesn't exist (non-secure context) — fall back to a textarea + execCommand. */
+  const copyPrompt = async () => {
+    const text = AUDIO_PROMPT;
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      ta.remove();
+    }
+    setPromptCopied(true);
+    window.setTimeout(() => setPromptCopied(false), 1600);
+  };
 
   const speak = async () => {
     const t = clean ? cleaned : text.trim();
@@ -259,6 +282,16 @@ export function Reader({
       )}
 
       <div className="reader-actions">
+        <button
+          type="button"
+          className={`btn ghost reader-copy${promptCopied ? " copied" : ""}`}
+          onClick={() => void copyPrompt()}
+          title="Copy the audio-formatting prompt — paste it into any LLM with an article to get text that survives TTS"
+          aria-label="Copy the audio-formatting prompt"
+        >
+          {promptCopied ? <Check size={14} aria-hidden /> : <Copy size={14} aria-hidden />}
+          {promptCopied ? "Copied" : "Audio prompt"}
+        </button>
         <button
           type="button"
           className={`btn ghost reader-clean${clean ? " active" : ""}`}

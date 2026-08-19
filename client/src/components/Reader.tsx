@@ -8,7 +8,7 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Check, Copy, Download, Loader2, Pause, Play, RotateCcw, RotateCw, Volume2, Wand2 } from "lucide-react";
+import { Check, Copy, Download, ImagePlus, Loader2, Pause, Play, RotateCcw, RotateCw, Volume2, Wand2, X } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
@@ -60,13 +60,14 @@ function buildFfmpegPreview(args: {
   title: string;
   album: string;
   artist: string;
-  cover: string;
+  /** Picked cover file name (the bytes are uploaded — no server path exists). */
+  coverName: string;
 }): string {
-  const { stem, dir, format, bitrate, title, album, artist, cover } = args;
+  const { stem, dir, format, bitrate, title, album, artist, coverName } = args;
   const out = `${dir.replace(/\/+$/, "")}/${stem}.${format}`;
   const parts = ["ffmpeg", "-y", "-i", "<synthesized.wav>"];
-  const hasCover = cover.trim() !== "" && format !== "opus";
-  if (hasCover) parts.push("-i", shq(cover.trim()));
+  const hasCover = coverName.trim() !== "" && format !== "opus";
+  if (hasCover) parts.push("-i", coverName.trim());
   const codec = format === "mp3" ? "libmp3lame" : format === "m4a" ? "aac" : "libopus";
   parts.push("-c:a", codec, "-b:a", `${bitrate}k`);
   if (hasCover) {
@@ -155,7 +156,10 @@ export function Reader({
   const [title, setTitle] = useState("");
   const [album, setAlbum] = useState(settings.exportAlbum ?? "");
   const [artist, setArtist] = useState(settings.exportArtist ?? "");
-  const [cover, setCover] = useState("");
+  // Picked cover image (bytes are uploaded with the export — the browser
+  // never reveals the file's path, so it can't be typed or referenced).
+  const [coverFile, setCoverFile] = useState<File | null>(null);
+  const coverRef = useRef<HTMLInputElement>(null);
   const [ffmpegOk, setFfmpegOk] = useState(true);
   const [exportBusy, setExportBusy] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
@@ -200,7 +204,7 @@ export function Reader({
           title: title.trim() || stem,
           album: album.trim(),
           artist: artist.trim(),
-          cover,
+          coverName: coverFile ? coverFile.name : "",
         });
 
   // Prefill the folder from the server's detected download dir, and persist
@@ -350,6 +354,18 @@ export function Reader({
     setExportError(null);
     setExportResult(null);
     try {
+      // The picked cover travels as base64 bytes — a browser never exposes a
+      // file's real path, so the server can't look it up from a string.
+      let coverData: string | undefined;
+      if (coverFile) {
+        coverData = await new Promise<string>((resolve, reject) => {
+          const r = new FileReader();
+          r.onload = () => resolve(String(r.result).split(",")[1] ?? "");
+          r.onerror = () => reject(r.error ?? new Error("Could not read the cover image."));
+          r.readAsDataURL(coverFile);
+        });
+        if (!coverData) throw new Error("The cover image could not be read.");
+      }
       const res = await fetch(EXPORT_URL, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -363,7 +379,8 @@ export function Reader({
           title: title.trim() || undefined,
           album: album.trim() || undefined,
           artist: artist.trim() || undefined,
-          cover: cover.trim() || undefined,
+          cover_data: coverData,
+          cover_name: coverFile?.name,
         }),
       });
       const data = (await res.json().catch(() => null)) as {
@@ -598,6 +615,7 @@ export function Reader({
                   const f = v as ExportFormat;
                   setFormat(f);
                   onChangeSettings({ exportFormat: f });
+                  if (f === "opus") setCoverFile(null); // Opus (OGG) can't hold cover art
                 }}
                 label="Format"
               />
@@ -672,15 +690,50 @@ export function Reader({
                   aria-label="Artist"
                 />
               </label>
-              <label className="export-field">
+              <label className="export-field export-cover">
                 <span className="export-label">Cover art</span>
                 <input
-                  className="text-input"
-                  value={cover}
-                  onChange={(e) => setCover(e.target.value)}
-                  placeholder="/path/to/cover.jpg — mp3, m4a only"
-                  aria-label="Cover art"
+                  ref={coverRef}
+                  type="file"
+                  accept="image/*"
+                  hidden
+                  onChange={(e) => {
+                    setCoverFile(e.target.files?.[0] ?? null);
+                    e.target.value = ""; // allow re-picking the same file
+                  }}
                 />
+                <div className="export-cover-row">
+                  <button
+                    type="button"
+                    className="btn ghost export-cover-btn"
+                    onClick={() => coverRef.current?.click()}
+                    disabled={format === "opus"}
+                    title={
+                      format === "opus"
+                        ? "Opus (OGG) can't hold cover art — use mp3 or m4a"
+                        : "Pick an image from this computer"
+                    }
+                  >
+                    <ImagePlus size={14} aria-hidden />
+                    <span className="export-cover-name">{coverFile ? coverFile.name : "Choose image…"}</span>
+                  </button>
+                  {coverFile && (
+                    <button
+                      type="button"
+                      className="icon-btn"
+                      onClick={() => setCoverFile(null)}
+                      title="Remove cover art"
+                      aria-label="Remove cover art"
+                    >
+                      <X size={14} />
+                    </button>
+                  )}
+                </div>
+                <span className="field-hint">
+                  {format === "opus"
+                    ? "Opus (OGG) can't hold cover art — use mp3 or m4a."
+                    : "The image is uploaded with the export — mp3 and m4a embed it in the file."}
+                </span>
               </label>
             </div>
           </details>

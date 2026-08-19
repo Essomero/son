@@ -1821,12 +1821,39 @@ code {
   color: var(--muted);
 }
 
-.export-folder {
+.export-folder,
+.export-cover {
   grid-column: 1 / -1;
 }
 
 .export-field .field-hint {
   margin: 0;
+}
+
+.export-cover-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.export-cover-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+}
+
+.export-cover-btn .export-cover-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 320px;
+}
+
+.export-cover-btn[disabled] {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 /* The Export panel's small option dropdowns reuse the picker chrome but

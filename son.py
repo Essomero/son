@@ -14,6 +14,8 @@
 # in the RTVI /start request body; this bot reads them from runner_args.body.
 
 import asyncio
+import base64
+import binascii
 import io
 import os
 import re
@@ -934,16 +936,35 @@ if __name__ == "__main__":
         title = (payload.get("title") or "").strip() or stem
         album = (payload.get("album") or "").strip()
         artist = (payload.get("artist") or "").strip()
+        # Cover art comes either as a server-side path (typed by an advanced
+        # user) or as uploaded bytes from the client's file picker
+        # (cover_data/cover_name). The browser never reveals a picked file's
+        # path, so the image must travel as data — uploads take precedence.
         cover = (payload.get("cover") or "").strip()
-        if cover:
+        cover_bytes: bytes | None = None
+        cover_ext = ".jpg"
+        cover_data = payload.get("cover_data")
+        if cover_data is not None:
+            if not isinstance(cover_data, str) or not cover_data.strip():
+                raise HTTPException(status_code=400, detail="Cover image is empty.")
+            if len(cover_data) > 25_000_000:  # ~18 MB decoded
+                raise HTTPException(status_code=400, detail="Cover image is too large (max ~18 MB).")
+            try:
+                cover_bytes = base64.b64decode(cover_data, validate=True)
+            except (ValueError, binascii.Error):
+                raise HTTPException(status_code=400, detail="Cover image data is not valid base64.")
+            if not cover_bytes:
+                raise HTTPException(status_code=400, detail="Cover image is empty.")
+            cover_ext = Path(payload.get("cover_name") or "").suffix.lower() or ".jpg"
+        elif cover:
             cover_path = Path(cover).expanduser().resolve()
             if not cover_path.is_file():
                 raise HTTPException(status_code=400, detail=f"Cover art not found: {cover}")
-            if fmt == "opus":
-                raise HTTPException(
-                    status_code=400, detail="Cover art isn't supported in Opus (OGG) files — use mp3 or m4a."
-                )
             cover = str(cover_path)
+        if (cover_bytes is not None or cover) and fmt == "opus":
+            raise HTTPException(
+                status_code=400, detail="Cover art isn't supported in Opus (OGG) files — use mp3 or m4a."
+            )
 
         try:
             wav = speak_audio(text, provider, model, voice)
@@ -964,7 +985,12 @@ if __name__ == "__main__":
         with tempfile.TemporaryDirectory() as tmp:
             src = Path(tmp) / "input.wav"
             src.write_bytes(wav)
-            args = build_ffmpeg_args(src, dst, fmt, bitrate, title, album, artist, cover)
+            cover_arg = cover
+            if cover_bytes is not None:
+                cover_file = Path(tmp) / f"cover{cover_ext}"
+                cover_file.write_bytes(cover_bytes)
+                cover_arg = str(cover_file)
+            args = build_ffmpeg_args(src, dst, fmt, bitrate, title, album, artist, cover_arg)
             try:
                 proc = subprocess.run(
                     ["ffmpeg", *args], capture_output=True, text=True, timeout=180

@@ -15,15 +15,82 @@ import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
 import "katex/dist/katex.min.css";
 
-import type { Choice, Models, Settings } from "../lib/types";
+import type { Choice, ExportFormat, Models, Settings } from "../lib/types";
 import { resolveChoice } from "../lib/settings";
-import { SPEAK_URL } from "../lib/son";
+import { EXPORT_DEFAULTS_URL, EXPORT_URL, SPEAK_URL } from "../lib/son";
 import { cleanText } from "../lib/clean";
 import { AUDIO_PROMPT } from "../lib/audioPrompt";
+import { OptionPicker } from "./OptionPicker";
 import { Picker } from "./Picker";
 
 const MAX_CHARS = 8000; // mirrors _SPEAK_MAX_CHARS in son.py
 const SPEEDS = [0.75, 1, 1.5, 2];
+const EXPORT_BITRATES = [64, 96, 128, 192, 256]; // kbps — mirrors son.py
+
+/** Shell-quote for the displayed ffmpeg command — always quotes, even
+ *  without spaces: the command is copied into a shell, and an unquoted
+ *  stray space or ':' is a silent break. */
+function shq(s: string): string {
+  return '"' + s.replace(/\\/g, "\\\\").replace(/"/g, '\\"') + '"';
+}
+
+/** Same sanitize rule as son.py's sanitize_stem: ffmpeg reads a ':' in the
+ *  output path as a protocol prefix, shell metacharacters break a copied
+ *  command. ':' becomes '—', anything else that isn't letters/digits/space
+ *  ._- folds to '-'. */
+function sanitizeStem(name: string): string {
+  const stem = name.replace(/\.[^.]+$/, ""); // drop a trailing extension
+  return (
+    stem
+      .replace(/[^A-Za-z0-9 ._:_-]+/g, "-")
+      .replace(/\s+/g, " ")
+      .replace(/:/g, "—")
+      .replace(/^[. ]+|[. ]+$/g, "") || "reading"
+  );
+}
+
+/** The command the server will run for this export (template: the WAV input
+ *  is synthesized on the fly). Mirrors build_ffmpeg_args in son.py — keep
+ *  them in sync; the server's response echoes the exact command after a save. */
+function buildFfmpegPreview(args: {
+  stem: string;
+  dir: string;
+  format: ExportFormat;
+  bitrate: number;
+  title: string;
+  album: string;
+  artist: string;
+  cover: string;
+}): string {
+  const { stem, dir, format, bitrate, title, album, artist, cover } = args;
+  const out = `${dir.replace(/\/+$/, "")}/${stem}.${format}`;
+  const parts = ["ffmpeg", "-y", "-i", "<synthesized.wav>"];
+  const hasCover = cover.trim() !== "" && format !== "opus";
+  if (hasCover) parts.push("-i", shq(cover.trim()));
+  const codec = format === "mp3" ? "libmp3lame" : format === "m4a" ? "aac" : "libopus";
+  parts.push("-c:a", codec, "-b:a", `${bitrate}k`);
+  if (hasCover) {
+    parts.push("-map", "0:a", "-map", "1:v", "-c:v", "copy", "-disposition:v", "attached_pic");
+  } else {
+    parts.push("-map", "0:a");
+  }
+  if (title) parts.push("-metadata", `title=${title}`);
+  if (album) parts.push("-metadata", `album=${album}`);
+  if (artist) parts.push("-metadata", `artist=${artist}`);
+  if (format === "mp3" && hasCover) {
+    parts.push("-id3v2_version", "3");
+    parts.push("-metadata:s:v", "title=Album cover", "-metadata:s:v", "comment=Cover (front)");
+  }
+  parts.push(out);
+  return parts.map(shq).join(" ");
+}
+
+/** "26.4 MB" */
+function fmtSize(bytes: number): string {
+  if (bytes >= 1 << 20) return `${(bytes / (1 << 20)).toFixed(1)} MB`;
+  if (bytes >= 1 << 10) return `${(bytes / (1 << 10)).toFixed(1)} KB`;
+  return `${bytes} B`;
+}
 
 function fmtTime(sec: number): string {
   if (!Number.isFinite(sec) || sec < 0) sec = 0;
@@ -68,15 +135,32 @@ export function Reader({
   models,
   settings,
   onChangeVoice,
+  onChangeSettings,
 }: {
   models: Models;
   settings: Settings;
   onChangeVoice: (c: Choice) => void;
+  onChangeSettings: (patch: Partial<Settings>) => void;
 }) {
   const [text, setText] = useState("");
   const [mode, setMode] = useState<"write" | "preview">("write");
   const [clean, setClean] = useState(true); // strip markdown noise before speaking
   const [promptCopied, setPromptCopied] = useState(false);
+
+  // --- Export panel (server-side save + compress) --------------------------
+  const [name, setName] = useState(""); // "" → default stem from the text
+  const [dir, setDir] = useState(settings.exportDir ?? "");
+  const [format, setFormat] = useState<ExportFormat>(settings.exportFormat ?? "mp3");
+  const [bitrate, setBitrate] = useState(settings.exportBitrate ?? 128);
+  const [title, setTitle] = useState("");
+  const [album, setAlbum] = useState(settings.exportAlbum ?? "");
+  const [artist, setArtist] = useState(settings.exportArtist ?? "");
+  const [cover, setCover] = useState("");
+  const [ffmpegOk, setFfmpegOk] = useState(true);
+  const [exportBusy, setExportBusy] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
+  const [exportResult, setExportResult] = useState<{ path: string; size: number } | null>(null);
+  const [cmdCopied, setCmdCopied] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [playing, setPlaying] = useState(false);
@@ -98,6 +182,49 @@ export function Reader({
   const voice = useMemo(() => resolveChoice("tts", models.tts ?? [], settings), [models, settings]);
   const canSpeak = !busy && text.trim().length > 0;
 
+  // Export file name: the field overrides the same slug the browser download
+  // uses (derived from the text); empty means "follow the text". Either way
+  // it passes through sanitizeStem so the path and the copied command can't
+  // break on ':' or shell metacharacters.
+  const stem = name.trim() ? sanitizeStem(name) : audioName(text).replace(/\.wav$/, "");
+  const canExport = !exportBusy && text.trim().length > 0;
+  // The ffmpeg command preview (empty for wav — no compression happens).
+  const preview =
+    format === "wav"
+      ? ""
+      : buildFfmpegPreview({
+          stem,
+          dir: dir.trim() || "~/Downloads",
+          format,
+          bitrate,
+          title: title.trim() || stem,
+          album: album.trim(),
+          artist: artist.trim(),
+          cover,
+        });
+
+  // Prefill the folder from the server's detected download dir, and persist
+  // it so the panel remembers it next time. Mount-only — clearing the field
+  // means "use the server default" on the next load.
+  useEffect(() => {
+    let live = true;
+    void fetch(EXPORT_DEFAULTS_URL)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (!live || !d) return;
+        setFfmpegOk(Boolean(d.ffmpeg));
+        if (!settings.exportDir && typeof d.dir === "string") {
+          setDir(d.dir);
+          onChangeSettings({ exportDir: d.dir });
+        }
+      })
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Autoplay-policy insurance: the fetch between the click and play() can
   // cost the user-gesture context, so retry once on the next click anywhere.
   useEffect(() => {
@@ -118,11 +245,10 @@ export function Reader({
     [],
   );
 
-  /** Copy the audio-formatting prompt (lib/audioPrompt.ts) for use with any
-   *  LLM. The app is served over plain http on a LAN, where navigator.clipboard
-   *  doesn't exist (non-secure context) — fall back to a textarea + execCommand. */
-  const copyPrompt = async () => {
-    const text = AUDIO_PROMPT;
+  /** Copy any text. The app is served over plain http on a LAN, where
+   *  navigator.clipboard doesn't exist (non-secure context) — fall back to a
+   *  textarea + execCommand. */
+  const copyText = async (text: string) => {
     try {
       await navigator.clipboard.writeText(text);
     } catch {
@@ -135,9 +261,16 @@ export function Reader({
       document.execCommand("copy");
       ta.remove();
     }
-    setPromptCopied(true);
-    window.setTimeout(() => setPromptCopied(false), 1600);
   };
+
+  /** Flash a button to its "copied" state for ~1.5 s. */
+  const flash = (setter: (v: boolean) => void) => {
+    setter(true);
+    window.setTimeout(() => setter(false), 1600);
+  };
+
+  const copyPrompt = () => void copyText(AUDIO_PROMPT).then(() => flash(setPromptCopied));
+  const copyCommand = () => void copyText(preview).then(() => flash(setCmdCopied));
 
   const speak = async () => {
     const t = clean ? cleaned : text.trim();
@@ -207,12 +340,55 @@ export function Reader({
     setTime(v);
   };
 
+  /** Save (and compress) server-side into the folder of the user's choice.
+   *  The server re-synthesizes the textarea — the browser can't write to an
+   *  arbitrary path, so it asks the backend to. */
+  const exportAudio = async () => {
+    const t = clean ? cleaned : text.trim();
+    if (!t || exportBusy) return;
+    setExportBusy(true);
+    setExportError(null);
+    setExportResult(null);
+    try {
+      const res = await fetch(EXPORT_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          text: t,
+          voice,
+          filename: `${stem}.${format}`,
+          dir: dir.trim() || undefined,
+          format,
+          bitrate,
+          title: title.trim() || undefined,
+          album: album.trim() || undefined,
+          artist: artist.trim() || undefined,
+          cover: cover.trim() || undefined,
+        }),
+      });
+      const data = (await res.json().catch(() => null)) as {
+        detail?: string;
+        path?: string;
+        size?: number;
+      } | null;
+      if (!res.ok) {
+        setExportError(data?.detail || `Export failed (HTTP ${res.status}).`);
+        return;
+      }
+      setExportResult({ path: data?.path ?? "", size: data?.size ?? 0 });
+    } catch (e) {
+      setExportError(e instanceof Error ? e.message : "Export failed.");
+    } finally {
+      setExportBusy(false);
+    }
+  };
+
   const downloadAudio = () => {
     const url = urlRef.current;
     if (!url) return;
     const a = document.createElement("a");
     a.href = url;
-    a.download = audioName(text);
+    a.download = `${stem}.wav`;
     document.body.appendChild(a);
     a.click();
     a.remove();
@@ -392,6 +568,179 @@ export function Reader({
             </button>
           </div>
         </div>
+      )}
+
+      {urlRef.current && (
+          <section className="export-panel">
+          <h3 className="export-heading">Save as audio</h3>
+          <div className="export-grid">
+            <label className="export-field">
+              <span className="export-label">File name</span>
+              <input
+                className="text-input"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder={stem}
+                aria-label="File name"
+              />
+            </label>
+            <div className="export-field">
+              <span className="export-label">Format</span>
+              <OptionPicker
+                options={[
+                  { value: "mp3", label: "MP3" },
+                  { value: "m4a", label: "M4A (AAC)" },
+                  { value: "opus", label: "Opus" },
+                  { value: "wav", label: "WAV (no compression)" },
+                ]}
+                value={format}
+                onChange={(v) => {
+                  const f = v as ExportFormat;
+                  setFormat(f);
+                  onChangeSettings({ exportFormat: f });
+                }}
+                label="Format"
+              />
+            </div>
+            <div className="export-field">
+              <span className="export-label">Bitrate</span>
+              <OptionPicker
+                options={EXPORT_BITRATES.map((b) => ({ value: String(b), label: `${b} kbps` }))}
+                value={String(bitrate)}
+                onChange={(v) => {
+                  const b = Number(v);
+                  setBitrate(b);
+                  onChangeSettings({ exportBitrate: b });
+                }}
+                label="Bitrate"
+              />
+            </div>
+            <label className="export-field export-folder">
+              <span className="export-label">Folder</span>
+              <input
+                className="text-input"
+                value={dir}
+                onChange={(e) => {
+                  setDir(e.target.value);
+                  onChangeSettings({ exportDir: e.target.value.trim() || undefined });
+                }}
+                placeholder="~/Downloads (detected)"
+                aria-label="Folder"
+              />
+              <span className="field-hint">
+                The server writes the file here — the folder is detected from the system, change it freely.
+              </span>
+            </label>
+          </div>
+
+          <details className="export-tags">
+            <summary>Tags &amp; cover art</summary>
+            <div className="export-grid">
+              <label className="export-field">
+                <span className="export-label">Title</span>
+                <input
+                  className="text-input"
+                  value={title}
+                  onChange={(e) => setTitle(e.target.value)}
+                  placeholder={stem}
+                  aria-label="Title"
+                />
+              </label>
+              <label className="export-field">
+                <span className="export-label">Album</span>
+                <input
+                  className="text-input"
+                  value={album}
+                  onChange={(e) => {
+                    setAlbum(e.target.value);
+                    onChangeSettings({ exportAlbum: e.target.value.trim() || undefined });
+                  }}
+                  placeholder="Optional"
+                  aria-label="Album"
+                />
+              </label>
+              <label className="export-field">
+                <span className="export-label">Artist</span>
+                <input
+                  className="text-input"
+                  value={artist}
+                  onChange={(e) => {
+                    setArtist(e.target.value);
+                    onChangeSettings({ exportArtist: e.target.value.trim() || undefined });
+                  }}
+                  placeholder="Optional"
+                  aria-label="Artist"
+                />
+              </label>
+              <label className="export-field">
+                <span className="export-label">Cover art</span>
+                <input
+                  className="text-input"
+                  value={cover}
+                  onChange={(e) => setCover(e.target.value)}
+                  placeholder="/path/to/cover.jpg — mp3, m4a only"
+                  aria-label="Cover art"
+                />
+              </label>
+            </div>
+          </details>
+
+          {format !== "wav" && (
+            <div className="export-cmd">
+              <code>{preview}</code>
+              <button
+                type="button"
+                className={`icon-btn export-copy${cmdCopied ? " copied" : ""}`}
+                onClick={copyCommand}
+                title="Copy the ffmpeg command"
+                aria-label="Copy the ffmpeg command"
+              >
+                {cmdCopied ? <Check size={14} /> : <Copy size={14} />}
+              </button>
+            </div>
+          )}
+
+          <div className="export-actions">
+            <button
+              type="button"
+              className="btn primary"
+              onClick={() => void exportAudio()}
+              disabled={!canExport}
+              title={
+                format === "wav"
+                  ? "Save the raw WAV to the folder"
+                  : "Synthesize, compress and tag the file on the server, then save it to the folder"
+              }
+            >
+              {exportBusy ? (
+                <Loader2 size={15} className="spin" aria-hidden />
+              ) : (
+                <Download size={15} aria-hidden />
+              )}
+              {exportBusy ? "Saving…" : "Save to folder"}
+            </button>
+          </div>
+
+          {!ffmpegOk && format !== "wav" && (
+            <p className="reader-error">
+              ffmpeg isn't installed on the server — only WAV can be saved here. Install it (e.g.{" "}
+              <code>brew install ffmpeg</code>) to use MP3, M4A or Opus.
+            </p>
+          )}
+
+          {exportError && (
+            <p className="reader-error" role="alert">
+              {exportError}
+            </p>
+          )}
+
+          {exportResult && (
+            <p className="export-result" role="status">
+              Saved <strong>{exportResult.path}</strong> ({fmtSize(exportResult.size)})
+            </p>
+          )}
+
+        </section>
       )}
 
       <audio

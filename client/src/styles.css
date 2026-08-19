@@ -1784,6 +1784,135 @@ code {
   margin-left: 2px;
 }
 
+/* --- Export panel (save-as-audio) ----------------------------------------- */
+.export-panel {
+  margin-top: 18px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  padding: 18px;
+}
+
+.export-heading {
+  margin: 0 0 14px;
+  font-size: 12px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.export-grid {
+  display: grid;
+  grid-template-columns: 2fr 1fr 1fr;
+  gap: 12px;
+  align-items: start;
+}
+
+.export-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.export-label {
+  font-size: 12px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.export-folder {
+  grid-column: 1 / -1;
+}
+
+.export-field .field-hint {
+  margin: 0;
+}
+
+/* The Export panel's small option dropdowns reuse the picker chrome but
+   sit next to text inputs — same compact padding, and the pop floats over
+   the page instead of pushing the fields below it down. */
+.opt-picker-trigger {
+  padding: 10px 12px;
+}
+
+.opt-picker-pop {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 20;
+  min-width: 100%;
+}
+
+.export-tags {
+  margin-top: 14px;
+  border-top: 1px dashed var(--line-soft);
+  padding-top: 10px;
+}
+
+.export-tags summary {
+  cursor: pointer;
+  font-size: 12px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+  user-select: none;
+}
+
+.export-tags summary:hover {
+  color: var(--ink-dim);
+}
+
+.export-tags[open] .export-grid {
+  margin-top: 12px;
+}
+
+.export-cmd {
+  margin-top: 14px;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  background: var(--raised);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  padding: 10px 12px;
+}
+
+.export-cmd code {
+  flex: 1;
+  min-width: 0;
+  font: 12px/1.6 var(--font-mono);
+  color: var(--ink-dim);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.export-copy.copied {
+  color: var(--amber-hi);
+}
+
+.export-actions {
+  margin-top: 14px;
+}
+
+.export-result {
+  margin: 10px 0 0;
+  font-size: 13px;
+  color: var(--ok);
+}
+
+.export-result strong {
+  color: var(--ink);
+  font-weight: 600;
+  word-break: break-all;
+}
+
+@media (max-width: 640px) {
+  .export-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 /* --- Rendered markdown preview -------------------------------------------- */
 .reader-preview {
   min-height: 200px;

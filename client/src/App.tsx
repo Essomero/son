@@ -132,6 +132,7 @@ export default function App() {
               models={models}
               settings={s.settings}
               onChangeVoice={(c) => s.updateSettings({ ...s.settings, tts: c })}
+              onChangeSettings={(patch) => s.updateSettings({ ...s.settings, ...patch })}
             />
           ) : inChat ? (
             <>

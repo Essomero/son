@@ -17,6 +17,9 @@ import asyncio
 import io
 import os
 import re
+import shutil
+import subprocess
+import tempfile
 import threading
 import time
 import wave
@@ -314,6 +317,107 @@ def speak_audio(text: str, provider: str, model: str | None, voice: str | None) 
     service, lock = _get_tts_service(provider, model, voice)
     with lock:
         return _synthesize_to_wav(service, text)
+
+
+def require_speak_text(text: str) -> str:
+    """Shared text validation for /speak and /export."""
+    text = (text or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Nothing to read — paste some text first.")
+    if len(text) > _SPEAK_MAX_CHARS:
+        raise HTTPException(
+            status_code=400, detail=f"Text is too long (max {_SPEAK_MAX_CHARS} characters)."
+        )
+    return text
+
+
+def resolve_speak_voice(payload: dict) -> tuple[str, str | None, str | None]:
+    """{voice: {provider, id}} → (provider, model, voice). Unavailable
+    providers fall back to the local kokoro voice, same as the chat path."""
+    choice = payload.get("voice") or {}
+    provider = choice.get("provider") or "kokoro"
+    if provider not in TTS_PROVIDER_ENV_KEYS or (
+        TTS_PROVIDER_ENV_KEYS[provider] and not os.getenv(TTS_PROVIDER_ENV_KEYS[provider])
+    ):
+        logger.warning(f"TTS provider '{provider}' unavailable; using kokoro")
+        provider = "kokoro"
+    if provider == "kokoro":
+        model, voice = None, choice.get("id")
+    else:
+        model, voice = choice.get("id"), None
+    return provider, model, voice
+
+
+# --- Read-page export (POST /export): save + compress with ffmpeg -----------
+# The browser can't choose where downloads land, so the server writes the file
+# itself: re-synthesize the textarea, then either save the raw WAV or compress
+# it with ffmpeg (present on the server machine, run via subprocess). The WAV
+# is roughly 2.6 MB/minute of speech; podcast-grade AAC/Opus at 96–128 kbps is
+# ~5x smaller at quality a listener can't tell apart. Tags and cover art go in
+# as ffmpeg metadata.
+
+EXPORT_FORMATS = ("wav", "mp3", "m4a", "opus")
+EXPORT_DEFAULT_BITRATE = 128  # kbps
+EXPORT_BITRATES = (64, 96, 128, 192, 256)
+
+
+def detect_download_dir() -> str:
+    """The server's own downloads folder (the client asks for it via
+    /export/defaults so the Export panel can prefill)."""
+    home = Path.home()
+    for candidate in (home / "Downloads", home / "Desktop", home):
+        if candidate.is_dir():
+            return str(candidate)
+    return str(home)
+
+
+def sanitize_stem(name: str) -> str:
+    """A file name that survives ffmpeg and the filesystem. ffmpeg treats a
+    ':' in the output path as a protocol prefix (e.g. "a:b.mp3" is protocol
+    'a'), and shell metacharacters make a copied command silently fail. Keep
+    letters, digits, spaces, dot, dash, underscore; a ':' becomes an em dash
+    '—', everything else folds to '-', then tidy the edges so the result
+    isn't empty, '.' or '..'."""
+    stem = Path(name or "").stem
+    # ':' survives this pass on purpose — swapped for the em dash just after.
+    stem = re.sub(r"[^A-Za-z0-9 ._:_-]+", "-", stem)
+    stem = re.sub(r"\s+", " ", stem).replace(":", "—").strip(" .")
+    return stem or "reading"
+
+
+def shell_quote(s: str) -> str:
+    """Always-quoted for the echoed ffmpeg command — quote even when there
+    are no spaces: the command is copied into a shell, and an unquoted stray
+    space or ':' is a silent break."""
+    return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def build_ffmpeg_args(
+    src: Path, dst: Path, fmt: str, bitrate: int, title: str, album: str, artist: str, cover: str | None
+) -> list[str]:
+    """The exact ffmpeg arguments for this export — executed as-is by the
+    server and echoed (with "ffmpeg" prepended) to the client for display."""
+    args = ["-y", "-i", str(src)]
+    has_cover = bool(cover) and fmt in ("mp3", "m4a")
+    if has_cover:
+        args += ["-i", cover]
+    codec = {"mp3": "libmp3lame", "m4a": "aac", "opus": "libopus"}[fmt]
+    args += ["-c:a", codec, "-b:a", f"{bitrate}k"]
+    if has_cover:
+        # attached_pic is the standard way to embed cover art (ID3 APIC for
+        # mp3, the covr atom for m4a). Opus/OGG has no picture channel — the
+        # route rejects cover for it up front.
+        args += ["-map", "0:a", "-map", "1:v", "-c:v", "copy", "-disposition:v", "attached_pic"]
+    else:
+        args += ["-map", "0:a"]
+    for key, value in (("title", title), ("album", album), ("artist", artist)):
+        if value:
+            args += ["-metadata", f"{key}={value}"]
+    if fmt == "mp3" and has_cover:
+        args += ["-id3v2_version", "3", "-metadata:s:v", "title=Album cover",
+                 "-metadata:s:v", "comment=Cover (front)"]
+    args.append(str(dst))
+    return args
 
 
 def load_instruction(name: str | None) -> str:
@@ -774,30 +878,108 @@ if __name__ == "__main__":
         cloud id → model name (the roster's tts entries are models there).
         Unavailable providers fall back to the local kokoro voice, same as
         the chat path."""
-        text = (payload.get("text") or "").strip()
-        if not text:
-            raise HTTPException(status_code=400, detail="Nothing to read — paste some text first.")
-        if len(text) > _SPEAK_MAX_CHARS:
-            raise HTTPException(
-                status_code=400, detail=f"Text is too long (max {_SPEAK_MAX_CHARS} characters)."
-            )
-        choice = payload.get("voice") or {}
-        provider = choice.get("provider") or "kokoro"
-        if provider not in TTS_PROVIDER_ENV_KEYS or (
-            TTS_PROVIDER_ENV_KEYS[provider] and not os.getenv(TTS_PROVIDER_ENV_KEYS[provider])
-        ):
-            logger.warning(f"/speak: TTS provider '{provider}' unavailable; using kokoro")
-            provider = "kokoro"
-        if provider == "kokoro":
-            model, voice = None, choice.get("id")
-        else:
-            model, voice = choice.get("id"), None
+        text = require_speak_text(payload.get("text"))
+        provider, model, voice = resolve_speak_voice(payload)
         try:
             wav = speak_audio(text, provider, model, voice)
         except Exception as e:
             logger.warning(f"/speak failed ({provider}): {e}")
             raise HTTPException(status_code=502, detail=f"Speech failed: {e}")
         return Response(content=wav, media_type="audio/wav")
+
+    def unique_path(dst: Path) -> Path:
+        """If dst exists, pick the next Finder-style name — "read (2).mp3",
+        "read (3).mp3"… — so an export never silently overwrites a file."""
+        if not dst.exists():
+            return dst
+        stem, suffix = dst.stem, dst.suffix
+        for n in range(2, 1000):
+            candidate = dst.with_name(f"{stem} ({n}){suffix}")
+            if not candidate.exists():
+                return candidate
+        return dst  # unreachable in practice — 998 names already taken
+
+    @app.get("/export/defaults", include_in_schema=False)
+    def export_defaults() -> dict:
+        """Download-folder detection + ffmpeg availability. Detection is
+        server-side — the browser can't see the filesystem, but the server is
+        the user's machine and knows its own home directory."""
+        return {"dir": detect_download_dir(), "ffmpeg": bool(shutil.which("ffmpeg"))}
+
+    @app.post("/export", include_in_schema=False)
+    def export(payload: dict = Body(...)) -> dict:
+        """Save the read-out page's text as a file in a folder of the user's
+        choice. The server re-synthesizes so the file written is exactly what
+        the textarea holds: {text, voice, filename, dir, format, bitrate,
+        title, album, artist, cover} → {path, size, format, command}. With
+        ffmpeg available the file is compressed (mp3/m4a/opus) and tagged;
+        without it, only wav can be saved."""
+        text = require_speak_text(payload.get("text"))
+        provider, model, voice = resolve_speak_voice(payload)
+        fmt = (payload.get("format") or "mp3").lower()
+        if fmt not in EXPORT_FORMATS:
+            raise HTTPException(
+                status_code=400, detail=f"Format must be one of: {', '.join(EXPORT_FORMATS)}."
+            )
+        try:
+            bitrate = int(payload.get("bitrate") or EXPORT_DEFAULT_BITRATE)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="Bitrate must be a number (kbps).")
+        bitrate = max(16, min(bitrate, 512))
+
+        stem = sanitize_stem(payload.get("filename"))
+        out_dir = Path(payload.get("dir") or detect_download_dir()).expanduser()
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        title = (payload.get("title") or "").strip() or stem
+        album = (payload.get("album") or "").strip()
+        artist = (payload.get("artist") or "").strip()
+        cover = (payload.get("cover") or "").strip()
+        if cover:
+            cover_path = Path(cover).expanduser().resolve()
+            if not cover_path.is_file():
+                raise HTTPException(status_code=400, detail=f"Cover art not found: {cover}")
+            if fmt == "opus":
+                raise HTTPException(
+                    status_code=400, detail="Cover art isn't supported in Opus (OGG) files — use mp3 or m4a."
+                )
+            cover = str(cover_path)
+
+        try:
+            wav = speak_audio(text, provider, model, voice)
+        except Exception as e:
+            logger.warning(f"/export synthesis failed ({provider}): {e}")
+            raise HTTPException(status_code=502, detail=f"Speech failed: {e}")
+
+        dst = unique_path(out_dir / f"{stem}.{fmt}")
+        if fmt == "wav":
+            dst.write_bytes(wav)
+            return {"path": str(dst), "size": len(wav), "format": "wav", "command": None}
+
+        if not shutil.which("ffmpeg"):
+            raise HTTPException(
+                status_code=503,
+                detail="ffmpeg is not installed on the server — install it (e.g. `brew install ffmpeg`) or export as WAV.",
+            )
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "input.wav"
+            src.write_bytes(wav)
+            args = build_ffmpeg_args(src, dst, fmt, bitrate, title, album, artist, cover)
+            try:
+                proc = subprocess.run(
+                    ["ffmpeg", *args], capture_output=True, text=True, timeout=180
+                )
+            except subprocess.TimeoutExpired:
+                raise HTTPException(status_code=500, detail="ffmpeg timed out.")
+            if proc.returncode != 0:
+                logger.warning(f"/export ffmpeg failed: {proc.stderr[-500:]}")
+                raise HTTPException(status_code=500, detail=f"ffmpeg failed: {proc.stderr.strip()[-300:]}")
+        return {
+            "path": str(dst),
+            "size": dst.stat().st_size,
+            "format": fmt,
+            "command": "ffmpeg " + " ".join(shell_quote(a) for a in args),
+        }
 
     # Serve the built client from this same app — one process, one URL.
     # These must be registered BEFORE main(): the runner adds its own routes

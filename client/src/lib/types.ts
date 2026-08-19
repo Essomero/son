@@ -21,13 +21,23 @@ export interface Choice {
   id: string;
 }
 
+/** Output formats for the read page's Export panel (server-side ffmpeg). */
+export type ExportFormat = "wav" | "mp3" | "m4a" | "opus";
+
 export interface Settings {
   llm?: Choice;
   stt?: Choice;
   tts?: Choice;
+  /** Read-page export prefs, persisted so the panel remembers them. */
+  exportDir?: string;
+  exportFormat?: ExportFormat;
+  exportBitrate?: number;
+  exportArtist?: string;
+  exportAlbum?: string;
 }
 
-export type Capability = keyof Settings;
+// The roster is keyed by capability only — export prefs above are not models.
+export type Capability = "llm" | "stt" | "tts";
 
 export type Models = Record<Capability, ModelOption[]>;
 

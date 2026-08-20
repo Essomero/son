@@ -175,7 +175,7 @@ Two local processes, then Son finds it in the STT picker:
 ```bash
 # 1. whisper.cpp server (model backend, :8081)
 cd ~/.cache/son/whisper.cpp && ./build/bin/whisper-server \
-    -m models/ggml-whisper-small-son.bin --host 127.0.0.1 --port 8081 --threads 8
+    -m models/ggml-whisper-small-son.bin --host 127.0.0.1 --port 8081 --threads 8 -bs 5
 
 # 2. OpenAI-compat shim (:8083, from the repo root) — pipecat speaks
 #    OpenAI multipart, whisper.cpp only speaks /inference; the shim

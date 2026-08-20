@@ -119,6 +119,14 @@ STT_CLEANUP_SYSTEM_PROMPT = (
     "input is a single word or fragment, output it as-is."
 )
 
+# Words the cleanup stage may drop without losing meaning; every other
+# raw word must survive cleaning verbatim (see the guard in _clean).
+CLEANUP_FILLERS = {"um", "uh", "hmm", "hm", "ah", "er", "eh"}
+
+
+def _norm_words(s: str) -> set[str]:
+    return {w for w in re.findall(r"[a-z']+", s.lower())} - CLEANUP_FILLERS
+
 # --- Model providers ----------------------------------------------------------
 # A provider is enabled only when its API key is present in .env (same pattern
 # as the readme project's api/models.js). The client's settings panel picks a
@@ -616,11 +624,27 @@ class TranscriptCleanupProcessor(FrameProcessor):
         super().__init__()
         self._model = model
         self._last_raw = ""
+        self._last_raw_at = 0.0  # monotonic time the last finalized frame arrived
         self._client = httpx.AsyncClient(
             base_url=base_url,
             headers={"Authorization": f"Bearer {api_key}"} if api_key else {},
             timeout=20.0,
         )
+
+    def _debug_log(self, line: str) -> None:
+        """Append one line to the cleanup debug log (bounded, best-effort).
+
+        Terminal scrollback isn't recoverable after the fact, so the
+        raw->cleaned history lands here too — the file that settles
+        double-message / deletion reports."""
+        try:
+            path = Path.home() / ".cache" / "son" / "debug" / "cleanup.log"
+            if path.exists() and path.stat().st_size > 1_000_000:
+                path.unlink()  # debug instrument: start fresh, never grow
+            with open(path, "a") as f:
+                f.write(f"{time.strftime('%H:%M:%S')} {line}\n")
+        except OSError:
+            pass
 
     async def process_frame(self, frame, direction):
         # super() first: the base owns StartFrame handling — without it the
@@ -632,6 +656,21 @@ class TranscriptCleanupProcessor(FrameProcessor):
             and isinstance(frame, TranscriptionFrame)
             and frame.finalized
         ):
+            key = frame.text.strip().lower()
+            now = time.monotonic()
+            if key and key == self._last_raw and now - self._last_raw_at < 2.0:
+                # Same text as the turn we just processed, within 2 s: a
+                # double emission of the final frame, not a genuine repeat
+                # (a real one needs speech + whisper + cleanup, >2 s). The
+                # cleaned frame was already pushed — swallow the duplicate
+                # so the transcript and son.db get one message per turn.
+                logger.warning(
+                    f"cleanup: duplicate finalized frame dropped ({frame.text!r})"
+                )
+                self._debug_log(f"DROP duplicate final: {frame.text!r}")
+                return
+            self._last_raw = key
+            self._last_raw_at = now
             # Snapshot the turn-level telemetry BEFORE the cleanup await —
             # the roll keeps filling during the 1-3 s model call, so reading
             # it afterwards would describe the NEXT turn's audio.
@@ -644,18 +683,11 @@ class TranscriptCleanupProcessor(FrameProcessor):
             cleaned = await self._clean(frame.text)
             # Debug instrument for repeated-phrase transcriptions: log the
             # raw/cleaned pair every turn, and when either side contains a
-            # verbatim repeated n-gram — or the same finalized text arrives
-            # twice in a row (the short-utterance variant) — dump the last
-            # ~25 s of mic audio (pre- and post-filter) for replay.
+            # verbatim repeated n-gram dump the last ~25 s of mic audio
+            # (pre- and post-filter) for replay.
             logger.info(f"cleanup: {frame.text!r} -> {cleaned!r}")
-            key = frame.text.strip().lower()
-            duplicate = bool(key) and key == self._last_raw
-            self._last_raw = key
-            if (
-                repeat_phrase(frame.text)
-                or (cleaned and repeat_phrase(cleaned))
-                or duplicate
-            ):
+            self._debug_log(f"final: {frame.text!r} cleaned={cleaned!r}")
+            if repeat_phrase(frame.text) or (cleaned and repeat_phrase(cleaned)):
                 logger.warning(
                     "repeated phrase in transcript — audio dumped to "
                     "~/.cache/son/debug/repeat-*"
@@ -709,15 +741,24 @@ class TranscriptCleanupProcessor(FrameProcessor):
                 # s1-mini occasionally emits nothing at all (empty reasoning
                 # channel); one retry before falling back to the raw text.
                 cleaned = await once()
-            if cleaned and len(cleaned.split()) < 0.6 * len(text.split()):
-                # s1-mini sometimes "normalizes" by deleting whole clauses
-                # the speaker actually said (live: 'I love spreadsheets,
-                # what's exciting about yours?' -> 'What's exciting about
-                # yours?'). Losing the user's words is worse than the raw
-                # text — fall back to it.
+            missing = _norm_words(text) - _norm_words(cleaned)
+            if cleaned and missing:
+                # s1-mini sometimes "normalizes" by deleting or rewriting
+                # words the speaker actually said (live: 'I love
+                # spreadsheets, what's exciting about yours?' -> 'What's
+                # exciting about yours?', and 'The last purchase was
+                # exciting about yours' -> a same-length rewrite). A
+                # word-count ratio can't catch same-length rewrites, so
+                # require every raw word (minus fillers) to survive.
+                # Losing the user's words is worse than the raw text —
+                # fall back to it.
                 logger.warning(
-                    f"cleanup dropped content ({len(text.split())} -> "
-                    f"{len(cleaned.split())} words); keeping raw"
+                    f"cleanup dropped words {sorted(missing)!r} "
+                    f"({text!r} -> {cleaned!r}); keeping raw"
+                )
+                self._debug_log(
+                    f"GUARD keep raw (missing {sorted(missing)!r}): "
+                    f"{text!r} -> {cleaned!r}"
                 )
                 return ""
             return cleaned

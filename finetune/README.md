@@ -187,9 +187,12 @@ embedding's duplicate output.
 Two local processes, then Son finds it in the STT picker:
 
 ```bash
-# 1. whisper.cpp server (model backend, :8081)
+# 1. whisper.cpp server (model backend, :8081). The decode flags are the
+#    quiet-speech fail-safes from docs/RESEARCH-QUIET-SPEECH.md §3B (keep
+#    in sync with scripts/Son.applescript).
 cd ~/.cache/son/whisper.cpp && ./build/bin/whisper-server \
-    -m models/ggml-whisper-small-son-soft.bin --host 127.0.0.1 --port 8081 --threads 8 -bs 5
+    -m models/ggml-whisper-small-son-soft.bin --host 127.0.0.1 --port 8081 --threads 8 -bs 5 \
+    --no-speech-thold 0.75 --logprob-thold -0.5 -nt
 
 # 2. OpenAI-compat shim (:8083, from the repo root) — pipecat speaks
 #    OpenAI multipart, whisper.cpp only speaks /inference; the shim

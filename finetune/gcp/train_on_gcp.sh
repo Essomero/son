@@ -90,7 +90,10 @@ echo "Done marker: $(gsutil cat "gs://$BUCKET/DONE")"
 # 5. Download the final model (skip per-epoch checkpoints — the final save
 #    is the best model, via load_best_model_at_end).
 mkdir -p finetune/out
-gsutil -m cp -r -x "checkpoint-[0-9]*" "gs://$BUCKET/out" finetune/out/
+# rsync, not cp — cp has no -x. The pattern is matched against the full
+# object name (re.match), so it needs the leading ".*" to skip the
+# per-epoch checkpoint dirs (checkpoints are ~2.9 GB each).
+gsutil -m rsync -r -x ".*checkpoint-[0-9]*" "gs://$BUCKET/out" finetune/out/
 
 # 6. VM and staging bucket are no longer needed.
 gcloud compute instances delete "$VM" --zone "$ZONE" --quiet

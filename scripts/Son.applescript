@@ -38,7 +38,7 @@ on run
 		repeat 2 times
 			if portUp(8081) then exit repeat
 			tell application "Terminal"
-				do script "cd " & quoted form of whisperPath & " && exec " & quoted form of whisperPath & "/build/bin/whisper-server -m models/ggml-whisper-small-son.bin --host 127.0.0.1 --port 8081 --threads 8 -bs 5"
+				do script "cd " & quoted form of whisperPath & " && exec " & quoted form of whisperPath & "/build/bin/whisper-server -m models/ggml-whisper-small-son-soft.bin --host 127.0.0.1 --port 8081 --threads 8 -bs 5"
 			end tell
 			my logLine("whisper do script issued")
 			repeat 30 times
@@ -108,7 +108,7 @@ end logLine
 -- and may be absent on a fresh machine — never block the launcher on it.
 on whisperReady(wPath)
 	try
-		do shell script "test -x " & quoted form of (wPath & "/build/bin/whisper-server") & " && test -f " & quoted form of (wPath & "/models/ggml-whisper-small-son.bin")
+		do shell script "test -x " & quoted form of (wPath & "/build/bin/whisper-server") & " && test -f " & quoted form of (wPath & "/models/ggml-whisper-small-son-soft.bin")
 		return true
 	on error errMsg
 		my logLine("whisperReady FAIL: " & errMsg)

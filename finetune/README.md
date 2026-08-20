@@ -141,6 +141,20 @@ Gotchas that cost real time during the first run:
   matching wheel (training never uses torchaudio, but `import transformers`
   crashes on the mismatch).
 
+### Soft-speech retrain (whisper-small-son-soft)
+
+A second generation aimed at the failure mode that actually mattered:
+soft/noisy mic audio. Same pipeline as above plus a 6-way augmentation in
+`train_whisper.py` (volume attenuation ×6, pink noise, both) — ~15% of the
+dev set was soft+noisy. Result: HF dev WER 15.3% vs 14.4% for v1 (worse on
+clean clips, as designed), but through the whisper.cpp serving path it
+scores 8.5% vs 8.9% on the 78-clip dev set and fixes several live soft
+mishears. This is the model Son's launcher serves now.
+
+- Weights: `finetune/out/whisper-small-son-soft/` (HF) and
+  `~/.cache/son/whisper.cpp/models/ggml-whisper-small-son-soft.bin` (GGML
+  f16, 465 MB). v1's files are kept for rollback.
+
 ## 3. Convert to GGML
 
 whisper.cpp serves GGML, not safetensors:
@@ -175,7 +189,7 @@ Two local processes, then Son finds it in the STT picker:
 ```bash
 # 1. whisper.cpp server (model backend, :8081)
 cd ~/.cache/son/whisper.cpp && ./build/bin/whisper-server \
-    -m models/ggml-whisper-small-son.bin --host 127.0.0.1 --port 8081 --threads 8 -bs 5
+    -m models/ggml-whisper-small-son-soft.bin --host 127.0.0.1 --port 8081 --threads 8 -bs 5
 
 # 2. OpenAI-compat shim (:8083, from the repo root) — pipecat speaks
 #    OpenAI multipart, whisper.cpp only speaks /inference; the shim

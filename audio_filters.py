@@ -241,7 +241,15 @@ class GainAGCFilter(BaseAudioFilter):
             # speech onset (~2-3 frames).
             self._gain = 1.0 + (self._gain - 1.0) * 0.95
         capture.agc_gain = self._gain  # telemetry for the quiet-turn trigger
-        out = np.clip(arr * self._gain, -1.0, 1.0) * 32767.0
+        # Peak-aware limiter: quiet speech has a high crest factor, so a
+        # big RMS-driven gain clips the transients (captured live: peaks
+        # at 0 dBFS). Cap this frame's gain so its peak lands at -1 dBFS —
+        # clipping distortion is a whisper hallucination trigger.
+        peak = float(np.max(np.abs(arr)))
+        gain = self._gain
+        if peak > 1e-6:
+            gain = min(gain, 10 ** (-1.0 / 20) / peak)
+        out = np.clip(arr * gain, -1.0, 1.0) * 32767.0
         return out.astype(np.int16).tobytes()
 
 

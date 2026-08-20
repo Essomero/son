@@ -107,10 +107,34 @@ debug dumps (`quiet-*` + cleanup.log).
 4. **A/B `SON_DENOISE=0`.** RNNoise's suppression is visible in the captures
    (speech-active fraction drops after the chain — e.g. 41% → 22%, 18% → 6%)
    and community reports say it can eat low-level speech. For whisper-soft
-   input the denoiser may do more harm than good; test both. (DeepFilterNet
-   was A/B'd on the same captures in §6 and made every row worse — denoising
-   before whisper is now the strongly-implied wrong direction, per
-   [whisper#2125](https://github.com/openai/whisper/discussions/2125).)
+   input the denoiser may do more harm than good; test both. An offline
+   replay of the pre captures (`scripts/ab_denoise.py`: cold-start, current
+   multiband AGC, both variants, transcribed with the server's whisper
+   flags) points the same way:
+
+   | capture | RNNoise on | RNNoise off | read |
+   |---|---|---|---|
+   | 174654 (GT unknown) | "(indistinct)" | "Not that much, just chill out" | **off recovers speech from a failure** |
+   | 175059 (GT known) | WER 1.17 | WER 0.67 "Not too much, just chilling" | off better |
+   | 175228 (GT known) | WER 2.00 | WER 2.00 (keeps "…much, just chilling") | tie |
+   | 174756 (GT known) | WER 3.33 | WER 3.33 | tie |
+   | 171839 (GT unknown) | "The last purchase…" | "My last purchase…" | tie |
+   | 182013 (GT unknown) | "May I hide in" | "Hi, how are you doing" | **off better** — DeepFilterNet independently heard "Hey, how are you doing" on the same raw audio (§5) |
+   | 182114 | repetition loop | repetition loop | tie (both fail) |
+   | 182445 | "Thank you." — input is −78.6 dBFS ≈ silence | "[MUSIC]" | both fail; RNNoise suppressed the turn to silence (off: −31.6 dBFS) |
+
+   RNNoise off is at least as good on every row, clearly better on two
+   (174654, 182013), and never makes a GT-scored capture worse. Caveats:
+   only the 18:xx captures postdate the multiband AGC (commit a904fe0,
+   18:18) and replay faithfully — 182013's sim-vs-live correlation is 0.856;
+   the 17:xx rows are fair *within* the sim but their `.txt` baselines
+   describe the old single-band chain. Both variants start cold while the
+   live filters are warm. Strongly suggestive, not conclusive — the deciding
+   test is flipping `SON_DENOISE=0` in the running recorder for a day. The
+   two denoisers bracket whisper's tolerance: DeepFilterNet (§5) made every
+   row worse, RNNoise removal improves some — consistent with
+   [whisper#2125](https://github.com/openai/whisper/discussions/2125): the
+   model must be *trained* on the enhanced spectrum (see lever 5).
 5. **Match training to the runtime chain.** The 2125 insight: denoising helps
    an ASR only if the model has *seen* denoised audio. The next finetune
    (gen3) should apply the exact runtime chain (RNNoise → AGC → 16 kHz int16)

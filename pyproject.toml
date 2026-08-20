@@ -8,7 +8,7 @@ dependencies = [
     "fastapi>=0.141.1",
     # Extras = the providers son.py imports: kokoro/webrtc (core), google
     # (LLM+STT+TTS), groq (LLM+STT+TTS), openrouter+cerebras+deepseek (LLM).
-    "pipecat-ai[kokoro,webrtc,google,groq,openrouter,cerebras,deepseek]>=1.7.0",
+    "pipecat-ai[cerebras,deepseek,google,groq,kokoro,openrouter,rnnoise,webrtc]>=1.7.0",
     "sherpa-onnx>=1.13.5",
     # The C++ core ships as a separate wheel (dynamic Requires-Dist — uv skips
     # it), and the macOS sherpa-onnx wheel can't dlopen without it.

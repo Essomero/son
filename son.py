@@ -54,6 +54,8 @@ from pipecat.services.kokoro.tts import KokoroTTSService
 from pipecat.services.openai.llm import OpenAILLMService
 from pipecat.services.openai.stt import OpenAISTTService
 from pipecat.services.openrouter.llm import OpenRouterLLMService
+
+from audio_filters import build_input_filter
 from pipecat.transports.base_transport import BaseTransport, TransportParams
 from pipecat.utils.text.base_text_filter import BaseTextFilter
 from pipecat.transports.smallwebrtc.connection import SmallWebRTCConnection
@@ -848,11 +850,18 @@ async def bot(runner_args: RunnerArguments) -> None:
     """Main bot entry point — called once per session by the Pipecat runner."""
     webrtc_connection: SmallWebRTCConnection = runner_args.webrtc_connection
 
+    # "Clean and magnify": denoise + quiet-speech AGC on the mic path,
+    # before VAD and every STT provider (see audio_filters.py).
+    input_filter = build_input_filter()
+    if input_filter is not None:
+        logger.info(f"input audio filter: {type(input_filter).__name__}")
+
     transport = SmallWebRTCTransport(
         webrtc_connection=webrtc_connection,
         params=TransportParams(
             audio_in_enabled=True,
             audio_out_enabled=True,
+            audio_in_filter=input_filter,
         ),
     )
 

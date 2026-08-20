@@ -10,9 +10,11 @@ on run
 	set repoPath to "__REPO__"
 	set uvPath to "__UV__"
 	set whisperPath to "__WHISPER__"
+	my logLine("launch start whisperPath=" & whisperPath)
 
-	if serverUp() then
-		-- Already running — just open the page.
+	if serverUp() and portUp(8081) and portUp(8083) then
+		-- Whole stack already running — just open the page.
+		my logLine("all up — opening page only")
 		open location "http://localhost:7860"
 		return
 	end if
@@ -22,12 +24,14 @@ on run
 	-- runs). Warming Terminal up before any do script avoids the race.
 	tell application "Terminal" to activate
 	delay 1
+	my logLine("terminal activated")
 
 	-- Local voice STT (whisper-small-son). whisper.cpp transcribes on
 	-- Metal but only speaks its own /inference dialect; the shim bridges
 	-- it to the OpenAI protocol pipecat sends. Skipped when the binary or
 	-- model is missing (fresh machine) or the port already answers.
-	if (not portUp(8081)) and whisperReady() then
+	my logLine("whisper branch check: portUp=" & (portUp(8081) as text) & " ready=" & (whisperReady(whisperPath) as text))
+	if (not portUp(8081)) and whisperReady(whisperPath) then
 		-- Metal shader JIT means the port opens up to ~15 s late. If it
 		-- never opens, the do script was lost to the launch race or the
 		-- server died — issue it once more.
@@ -36,22 +40,28 @@ on run
 			tell application "Terminal"
 				do script "cd " & quoted form of whisperPath & " && exec " & quoted form of whisperPath & "/build/bin/whisper-server -m models/ggml-whisper-small-son.bin --host 127.0.0.1 --port 8081 --threads 8"
 			end tell
+			my logLine("whisper do script issued")
 			repeat 30 times
 				if portUp(8081) then exit repeat
 				delay 1
 			end repeat
+			my logLine("whisper wait done: portUp=" & (portUp(8081) as text))
 		end repeat
 	end if
 	if not portUp(8083) then
+		my logLine("shim branch entered")
 		tell application "Terminal"
 			do script "cd " & quoted form of repoPath & " && exec " & quoted form of uvPath & " run python whisper_local.py"
 		end tell
 		delay 1
 	end if
 
-	tell application "Terminal"
-		do script "cd " & quoted form of repoPath & " && exec " & quoted form of uvPath & " run python son.py"
-	end tell
+	if not serverUp() then
+		my logLine("son branch entered")
+		tell application "Terminal"
+			do script "cd " & quoted form of repoPath & " && exec " & quoted form of uvPath & " run python son.py"
+		end tell
+	end if
 
 	-- Wait up to 90s for the server to answer.
 	repeat 90 times
@@ -84,13 +94,24 @@ on portUp(portNum)
 	end try
 end portUp
 
+-- Decision log for diagnosing launch failures (cold-start races are hard
+-- to see from outside): /tmp/son-launch.log
+on logLine(msg)
+	try
+		do shell script "echo \"$(date +%H:%M:%S) " & msg & "\" >> /tmp/son-launch.log"
+	on error
+		-- never let logging break the launch
+	end try
+end logLine
+
 -- The fine-tuned model lives outside the repo (~/.cache/son/whisper.cpp)
 -- and may be absent on a fresh machine — never block the launcher on it.
-on whisperReady()
+on whisperReady(wPath)
 	try
-		do shell script "test -x " & quoted form of (whisperPath & "/build/bin/whisper-server") & " && test -f " & quoted form of (whisperPath & "/models/ggml-whisper-small-son.bin")
+		do shell script "test -x " & quoted form of (wPath & "/build/bin/whisper-server") & " && test -f " & quoted form of (wPath & "/models/ggml-whisper-small-son.bin")
 		return true
-	on error
+	on error errMsg
+		my logLine("whisperReady FAIL: " & errMsg)
 		return false
 	end try
 end whisperReady

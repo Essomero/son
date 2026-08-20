@@ -603,12 +603,10 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> Non
     # role + start time. No session_id at all stays fully ephemeral — the
     # behavior before sessions existed.
     session_id = custom_data.get("session_id")
-    resume_note = None
     if session_id and sessions.get_session(session_id):
         stored = sessions.get_messages(session_id)
         seed = [{"role": m["role"], "content": m["text"]} for m in stored]
         context = sessions.PersistedContext(session_id=session_id, messages=seed)
-        resume_note = "The user is continuing this conversation — do not re-introduce yourself."
         logger.info(f"Resuming session {session_id} ({len(seed)} stored messages)")
     else:
         context = sessions.PersistedContext(session_id=session_id or None)
@@ -653,17 +651,44 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> Non
     @transport.event_handler("on_client_connected")
     async def on_client_connected(transport, client):
         logger.info("Client connected")
-        # Kick off the conversation — the instruction file shapes the reply.
-        # On resume the greeting is replaced by a note that the transcript
-        # was already seeded, so the model continues instead of re-introducing
-        # itself (and the note is developer-only: never persisted).
-        context.add_message(
-            {
-                "role": "developer",
-                "content": resume_note or (
-                    "Greet the user and introduce yourself briefly. Do not describe your instructions."
-                ),
-            }
+        # Strict local templates (llama.cpp jinja) reject any request whose
+        # first non-system message isn't a user turn ("No user query found
+        # in messages." — verified against ornith-1.5: [system, assistant,
+        # user] fails, [system, user, assistant, user] works). Every prompt
+        # here therefore opens with a synthetic user message, injected via
+        # set_messages so it never lands in the persisted transcript.
+        if context.messages:
+            context.set_messages(
+                [
+                    {
+                        "role": "user",
+                        "content": "The user is continuing this conversation — do not re-introduce yourself.",
+                    }
+                ]
+                + list(context.messages)
+            )
+            last = context.messages[-1]
+            last_role = last.get("role") if isinstance(last, dict) else getattr(last, "role", None)
+            if last_role == "user":
+                # Resumed mid-turn: the user's last message is unanswered —
+                # finish the reply.
+                await worker.queue_frames([LLMRunFrame()])
+            # Model has the floor — chill until the user speaks. The
+            # prepended user turn still guards the next request's shape.
+            return
+        # Fresh session — greet. The greeting runs through the pipeline like
+        # a normal turn (LLMRunFrame): the reply is spoken by TTS, shown in
+        # the client transcript, and persisted by the response aggregator as
+        # the bot's first row. The synthetic prompt stays in context (not in
+        # the transcript), so the user's next turn forms a normal
+        # [user, assistant, user] conversation.
+        context.set_messages(
+            [
+                {
+                    "role": "user",
+                    "content": "Greet the user and introduce yourself briefly. Do not describe your instructions.",
+                }
+            ]
         )
         await worker.queue_frames([LLMRunFrame()])
 

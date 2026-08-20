@@ -107,7 +107,10 @@ debug dumps (`quiet-*` + cleanup.log).
 4. **A/B `SON_DENOISE=0`.** RNNoise's suppression is visible in the captures
    (speech-active fraction drops after the chain — e.g. 41% → 22%, 18% → 6%)
    and community reports say it can eat low-level speech. For whisper-soft
-   input the denoiser may do more harm than good; test both.
+   input the denoiser may do more harm than good; test both. (DeepFilterNet
+   was A/B'd on the same captures in §6 and made every row worse — denoising
+   before whisper is now the strongly-implied wrong direction, per
+   [whisper#2125](https://github.com/openai/whisper/discussions/2125).)
 5. **Match training to the runtime chain.** The 2125 insight: denoising helps
    an ASR only if the model has *seen* denoised audio. The next finetune
    (gen3) should apply the exact runtime chain (RNNoise → AGC → 16 kHz int16)
@@ -219,7 +222,52 @@ blank instead. Neither replaces the enhancement chain: PCEN-lite + a
 robustness-trained model is the full local emulation of the cloud
 frontends.
 
-## 5. Sources
+## 5. Enhancement-tool survey — the pasted table, evaluated (2026-08-20)
+
+A comparison table (RNNoise / DeepFilterNet 3 / WebRTC APM via
+pywebrtc-audio / Krisp, plus virtual-mic setups) landed in the session; every
+row was checked against what actually exists and what Son can use, and the
+one tool that could plausibly help was A/B'd on the quiet captures.
+
+| tool | claim | verdict |
+|---|---|---|
+| RNNoise | ~10 ms | already in the chain (`SON_DENOISE`); the A/B question from §3A.4 is still open |
+| DeepFilterNet 3 | 10–40 ms, best open-source | A/B'd below — **degrades whisper on every quiet capture**; also no clean macOS real-time path |
+| WebRTC APM via pywebrtc-audio | — | `pywebrtc-audio 0.0.1` is an empty placeholder (1-byte `__init__.py`). The real APM is a C++ module whose AGC is single-band — strictly worse than the multiband AGC (§3A.2) Son already has |
+| Krisp | on-device | commercial closed SDK; no local integration path |
+| NoiseTorch-ng / Easy Effects / VB-Audio Cable / OBS | virtual-mic routing | Linux/Windows routing tools; Son's chain is already in-process (`audio_filters.py`), a virtual-mic detour adds latency for nothing |
+
+**DeepFilterNet 3 A/B.** Run with the prebuilt `deep-filter-0.5.6-aarch64-apple-darwin`
+binary + the official ONNX models (`DeepFilterNet3_onnx.tar.gz`) on all 16
+quiet captures, both at default attenuation (full suppression) and `-a 6`
+(gently limited), then transcribed with whisper-small-son-soft under the same
+flags as the live server. WER against the known-GT captures (same REFERENCE
+strings as `scripts/bench_stt_models.py`):
+
+| capture | whisper on chain output | + DeepFilterNet (default) | + DeepFilterNet (`-a 6`) |
+|---|---|---|---|
+| 174756 "I'm just swimming with a flow…" | 2.50 | 2.83 | 3.17 |
+| 175059 "I don't know much, just chilling." | **0.00** ✅ | 1.17 ❌ | 0.83 ❌ |
+| 175228 "Nothing more, just chilling." | **0.00** ✅ | 2.00 ❌ | 2.00 ❌ |
+
+The DNN denoiser makes *every* row worse and breaks the two captures whisper
+currently gets exactly right; the gentle `-a 6` limit does not rescue them
+("The mic is just chilling" / "It's not a lot of stress…"). On the misheard
+captures it just substitutes different wrong words (174654 → "Okay, now it's
+the first channel"). Mechanism is the §3A.4 class: the suppressor eats the
+low-level speech components, and whisper's static log-mel frontend has no way
+to reconstruct them. Integration would be blocked anyway — the PyPI package
+needs `libdf` (Rust extension, not on PyPI), the real-time LADSPA path is
+Linux/PipeWire-only, and the prebuilt binary is a file CLI, not an embeddable
+library — so this closes the question on both axes.
+
+**What survives:** the in-process chain with the multiband AGC stays; the
+tool's answer to "does enhancement help" is *loudness normalization yes, noise
+suppression no*. Remaining levers in order: A/B `SON_DENOISE=0` live (§3A.4),
+gen3 fine-tune with the runtime chain applied to training audio (§3A.5), then
+Calm-Whisper-style decoder-head tuning (§3C.10).
+
+## 6. Sources
 
 - [PCEN: trainable frontend for robust and far-field keyword spotting (Sainath et al., ICASSP 2017)](https://research.google/pubs/trainable-frontend-for-robust-and-far-field-keyword-spotting/)
 - [Whisper's architecture and known failure modes (multigrid.ai)](https://multigrid.ai/learn/whisper-explained)
@@ -232,4 +280,5 @@ frontends.
 - [sherpa-onnx pre-trained model index](https://k2-fsa.github.io/sherpa/onnx/pretrained_models/index.html)
 - [Best open-source speech-to-text models in 2026 (Gladia)](https://www.gladia.io/blog/best-open-source-speech-to-text-models)
 - [ASR in 2025–2026: a deep dive into model selection (ruoqijin.com)](https://ruoqijin.com/blog/asr-deep-dive-2025-2026)
+- [DeepFilterNet 3 (RikVoort) — repo and macOS prebuilt `deep-filter` binary](https://github.com/RikVoort/deep-filter)
 - Local captures: `~/.cache/son/debug/quiet-*.{pre,post}.wav` + `*.txt`

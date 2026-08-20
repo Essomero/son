@@ -547,12 +547,14 @@ class TranscriptCleanupProcessor(FrameProcessor):
     Parakeet is fast but its raw transcript is messy — no punctuation, filler
     ("um", "uh"), word repeats. This stage sends every finalized utterance to
     a small local model (s1-mini on LM Studio) that returns clean prose, so
-    the brain reads text that matches what was actually said. Live client
-    bubbles keep the raw STT text: the RTVI observer reports each frame once,
-    at its first sighting (the STT's push), so mutating this frame in place
-    never double-reports; only what reaches the aggregator — the LLM context
-    and the persisted transcript — is cleaned. Failures pass the raw text
-    through: cleanup must never stall or corrupt a turn."""
+    the brain reads text that matches what was actually said.
+
+    Each cleaned utterance is pushed as a NEW TranscriptionFrame carrying the
+    raw frame's timestamp, so the RTVI observer emits a second user-
+    transcription event (fresh frame id) and the client replaces the raw span
+    in place — the live bubble flips to the cleaned text ~1s after the user
+    stops speaking. Failures pass the raw frame through untouched: cleanup
+    must never stall or corrupt a turn."""
 
     def __init__(self, model: str, base_url: str, api_key: str | None):
         super().__init__()
@@ -575,7 +577,17 @@ class TranscriptCleanupProcessor(FrameProcessor):
         ):
             cleaned = await self._clean(frame.text)
             if cleaned:
-                frame.text = cleaned
+                # New frame, same timestamp: a fresh id makes the RTVI observer
+                # emit a second user-transcription event, and the shared
+                # timestamp lets the client replace the raw span with this one.
+                frame = TranscriptionFrame(
+                    cleaned,
+                    frame.user_id,
+                    frame.timestamp,
+                    frame.language,
+                    result=frame.result,
+                    finalized=True,
+                )
         await self.push_frame(frame, direction)
 
     async def _clean(self, text: str) -> str:

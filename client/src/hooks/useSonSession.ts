@@ -245,9 +245,11 @@ export function useSonSession() {
             void el.play().catch((e) => console.warn("[Son] audio play blocked:", e));
           },
           onTrackStopped: () => stopBotAudio(),
-          onUserTranscript: (data: { text?: string; final?: boolean }) => {
+          onUserTranscript: (data: { text?: string; final?: boolean; timestamp?: string }) => {
             if (!data?.text) return;
-            const next = mergeUserText(messagesRef.current, data.text, !!data.final);
+            // timestamp lets mergeUserText swap the raw STT final for the
+            // cleaned one when the cleanup stage resends it.
+            const next = mergeUserText(messagesRef.current, data.text, !!data.final, data.timestamp);
             messagesRef.current = next;
             setMessages(next);
           },

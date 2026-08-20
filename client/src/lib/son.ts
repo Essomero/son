@@ -50,25 +50,38 @@ export function errorMessage(err: unknown): string {
  * One "You" row per consecutive user run: a new utterance (an STT segment or
  * a typed message) that follows a completed user row continues that row
  * instead of opening another. Partial STT frames grow the current utterance
- * in place; the finalized text is kept in `base` so the next utterance can
- * append to it (partials of a fresh utterance only ever replace their own
- * span, not earlier ones).
+ * in place; the finalized text is committed to `spans` and `base` is their
+ * join, so the next utterance appends to it (partials of a fresh utterance
+ * only ever replace their own span, not earlier ones).
+ *
+ * The STT-cleanup stage resends a cleaned final carrying the raw final's
+ * timestamp: a final whose timestamp already exists in the row replaces
+ * that span in place instead of appending a duplicate.
  */
-export function mergeUserText(msgs: Msg[], text: string, final: boolean): Msg[] {
+export function mergeUserText(msgs: Msg[], text: string, final: boolean, ts?: string): Msg[] {
   if (!text) return msgs;
   const last = msgs[msgs.length - 1];
   if (last?.role === "user") {
-    const base = last.base || "";
+    const spans = last.spans ?? [];
+    if (final && ts) {
+      const i = spans.findIndex((s) => s.ts === ts);
+      if (i >= 0) {
+        const next = [...spans];
+        next[i] = { ...next[i], text };
+        const base = next.map((s) => s.text).join(" ");
+        return [...msgs.slice(0, -1), { ...last, spans: next, base, text: base, final: true }];
+      }
+    }
+    const nextSpans = final ? [...spans, { ts, text }] : spans;
+    const base = nextSpans.map((s) => s.text).join(" ");
     const nextText = base ? `${base} ${text}` : text;
-    const next: Msg = {
-      ...last,
-      text: nextText,
-      final: final || last.final,
-      base: final ? nextText : last.base,
-    };
-    return [...msgs.slice(0, -1), next];
+    return [
+      ...msgs.slice(0, -1),
+      { ...last, spans: nextSpans, text: nextText, final: final || last.final, base },
+    ];
   }
-  return [...msgs, { id: uid(), role: "user", text, final, base: final ? text : "" }];
+  const spans = final ? [{ ts, text }] : [];
+  return [...msgs, { id: uid(), role: "user", text, final, base: final ? text : "", spans }];
 }
 
 /**

@@ -65,4 +65,8 @@ export interface Msg {
   /** user rows: the finalized text, so the next utterance appends to it
    *  instead of replacing it (the old dataset.base mechanism). */
   base: string;
+  /** user rows: one entry per landed final, newest last. The STT-cleanup
+   *  stage resends a cleaned final with the raw final's timestamp, so a
+   *  matching `ts` replaces the span in place instead of appending. */
+  spans?: { ts?: string; text: string }[];
 }

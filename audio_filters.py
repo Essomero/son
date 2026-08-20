@@ -33,6 +33,102 @@ from pipecat.audio.filters.rnnoise_filter import RNNoiseFilter
 from pipecat.frames.frames import FilterControlFrame, FilterEnableFrame
 
 
+def repeat_phrase(text: str) -> bool:
+    """True when any 2+ word n-gram repeats verbatim — the whisper
+    repetition-loop signature ("I'm just chilling I'm just chilling")."""
+    words = text.lower().split()
+    if len(words) < 4:
+        return False
+    for n in range(2, min(len(words) // 2, 8) + 1):
+        for i in range(len(words) - n + 1):
+            gram = tuple(words[i : i + n])
+            if gram and tuple(words[i + n : i + 2 * n]) == gram:
+                return True
+    return False
+
+
+class RepeatCapture:
+    """Rolling capture of the last ~25 s of mic audio, pre- and post-filter.
+
+    Filled by the TeeFilter (raw mic, pre-chain) and by Son's pipeline
+    (post-filter 16 kHz). Dumped to ~/.cache/son/debug only when a repeated
+    phrase is detected in a transcript — the debug instrument for whisper
+    repetition loops on live audio. Writes nothing until triggered, so
+    normal use costs no disk.
+    """
+
+    def __init__(self, seconds: float = 25.0) -> None:
+        self._seconds = seconds
+        self.pre = bytearray()
+        self.post = bytearray()
+        self.pre_rate = 16000
+        self.post_rate = 16000
+
+    def feed_pre(self, data: bytes, rate: int) -> None:
+        self.pre_rate = rate
+        self.pre += data
+        self._trim("pre", rate)
+
+    def feed_post(self, data: bytes, rate: int) -> None:
+        self.post_rate = rate
+        self.post += data
+        self._trim("post", rate)
+
+    def _trim(self, which: str, rate: int) -> None:
+        buf = getattr(self, which)
+        limit = int(self._seconds * rate * 2)  # int16 mono
+        if len(buf) > limit:
+            del buf[: len(buf) - limit]
+
+    def dump(self, raw_text: str, cleaned_text: str) -> None:
+        import time
+        import wave
+        from pathlib import Path
+
+        out_dir = Path.home() / ".cache" / "son" / "debug"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        for which, buf, rate in (
+            ("pre", self.pre, self.pre_rate),
+            ("post", self.post, self.post_rate),
+        ):
+            path = out_dir / f"repeat-{stamp}-{which}.wav"
+            with wave.open(str(path), "wb") as w:
+                w.setnchannels(1)
+                w.setsampwidth(2)
+                w.setframerate(rate)
+                w.writeframes(bytes(buf))
+        (out_dir / f"repeat-{stamp}.txt").write_text(
+            f"raw: {raw_text!r}\ncleaned: {cleaned_text!r}\n"
+        )
+        # Instrument leftovers are small, but storage matters — drop any
+        # older than a week on each dump.
+        cutoff = time.time() - 7 * 86400
+        for p in out_dir.glob("repeat-*"):
+            if p.stat().st_mtime < cutoff:
+                p.unlink()
+
+
+capture = RepeatCapture()
+
+
+class TeeFilter(BaseAudioFilter):
+    """Feed the raw (pre-chain) mic audio into the repeat capture roll."""
+
+    async def start(self, sample_rate: int):
+        capture.pre_rate = sample_rate
+
+    async def stop(self):
+        pass
+
+    async def process_frame(self, frame: FilterControlFrame):
+        pass
+
+    async def filter(self, audio: bytes) -> bytes:
+        capture.feed_pre(audio, capture.pre_rate)
+        return audio
+
+
 class ChainedFilter(BaseAudioFilter):
     """Run several audio filters in sequence (denoise, then AGC)."""
 
@@ -127,4 +223,6 @@ def build_input_filter() -> BaseAudioFilter | None:
         )
     if not filters:
         return None
-    return filters[0] if len(filters) == 1 else ChainedFilter(filters)
+    # The tee is only a debug instrument (repeat capture): first in the
+    # chain so it sees the raw mic audio, zero cost to the signal path.
+    return ChainedFilter([TeeFilter(), *filters])

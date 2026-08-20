@@ -33,7 +33,12 @@ from dotenv import load_dotenv
 from loguru import logger
 
 from pipecat.audio.vad.silero import SileroVADAnalyzer
-from pipecat.frames.frames import AudioRawFrame, LLMRunFrame, TranscriptionFrame
+from pipecat.frames.frames import (
+    AudioRawFrame,
+    InputAudioRawFrame,
+    LLMRunFrame,
+    TranscriptionFrame,
+)
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.worker import PipelineParams, PipelineWorker
 from pipecat.processors.aggregators.llm_response_universal import (
@@ -55,7 +60,7 @@ from pipecat.services.openai.llm import OpenAILLMService
 from pipecat.services.openai.stt import OpenAISTTService
 from pipecat.services.openrouter.llm import OpenRouterLLMService
 
-from audio_filters import build_input_filter
+from audio_filters import build_input_filter, capture, repeat_phrase
 from pipecat.transports.base_transport import BaseTransport, TransportParams
 from pipecat.utils.text.base_text_filter import BaseTextFilter
 from pipecat.transports.smallwebrtc.connection import SmallWebRTCConnection
@@ -577,6 +582,17 @@ class MarkdownToSpeechFilter(BaseTextFilter):
         return clean_for_tts(text)
 
 
+class SegmentCaptureProcessor(FrameProcessor):
+    """Feed post-filter mic audio (16 kHz, what whisper actually sees) into
+    the repeat-capture roll. Zero cost until a repeat is detected."""
+
+    async def process_frame(self, frame, direction):
+        await super().process_frame(frame, direction)
+        if isinstance(frame, InputAudioRawFrame):
+            capture.feed_post(frame.audio, frame.sample_rate)
+        await self.push_frame(frame, direction)
+
+
 class TranscriptCleanupProcessor(FrameProcessor):
     """Rewrite each final STT utterance through a local text-normalizer LLM.
 
@@ -612,6 +628,17 @@ class TranscriptCleanupProcessor(FrameProcessor):
             and frame.finalized
         ):
             cleaned = await self._clean(frame.text)
+            # Debug instrument for repeated-phrase transcriptions: log the
+            # raw/cleaned pair every turn, and when either side contains a
+            # verbatim repeated n-gram, dump the last ~25 s of mic audio
+            # (pre- and post-filter) so the exact clip can be replayed.
+            logger.info(f"cleanup: {frame.text!r} -> {cleaned!r}")
+            if repeat_phrase(frame.text) or (cleaned and repeat_phrase(cleaned)):
+                logger.warning(
+                    "repeated phrase in transcript — audio dumped to "
+                    "~/.cache/son/debug/repeat-*"
+                )
+                capture.dump(frame.text, cleaned)
             if cleaned:
                 # New frame, same timestamp: a fresh id makes the RTVI observer
                 # emit a second user-transcription event, and the shared
@@ -769,7 +796,11 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> Non
         else None
     )
 
-    stages = [transport.input(), stt]  # user audio -> speech -> text
+    stages = [
+        transport.input(),
+        SegmentCaptureProcessor(),  # repeat-capture roll (debug instrument)
+        stt,
+    ]  # user audio -> speech -> text
     if cleanup:
         stages.append(cleanup)  # ... -> clean the raw transcript
     stages.extend(

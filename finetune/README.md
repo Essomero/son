@@ -55,7 +55,60 @@ uv run python finetune/train_whisper.py
 Works on a 16 GB M1 Pro, but fp16 whisper under memory pressure crawls —
 that's why the GCP path exists.
 
-### On GCP (preemptible T4, ~6.5 min, costs cents)
+### GCP one-time setup
+
+The pipeline assumes: gcloud CLI installed + authed, a project with
+billing enabled, and GPU quota. New projects fail at step 3 until the
+quota exists.
+
+```bash
+# 1. Auth + project (billing must be enabled on the project)
+gcloud auth login
+gcloud config set project YOUR_PROJECT_ID
+
+# 2. Enable the APIs the pipeline touches
+gcloud services enable compute.googleapis.com cloudquotas.googleapis.com
+```
+
+3. **Request GPU quota.** New projects start with
+   `GPUS-ALL-REGIONS-per-project = 0` — every instance create then dies
+   with the opaque "no capacity in all zones". A request for 1 GPU is
+   auto-approved (seconds to minutes; no human review). The Cloud Quotas
+   API rejects the POST without a `contactEmail` field:
+
+```bash
+curl -X POST \
+  "https://cloudquotas.googleapis.com/v1/projects/YOUR_PROJECT_ID/locations/global/quotaPreferences?quota_preference_id=son-gpu-t4" \
+  -H "Authorization: Bearer $(gcloud auth print-access-token)" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "service": "compute.googleapis.com",
+    "quotaId": "GPUS-ALL-REGIONS-per-project",
+    "preferredValue": 1,
+    "dimensions": {"region": "global"},
+    "contactEmail": "you@example.com"
+  }'
+```
+
+Verify the grant landed:
+
+```bash
+curl -s -H "Authorization: Bearer $(gcloud auth print-access-token)" \
+  "https://cloudquotas.googleapis.com/v1/projects/YOUR_PROJECT_ID/locations/global/quotaPreferences/son-gpu-t4" \
+  | grep -E '"state"|"preferredValue"'
+```
+
+4. **Storage — nothing to provision.** `train_on_gcp.sh` creates a
+   temporary regional bucket (`gsutil mb -l us-central1`, using the same
+   `gcloud auth login` credentials) and deletes it at the end; the VM gets
+   `--scopes storage-full` from the script. The ~27 MB of voice data lives
+   in the bucket only for the run.
+
+5. **Cost — cents.** The VM is preemptible (`n1-standard-4` + T4 ≈
+   $0.20/hr); ~15 min of boot + training is a few cents, and the ~465 MB
+   model download is negligible GCS egress.
+
+### On GCP (preemptible T4, ~6.5 min)
 
 ```bash
 bash finetune/gcp/train_on_gcp.sh
@@ -76,12 +129,10 @@ The script is fully SSH-free (the DL image ships sshd broken):
 4. The launcher polls for `DONE`, pulls the model down (excluding
    intermediate checkpoints), then deletes VM + bucket.
 
-One-time setup, and the gotchas that cost real time:
+Gotchas that cost real time during the first run:
 
-- **GPU quota is 0 by default.** `GPUS-ALL-REGIONS-per-project` starts at
-  0 and surfaces as a confusing "no capacity in all zones". Request it via
-  the Cloud Quotas API (`quotaPreferences`) — the POST requires a
-  `contactEmail` field.
+- **"No capacity in all zones" usually means quota, not capacity.** See
+  the quota request in [GCP one-time setup](#gcp-one-time-setup) above.
 - **Don't try to SSH.** The DL image's sshd never comes up (port 22
   dropped, IAP fails). Everything above flows through GCS + the serial
   console; `say()` lines in the startup script are your log.

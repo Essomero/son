@@ -111,6 +111,10 @@ uv run scripts/gen_roles.py && cd client && npm run build && cd ..
 | `SON_AGC_TARGET_DB` | `-22` | AGC target level (dBFS) |
 | `SON_AGC_MAX_DB` | `18` | AGC max gain (dB) — caps how far quiet speech is pushed |
 | `SON_AGC_GATE_DB` | `-45` | Below this input level (dBFS) the gain releases to 1 — no VAD pumping on silence |
+| `SON_VAD_CONFIDENCE` | `0.5` | Silero speech-probability threshold for turn detection (pipecat default `0.7` is tuned for loud speech) |
+| `SON_VAD_START_SECS` | `0.15` | Consecutive speech needed to open a turn (lower = soft onsets aren't clipped) |
+| `SON_VAD_STOP_SECS` | `0.7` | Consecutive silence needed to end a turn (higher = pauses don't chop soft speech into fragments) |
+| `SON_VAD_MIN_VOLUME` | `0.35` | Minimum loudness (EBU R128, 0–1) for a frame to count as speech (default `0.6` gates out soft speech) |
 
 A provider is enabled only when its API key is present. The settings panel (⚙ in the header) lists each capability with the models that are actually available — no key, no entry.
 

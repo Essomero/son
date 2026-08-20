@@ -33,6 +33,7 @@ from dotenv import load_dotenv
 from loguru import logger
 
 from pipecat.audio.vad.silero import SileroVADAnalyzer
+from pipecat.audio.vad.vad_analyzer import VADParams
 from pipecat.frames.frames import (
     AudioRawFrame,
     InputAudioRawFrame,
@@ -815,7 +816,20 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> Non
 
     user_aggregator, assistant_aggregator = LLMContextAggregatorPair(
         context,
-        user_params=LLMUserAggregatorParams(vad_analyzer=SileroVADAnalyzer()),
+        user_params=LLMUserAggregatorParams(
+            vad_analyzer=SileroVADAnalyzer(
+                params=VADParams(
+                    # Tuned for soft speech: pipecat's defaults (confidence
+                    # 0.7, stop 0.2 s, min_volume 0.6) chop quiet turns at
+                    # every soft dip — one sentence became five misheard
+                    # fragments live. Lower thresholds, longer stop.
+                    confidence=float(os.getenv("SON_VAD_CONFIDENCE", "0.5")),
+                    start_secs=float(os.getenv("SON_VAD_START_SECS", "0.15")),
+                    stop_secs=float(os.getenv("SON_VAD_STOP_SECS", "0.7")),
+                    min_volume=float(os.getenv("SON_VAD_MIN_VOLUME", "0.35")),
+                )
+            )
+        ),
     )
 
     # Optional transcript cleanup: rewrite each finalized STT utterance through

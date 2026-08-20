@@ -17,31 +17,39 @@ on run
 		return
 	end if
 
+	-- One activate + delay up front: the first do script races with a cold
+	-- Terminal launch and can be swallowed (window opens, command never
+	-- runs). Warming Terminal up before any do script avoids the race.
+	tell application "Terminal" to activate
+	delay 1
+
 	-- Local voice STT (whisper-small-son). whisper.cpp transcribes on
 	-- Metal but only speaks its own /inference dialect; the shim bridges
 	-- it to the OpenAI protocol pipecat sends. Skipped when the binary or
 	-- model is missing (fresh machine) or the port already answers.
 	if (not portUp(8081)) and whisperReady() then
-		tell application "Terminal"
-			activate
-			do script "cd " & quoted form of whisperPath & " && exec " & quoted form of whisperPath & "/build/bin/whisper-server -m models/ggml-whisper-small-son.bin --host 127.0.0.1 --port 8081 --threads 8"
-		end tell
-		-- Metal shader JIT takes ~15 s before the port opens; give it time.
-		repeat 30 times
+		-- Metal shader JIT means the port opens up to ~15 s late. If it
+		-- never opens, the do script was lost to the launch race or the
+		-- server died — issue it once more.
+		repeat 2 times
 			if portUp(8081) then exit repeat
-			delay 1
+			tell application "Terminal"
+				do script "cd " & quoted form of whisperPath & " && exec " & quoted form of whisperPath & "/build/bin/whisper-server -m models/ggml-whisper-small-son.bin --host 127.0.0.1 --port 8081 --threads 8"
+			end tell
+			repeat 30 times
+				if portUp(8081) then exit repeat
+				delay 1
+			end repeat
 		end repeat
 	end if
 	if not portUp(8083) then
 		tell application "Terminal"
-			activate
 			do script "cd " & quoted form of repoPath & " && exec " & quoted form of uvPath & " run python whisper_local.py"
 		end tell
 		delay 1
 	end if
 
 	tell application "Terminal"
-		activate
 		do script "cd " & quoted form of repoPath & " && exec " & quoted form of uvPath & " run python son.py"
 	end tell
 

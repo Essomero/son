@@ -6,7 +6,7 @@ A personal real-time voice agent. Pick a role (instruction file), talk to it in 
 
 | Piece | Tool (default) | Where it runs |
 |---|---|---|
-| Speech-to-text | Groq · whisper-large-v3-turbo (or **Parakeet TDT local**) | Cloud (free tier) / Local |
+| Speech-to-text | Groq · whisper-large-v3-turbo (or **Parakeet TDT** / **whisper-small-son** local) | Cloud (free tier) / Local |
 | Brain | Groq · openai/gpt-oss-120b | Cloud (free tier) |
 | Text-to-speech | Kokoro-82M | **Local** (ONNX on CPU) |
 | Voice pipeline | Pipecat 1.7 (BSD-2) | Local |
@@ -102,6 +102,9 @@ uv run scripts/gen_roles.py && cd client && npm run build && cd ..
 | `GROQ_MODEL` | `openai/gpt-oss-120b` | Default Groq LLM model |
 | `GROQ_REASONING_EFFORT` | `medium` | gpt-oss reasoning effort: `low` (fastest, ~0.45s first content) / `medium` / `high` (smartest, slower) |
 | `GROQ_STT_MODEL` | `whisper-large-v3-turbo` | Default Groq STT model |
+| `WHISPER_LOCAL_MODEL` | `whisper-small-son` | Local STT model id sent to the whisper shim |
+| `WHISPER_LOCAL_BASE_URL` | `http://127.0.0.1:8083/v1` | OpenAI-compatible root of the whisper shim (`whisper_local.py`) |
+| `WHISPER_LOCAL_API_KEY` | `local` | Dummy key — the OpenAI SDK requires a non-empty value; whisper.cpp ignores Authorization |
 | `KOKORO_VOICE` | `af_heart` | Default Kokoro voice id |
 
 A provider is enabled only when its API key is present. The settings panel (⚙ in the header) lists each capability with the models that are actually available — no key, no entry.
@@ -111,14 +114,16 @@ A provider is enabled only when its API key is present. The settings panel (⚙ 
 Click ⚙ to pick, per session:
 
 - **Brain** — the reasoning/chat model (Groq, Cerebras, DeepSeek, Gemini, OpenRouter, or a local LM Studio server).
-- **Speech-to-text** — how your voice becomes text (Groq Whisper, Google, OpenRouter, or **NVIDIA Parakeet TDT** — a fully local ONNX model, no API key; the ~660 MB model downloads once on first use into `~/.cache/son/parakeet`). Set `STT_CLEANUP_MODEL` (e.g. `s1-mini` on LM Studio) and every final utterance is run through a local text normalizer before the brain sees it — Parakeet's raw transcript (no punctuation, "um"/"uh", repeats) arrives as clean prose.
+- **Speech-to-text** — how your voice becomes text (Groq Whisper, Google, OpenRouter, **NVIDIA Parakeet TDT** — a fully local ONNX model, no API key; the ~660 MB model downloads once on first use into `~/.cache/son/parakeet` — or **whisper-small-son**, a whisper fine-tuned on the author's voice and served locally by whisper.cpp). Set `STT_CLEANUP_MODEL` (e.g. `s1-mini` on LM Studio) and every final utterance is run through a local text normalizer before the brain sees it — Parakeet's raw transcript (no punctuation, "um"/"uh", repeats) arrives as clean prose.
 - **Voice** — the voice that reads replies (local Kokoro, or Groq/Gemini cloud TTS).
 
 Choices are saved in the browser and sent with each connection; the server falls back to the defaults if a provider's key is missing. Kokoro voices are synthesized on your machine; the others stream from their provider.
 
+**whisper-small-son runs as two small local processes** outside Son: the whisper.cpp server (`:8081`) that does the transcription, and the `whisper_local.py` shim (`:8083`) that bridges whisper.cpp's `/inference` to the OpenAI protocol pipecat sends. The **Son.app** launcher starts whichever of them isn't already listening, so a normal launch needs nothing extra. If you run `son.py` directly instead, start them yourself first (`finetune/README.md` §4 has the commands) — the picker only lists the provider while the servers are up.
+
 ## Cost
 
-Groq's free tier covers personal use: 30 requests/min, 14,400/day across STT + LLM, plus a daily Whisper transcription quota. Kokoro is free (local). Pick **Parakeet TDT** in ⚙ → Speech-to-text and the whole voice path runs on your machine — only the text you send to the brain leaves it. See `docs/HANDOFF.md` for the numbers and the paid tier, which starts at ~$0.05/M tokens.
+Groq's free tier covers personal use: 30 requests/min, 14,400/day across STT + LLM, plus a daily Whisper transcription quota. Kokoro is free (local). Pick **Parakeet TDT** or **whisper-small-son** in ⚙ → Speech-to-text and the whole voice path runs on your machine — only the text you send to the brain leaves it. See `docs/HANDOFF.md` for the numbers and the paid tier, which starts at ~$0.05/M tokens.
 
 ## How it works
 

@@ -50,6 +50,7 @@ from pipecat.services.groq.llm import GroqLLMService
 from pipecat.services.groq.stt import GroqSTTService
 from pipecat.services.groq.tts import GroqTTSService
 from pipecat.services.kokoro.tts import KokoroTTSService
+from pipecat.services.openai.llm import OpenAILLMService
 from pipecat.services.openai.stt import OpenAISTTService
 from pipecat.services.openrouter.llm import OpenRouterLLMService
 from pipecat.transports.base_transport import BaseTransport, TransportParams
@@ -83,6 +84,12 @@ KOKORO_VOICE = os.getenv("KOKORO_VOICE", "af_heart")
 #   high   noticeably smarter, slower first token
 GROQ_REASONING_EFFORT = os.getenv("GROQ_REASONING_EFFORT", "medium")
 
+# LM Studio / local OpenAI-compatible inference. LMSTUDIO_API_KEY gates the
+# provider (any value works if the server has auth disabled). Point
+# LMSTUDIO_BASE_URL at a tailnet IP to use a remote machine's server.
+LMSTUDIO_BASE_URL = os.getenv("LMSTUDIO_BASE_URL", "http://127.0.0.1:1234/v1")
+LMSTUDIO_MODEL = os.getenv("LMSTUDIO_MODEL", "ornith-1.5-9b-mlx")
+
 # --- Model providers ----------------------------------------------------------
 # A provider is enabled only when its API key is present in .env (same pattern
 # as the readme project's api/models.js). The client's settings panel picks a
@@ -95,6 +102,7 @@ PROVIDER_ENV_KEYS = {
     "deepseek": "DEEPSEEK_API_KEY",
     "gemini": "GEMINI_API_KEY",
     "openrouter": "OPENROUTER_API_KEY",
+    "lmstudio": "LMSTUDIO_API_KEY",
 }
 
 # Which providers offer each capability, and the key that gates them.
@@ -137,6 +145,7 @@ DEFAULT_MODELS = {
     "deepseek": "deepseek-v4-flash",
     "gemini": "gemini-flash-latest",
     "openrouter": "anthropic/claude-sonnet-4.6",
+    "lmstudio": LMSTUDIO_MODEL,
 }
 
 # Curated OpenRouter models — only these appear in the picker.
@@ -197,6 +206,14 @@ def build_llm_service(provider: str, model: str, instruction: str):
         return OpenRouterLLMService(
             api_key=os.getenv("OPENROUTER_API_KEY"),
             settings=OpenRouterLLMService.Settings(model=model, system_instruction=instruction),
+        )
+    if provider == "lmstudio":
+        # Local OpenAI-compatible server (LM Studio). api_key can be None —
+        # the client only sends the header when the env var is set.
+        return OpenAILLMService(
+            api_key=os.getenv("LMSTUDIO_API_KEY"),
+            base_url=LMSTUDIO_BASE_URL,
+            settings=OpenAILLMService.Settings(model=model, system_instruction=instruction),
         )
     raise ValueError(f"Unknown LLM provider: {provider}")
 
@@ -817,6 +834,17 @@ def _fetch_models() -> dict:
             )
         for _, entry in sorted(priced, key=lambda e: e[0]):
             stt.append(entry)
+
+    if "lmstudio" in providers:
+        # List what the local server actually has loaded, so the picker is
+        # live. LM Studio serves embedding models alongside chat ones — skip
+        # them (same filtering as the Cerebras roster above).
+        root = LMSTUDIO_BASE_URL.rstrip("/").rstrip("/v1")
+        data = _provider_get(f"{root}/v1/models", "LMSTUDIO_API_KEY")
+        for m in data.get("data", []):
+            if "embed" in m["id"].lower():
+                continue
+            llm.append({"provider": "lmstudio", "id": m["id"], "label": m["id"]})
 
     # Local STT needs no API key — listed when sherpa-onnx is installed
     # (same pattern as the Kokoro voices below).

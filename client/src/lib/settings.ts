@@ -16,7 +16,10 @@ export const DEFAULT_CHOICES: Record<Capability, Choice> = {
 
 // If the bot isn't running the picker still needs a usable roster.
 export const FALLBACK_MODELS: Models = {
-  llm: [{ provider: "groq", id: "openai/gpt-oss-120b", label: "openai/gpt-oss-120b" }],
+  llm: [
+    { provider: "groq", id: "openai/gpt-oss-120b", label: "openai/gpt-oss-120b" },
+    { provider: "lmstudio", id: "ornith-1.5-9b-mlx", label: "ornith-1.5-9b-mlx" },
+  ],
   stt: [{ provider: "groq", id: "whisper-large-v3-turbo", label: "whisper-large-v3-turbo" }],
   tts: [
     { provider: "kokoro", id: "af_heart", label: "af_heart" },

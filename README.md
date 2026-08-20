@@ -12,7 +12,7 @@ A personal real-time voice agent. Pick a role (instruction file), talk to it in 
 | Voice pipeline | Pipecat 1.7 (BSD-2) | Local |
 | Turn detection | Silero VAD | Local |
 
-Every capability is swappable from the **⚙ settings panel**: add a DeepSeek, Cerebras, Gemini, or OpenRouter key and those providers appear in the picker too. Only your speech audio and text go to the provider you pick; the default voice is synthesized on your machine. Conversations persist in `son.db` and can be resumed from the sessions rail (see below).
+Every capability is swappable from the **⚙ settings panel**: add a DeepSeek, Cerebras, Gemini, or OpenRouter key and those providers appear in the picker too — or point it at a local LM Studio server (see `LMSTUDIO_*` below). Only your speech audio and text go to the provider you pick; the default voice is synthesized on your machine. Conversations persist in `son.db` and can be resumed from the sessions rail (see below).
 
 ## Prerequisites
 
@@ -94,6 +94,9 @@ uv run scripts/gen_roles.py && cd client && npm run build && cd ..
 | `DEEPSEEK_API_KEY` | — | Optional. Enables DeepSeek brains (e.g. `deepseek-v4-flash`) |
 | `GEMINI_API_KEY` | — | Optional. Enables Gemini brains, Google speech-to-text, and Gemini voices |
 | `OPENROUTER_API_KEY` | — | Optional. Enables the curated OpenRouter brains (Claude, GPT, Grok…) and speech-to-text |
+| `LMSTUDIO_API_KEY` | — | Optional. Enables local brains served by [LM Studio](https://lmstudio.ai) — any value if server auth is disabled |
+| `LMSTUDIO_BASE_URL` | `http://127.0.0.1:1234/v1` | OpenAI-compatible root of the LM Studio server (use a tailnet IP to reach a remote machine) |
+| `LMSTUDIO_MODEL` | `ornith-1.5-9b-mlx` | Default local LLM model |
 | `GROQ_MODEL` | `openai/gpt-oss-120b` | Default Groq LLM model |
 | `GROQ_REASONING_EFFORT` | `medium` | gpt-oss reasoning effort: `low` (fastest, ~0.45s first content) / `medium` / `high` (smartest, slower) |
 | `GROQ_STT_MODEL` | `whisper-large-v3-turbo` | Default Groq STT model |
@@ -105,7 +108,7 @@ A provider is enabled only when its API key is present. The settings panel (⚙ 
 
 Click ⚙ to pick, per session:
 
-- **Brain** — the reasoning/chat model (Groq, Cerebras, DeepSeek, Gemini, or OpenRouter).
+- **Brain** — the reasoning/chat model (Groq, Cerebras, DeepSeek, Gemini, OpenRouter, or a local LM Studio server).
 - **Speech-to-text** — how your voice becomes text (Groq Whisper, Google, OpenRouter, or **NVIDIA Parakeet TDT** — a fully local ONNX model, no API key; the ~660 MB model downloads once on first use into `~/.cache/son/parakeet`).
 - **Voice** — the voice that reads replies (local Kokoro, or Groq/Gemini cloud TTS).
 

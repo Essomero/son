@@ -48,10 +48,11 @@ async def transcribe(
     if r.status_code != 200:
         return JSONResponse({"error": f"whisper.cpp returned {r.status_code}"}, status_code=502)
     out = r.json()                  # already {"task", "language", "duration", "text", ...}
-    # whisper.cpp ends every transcription with "\n" (legacy cli behavior).
-    # Son's live bubble prints the text verbatim, so strip it here.
+    # whisper.cpp ends every transcription with "\n" (legacy cli behavior) and
+    # joins multi-segment output with "\n" too. Son's live bubble prints the
+    # text verbatim, so collapse all of it to single spaces.
     if isinstance(out.get("text"), str):
-        out["text"] = out["text"].strip()
+        out["text"] = " ".join(out["text"].split())
     return out
 
 

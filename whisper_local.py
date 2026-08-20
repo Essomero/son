@@ -56,4 +56,7 @@ async def transcribe(
 
 
 if __name__ == "__main__":
+    # uvicorn's warning log level prints nothing on boot; say something so
+    # the Terminal window doesn't look hung.
+    print(f"whisper shim on 127.0.0.1:{PORT} -> {WHISPER_CPP_URL}")
     uvicorn.run(app, host="127.0.0.1", port=PORT, log_level="warning")

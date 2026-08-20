@@ -22,3 +22,11 @@ son.db-wal
 scripts/assets/.iconwork/
 
 pg/
+
+# Voice fine-tune (finetune/) — recordings and model weights stay local
+# (recordings live in ~/.cache/son/finetune; these are safety nets)
+finetune/raw/
+finetune/out/
+*.wav
+*.flac
+*.mp3

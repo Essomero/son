@@ -148,34 +148,23 @@ Whisper and Parakeet aren't the only local options. Researched via the real
 Chrome profile; every claim below is a vendor or paper claim, so A/B them on
 the quiet-* captures before trusting them (`scripts/bench_stt_models.py`).
 
-### The direct hit: GLM-ASR-Nano-2512 (Z.AI)
-
-- Model card explicitly lists **low-volume speech robustness** — "specifically
-  trained for whisper/quiet speech scenarios" — the only open model found that
-  says this in so many words.
-- 1.5B, MIT license, en + zh + Cantonese; beats Whisper V3 on several
-  benchmarks; lowest average error rate (4.10) among comparable open-source
-  models.
-- Runs on this Mac: transformers + MPS (fp16, ~3 GB) or `mlx-community`
-  4-bit (~1–2 GB); a GGUF port exists too.
-- Not in sherpa-onnx, so it's not a Parakeet-picker drop-in: it would be a new
-  shim server in the `whisper_local.py` shape.
-- Caveat: it's a seq2seq *decoder* model, so it is still autoregressive (not
-  immune to whisper's hallucination class). The claim is robustness from
-  training data — the same mechanism that makes Grok/Chirp work.
-
 ### Drop-in (sherpa-onnx, same picker as Parakeet)
 
-- **FunASR-Nano-2512** (`sherpa-onnx-funasr-nano-int8-2025-12-30`): 0.8B int8,
-  en/zh/ja; paraformer (non-autoregressive — architecturally cannot do
-  whisper's confident hallucination); trained on tens-of-millions of hours of
-  real speech, the training-scale lever behind every 2026 SOTA model.
 - **Moonshine base-en int8** (`sherpa-onnx-moonshine-base-en-int8`):
   27–331M, whisper-family decoder; WER claims near large-v3; quiet-speech
-  robustness unproven.
+  robustness unproven — the last untested local candidate.
 
 ### Ruled out for this use case
 
+- **GLM-ASR-Nano-2512** — the only open model with an explicit low-volume
+  training claim ("specifically trained for whisper/quiet speech scenarios");
+  tested 2026-08-20 and failed the A/B: WER 1.00 on both GT-scored quiet
+  captures (whisper hears them exactly), a repetition loop on 182114, and
+  Chinese/empty transcripts on the post-AGC dumps. Seq2seq, so not immune to
+  whisper's hallucination class.
+- **FunASR-Nano-2512 int8** — NAR (architecturally cannot do whisper's
+  confident hallucination) but tested 2026-08-20 and drifted to
+  Chinese/Japanese on 5 of 8 quiet captures, with a loop on raw audio too.
 - **Qwen3-ASR** — Mega-ASR (arXiv, 2026-05) reports 100% WER on far-field
   quiet audio (empty transcript); also an unfixed endless-token-repetition
   bug (GH #129).
@@ -224,10 +213,10 @@ that, a per-turn cloud fallback on the quiet-turn trigger.
 
 The 2025–26 robustness recipe is "encoder + LLM decoder trained on
 real-world, loudness-varied audio" — the same recipe as Grok STT and Chirp,
-now open-sourced. NAR models (Parakeet, FunASR) fix the other half:
-whisper's decoder always emits a confident continuation, while NAR decoders
-can emit blank instead. Neither replaces the enhancement chain: PCEN-lite +
-a robustness-trained model is the full local emulation of the cloud
+now open-sourced. NAR models (Parakeet) fix the other half: whisper's
+decoder always emits a confident continuation, while NAR decoders can emit
+blank instead. Neither replaces the enhancement chain: PCEN-lite + a
+robustness-trained model is the full local emulation of the cloud
 frontends.
 
 ## 5. Sources

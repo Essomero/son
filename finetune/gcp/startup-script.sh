@@ -73,7 +73,9 @@ say "clips: $(ls /root/.cache/son/finetune/recordings | wc -l)"
 
 say "training..."
 cd /root
-"$PY" train_whisper.py > /tmp/train.log 2>&1 &
+# Augmented retrain writes to its own dir so the live model (whisper-small-son)
+# is never clobbered — the rsync below ships whatever lands in /root/out.
+SON_OUT_DIR=/root/out/whisper-small-son-soft "$PY" train_whisper.py > /tmp/train.log 2>&1 &
 TPID=$!
 ( tail -f /tmp/train.log | while IFS= read -r l; do say "TRAIN: $l"; done ) &
 TLOG=$!

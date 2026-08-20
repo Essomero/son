@@ -15,6 +15,7 @@ Run:  uv run python finetune/train_whisper.py
 """
 
 import json
+import os
 import random
 from dataclasses import dataclass
 from pathlib import Path
@@ -34,7 +35,12 @@ from transformers import (
 
 RECORDINGS = Path.home() / ".cache" / "son" / "finetune" / "recordings"
 MANIFEST = RECORDINGS / "manifest.jsonl"
-OUT_DIR = Path(__file__).resolve().parent / "out" / "whisper-small-son"
+# SON_OUT_DIR overrides the output name (e.g. the augmented retrain writes
+# whisper-small-son-soft so the live model is never clobbered).
+OUT_DIR = Path(os.environ.get(
+    "SON_OUT_DIR",
+    str(Path(__file__).resolve().parent / "out" / "whisper-small-son"),
+))
 MODEL_ID = "openai/whisper-small.en"
 SEED = 42
 DEV_FRAC = 0.05          # hold out for WER
@@ -48,6 +54,45 @@ device = ("cuda" if torch.cuda.is_available()
           else "mps" if torch.backends.mps.is_available()
           else "cpu")
 logger.info(f"device: {device}")
+
+
+# ————— soft-speech augmentation —————
+# The real-use failure mode is quiet speech against a constant room-noise
+# floor (SNR collapse). Plain gain attenuation does not reproduce it —
+# verified on the dev set: 0.15x clean audio still transcribes perfectly,
+# because the noise floor scales down with the speech. So the quiet
+# variants mix pink noise at realistic SNRs. Deterministic per clip id
+# (one rng per variant), so reruns are reproducible. Dev rows are never
+# augmented — the held-out WER stays comparable across runs.
+AUG_VARIANTS = [
+    (1.00, None),   # original
+    (0.50, None),   # half volume, clean
+    (0.35, None),   # soft voice, clean
+    (0.35, 15.0),   # soft voice, room noise at 15 dB SNR
+    (0.20, 10.0),   # very soft, 10 dB SNR
+    (0.12, 5.0),    # whisper-quiet, 5 dB SNR
+]
+
+
+def pink_noise(n: int, rng: random.Random) -> np.ndarray:
+    """White noise shaped to a 1/sqrt(f) spectrum — room-like ambience."""
+    np_rng = np.random.default_rng(rng.randrange(2 ** 32))
+    spec = np.fft.rfft(np_rng.standard_normal(n))
+    freqs = np.fft.rfftfreq(n)
+    freqs[0] = freqs[1]          # avoid the DC divide
+    return np.fft.irfft(spec / np.sqrt(freqs), n)
+
+
+def augment(arr: np.ndarray, variant, rng: random.Random) -> np.ndarray:
+    """Gain, plus optional pink noise mixed at a target SNR vs the speech."""
+    gain, snr_db = variant
+    arr = arr * gain
+    if snr_db is not None:
+        rms = float(np.sqrt(np.mean(arr ** 2)))
+        noise = pink_noise(len(arr), rng)
+        noise = noise / np.sqrt(np.mean(noise ** 2))      # RMS -> 1
+        arr = arr + noise * (rms / 10 ** (snr_db / 20))
+    return np.clip(arr, -1.0, 1.0).astype(np.float32)
 
 
 # ————— data —————
@@ -69,8 +114,10 @@ def load_rows():
 
 
 def prep(processor):
-    def fn(row):
+    def fn(row, variant=None):
         arr, sr = sf.read(row["path"], dtype="float32")
+        if variant is not None:
+            arr = augment(arr, variant, random.Random(SEED * 1000 + row["id"]))
         # WhisperModel.forward hard-requires exactly 3000 mel frames
         # (modeling_whisper.py:613, != check), so keep the extractor's default
         # max_length padding — variable-length features are impossible. Memory
@@ -81,10 +128,12 @@ def prep(processor):
     return fn
 
 
-def prep_batch(processor, rows):
-    """Pre-extract features + labels for a list of rows (training/dev)."""
-    out = [prep(processor)(r) for r in rows]
-    return out
+def prep_batch(processor, rows, augment_rows=False):
+    """Pre-extract features + labels; train rows get soft-speech variants."""
+    if augment_rows:
+        rows = [(r, v) for r in rows for v in AUG_VARIANTS]
+        return [prep(processor)(r, v) for r, v in rows]
+    return [prep(processor)(r) for r in rows]
 
 
 # ————— collator (DataCollatorSpeechSeq2SeqWithPadding was removed in
@@ -141,8 +190,10 @@ def main() -> None:
     train_rows, dev_rows = load_rows()
     logger.info(f"train: {len(train_rows)} clips ({sum(r['duration'] for r in train_rows) / 60:.1f} min)")
     logger.info(f"dev:   {len(dev_rows)} clips ({sum(r['duration'] for r in dev_rows) / 60:.1f} min)")
-    train = prep_batch(processor, train_rows)
+    train = prep_batch(processor, train_rows, augment_rows=True)
     dev = prep_batch(processor, dev_rows)
+    logger.info(f"augmented train: {len(train)} samples x {len(AUG_VARIANTS)} variants")
+    logger.info(f"samples written to {OUT_DIR}")
 
     def compute_metrics(pred):
         pred_ids = pred.predictions

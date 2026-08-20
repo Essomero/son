@@ -16,7 +16,8 @@
 # the duration of the run and is deleted from GCP afterwards.
 #
 # Run:  bash finetune/gcp/train_on_gcp.sh
-# Output lands in finetune/out/whisper-small-son/ (same as local training).
+# Output lands in finetune/out/ (the startup script sets SON_OUT_DIR —
+# whisper-small-son-soft for the augmented retrain).
 
 set -euo pipefail
 
@@ -73,13 +74,15 @@ gcloud compute instances describe "$VM" --zone "$ZONE" >/dev/null || {
 echo "VM $VM up in $ZONE"
 
 # 4. Poll GCS until the VM writes DONE (checkpoints stream every 60 s).
+#    100 min cap: the augmented dataset is 6x the clips, so feature
+#    extraction + 5 epochs can take well past the old 60 min.
 echo "Waiting for training (checkpoints stream to GCS every 60s)..."
-for i in $(seq 1 180); do   # 60 min cap
+for i in $(seq 1 300); do   # 100 min cap
     if gsutil -q ls "gs://$BUCKET/DONE" >/dev/null 2>&1; then break; fi
     sleep 20
 done
 if ! gsutil -q ls "gs://$BUCKET/DONE" >/dev/null 2>&1; then
-    echo "ERROR: no DONE marker after 60 min (check VM status / serial console)" >&2
+    echo "ERROR: no DONE marker after 100 min (check VM status / serial console)" >&2
     exit 1
 fi
 echo "Done marker: $(gsutil cat "gs://$BUCKET/DONE")"

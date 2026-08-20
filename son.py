@@ -629,6 +629,15 @@ class TranscriptCleanupProcessor(FrameProcessor):
             and isinstance(frame, TranscriptionFrame)
             and frame.finalized
         ):
+            # Snapshot the turn-level telemetry BEFORE the cleanup await —
+            # the roll keeps filling during the 1-3 s model call, so reading
+            # it afterwards would describe the NEXT turn's audio.
+            pre_turn_max, agc_turn_max = (
+                capture.pre_turn_max,
+                capture.agc_turn_max,
+            )
+            capture.pre_turn_max = -1.0
+            capture.agc_turn_max = 1.0
             cleaned = await self._clean(frame.text)
             # Debug instrument for repeated-phrase transcriptions: log the
             # raw/cleaned pair every turn, and when either side contains a
@@ -652,14 +661,11 @@ class TranscriptCleanupProcessor(FrameProcessor):
             # Quiet-turn capture: the turn's loudest pre-filter frame was
             # <= -32 dBFS, or the AGC needed >= +6 dB — soft speech, the
             # user-reported failure case. Throttled/capped inside dump_quiet.
-            quiet = (
-                0 < capture.pre_turn_max <= 10 ** (-32 / 20)
-                or capture.agc_turn_max >= 2.0
-            )
-            capture.pre_turn_max = -1.0
-            capture.agc_turn_max = 1.0
-            if quiet:
-                capture.dump_quiet(frame.text)
+            if (
+                0 < pre_turn_max <= 10 ** (-32 / 20)
+                or agc_turn_max >= 2.0
+            ):
+                capture.dump_quiet(frame.text, pre_turn_max, agc_turn_max)
             if cleaned:
                 # New frame, same timestamp: a fresh id makes the RTVI observer
                 # emit a second user-transcription event, and the shared

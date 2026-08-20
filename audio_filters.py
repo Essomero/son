@@ -121,9 +121,13 @@ class RepeatCapture:
             if p.stat().st_mtime < cutoff:
                 p.unlink()
 
-    def dump_quiet(self, raw_text: str) -> None:
+    def dump_quiet(
+        self, raw_text: str, pre_turn_max: float, agc_turn_max: float
+    ) -> None:
         """Dump the roll for a turn that was quiet (the soft-speech failure
-        case). Throttled to one a minute and capped at the 8 newest."""
+        case). Throttled to one a minute and capped at the 8 newest. The
+        trigger values are passed in — they describe the turn that JUST
+        ended, not whatever the roll holds now."""
         import time
         from pathlib import Path
 
@@ -136,8 +140,8 @@ class RepeatCapture:
         self._write(
             out_dir, "quiet", stamp,
             f"raw: {raw_text!r}\n"
-            f"pre_turn_max: {self.pre_turn_max:.4f}\n"
-            f"agc_turn_max: {self.agc_turn_max:.2f}\n",
+            f"pre_turn_max: {pre_turn_max:.4f}\n"
+            f"agc_turn_max: {agc_turn_max:.2f}\n",
         )
         files = sorted(out_dir.glob("quiet-*"))
         for p in files[:-24]:  # 8 captures x (txt + 2 wav)

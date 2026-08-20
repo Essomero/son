@@ -97,6 +97,8 @@ uv run scripts/gen_roles.py && cd client && npm run build && cd ..
 | `LMSTUDIO_API_KEY` | — | Optional. Enables local brains served by [LM Studio](https://lmstudio.ai) — any value if server auth is disabled |
 | `LMSTUDIO_BASE_URL` | `http://127.0.0.1:1234/v1` | OpenAI-compatible root of the LM Studio server (use a tailnet IP to reach a remote machine) |
 | `LMSTUDIO_MODEL` | `ornith-1.5-9b-mlx` | Default local LLM model |
+| `STT_CLEANUP_MODEL` | — | Optional. Rewrite each final STT utterance through a local text-normalizer model (e.g. `s1-mini`) before the brain sees it — cleans Parakeet's raw transcript (punctuation, fillers, repeats). Empty = off |
+| `STT_CLEANUP_BASE_URL` | `LMSTUDIO_BASE_URL` | OpenAI-compatible root for the cleanup model; auth reuses `LMSTUDIO_API_KEY` |
 | `GROQ_MODEL` | `openai/gpt-oss-120b` | Default Groq LLM model |
 | `GROQ_REASONING_EFFORT` | `medium` | gpt-oss reasoning effort: `low` (fastest, ~0.45s first content) / `medium` / `high` (smartest, slower) |
 | `GROQ_STT_MODEL` | `whisper-large-v3-turbo` | Default Groq STT model |
@@ -109,7 +111,7 @@ A provider is enabled only when its API key is present. The settings panel (⚙ 
 Click ⚙ to pick, per session:
 
 - **Brain** — the reasoning/chat model (Groq, Cerebras, DeepSeek, Gemini, OpenRouter, or a local LM Studio server).
-- **Speech-to-text** — how your voice becomes text (Groq Whisper, Google, OpenRouter, or **NVIDIA Parakeet TDT** — a fully local ONNX model, no API key; the ~660 MB model downloads once on first use into `~/.cache/son/parakeet`).
+- **Speech-to-text** — how your voice becomes text (Groq Whisper, Google, OpenRouter, or **NVIDIA Parakeet TDT** — a fully local ONNX model, no API key; the ~660 MB model downloads once on first use into `~/.cache/son/parakeet`). Set `STT_CLEANUP_MODEL` (e.g. `s1-mini` on LM Studio) and every final utterance is run through a local text normalizer before the brain sees it — Parakeet's raw transcript (no punctuation, "um"/"uh", repeats) arrives as clean prose.
 - **Voice** — the voice that reads replies (local Kokoro, or Groq/Gemini cloud TTS).
 
 Choices are saved in the browser and sent with each connection; the server falls back to the defaults if a provider's key is missing. Kokoro voices are synthesized on your machine; the others stream from their provider.

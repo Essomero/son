@@ -33,13 +33,14 @@ from dotenv import load_dotenv
 from loguru import logger
 
 from pipecat.audio.vad.silero import SileroVADAnalyzer
-from pipecat.frames.frames import AudioRawFrame, LLMRunFrame
+from pipecat.frames.frames import AudioRawFrame, LLMRunFrame, TranscriptionFrame
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.worker import PipelineParams, PipelineWorker
 from pipecat.processors.aggregators.llm_response_universal import (
     LLMContextAggregatorPair,
     LLMUserAggregatorParams,
 )
+from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.runner.types import RunnerArguments
 from pipecat.services.cerebras.llm import CerebrasLLMService
 from pipecat.services.deepseek.llm import DeepSeekLLMService
@@ -89,6 +90,20 @@ GROQ_REASONING_EFFORT = os.getenv("GROQ_REASONING_EFFORT", "medium")
 # LMSTUDIO_BASE_URL at a tailnet IP to use a remote machine's server.
 LMSTUDIO_BASE_URL = os.getenv("LMSTUDIO_BASE_URL", "http://127.0.0.1:1234/v1")
 LMSTUDIO_MODEL = os.getenv("LMSTUDIO_MODEL", "ornith-1.5-9b-mlx")
+
+# Optional STT transcript cleanup: rewrite each final utterance through a local
+# text-normalizer model (s1-mini on LM Studio) before the brain sees it.
+# Empty model = disabled. Auth reuses LMSTUDIO_API_KEY.
+STT_CLEANUP_MODEL = os.getenv("STT_CLEANUP_MODEL", "")
+STT_CLEANUP_BASE_URL = os.getenv("STT_CLEANUP_BASE_URL", LMSTUDIO_BASE_URL)
+
+STT_CLEANUP_SYSTEM_PROMPT = (
+    "You are a text normalizer for speech-to-text transcripts. The input "
+    "begins with a control line specifying the styling, structure, and context "
+    "settings; clean the transcript to match those settings and output only "
+    "the cleaned text."
+)
+STT_CLEANUP_CONTROL_LINE = "[Styling: semi-formal] [Structure: prose] [Context: general]"
 
 # --- Model providers ----------------------------------------------------------
 # A provider is enabled only when its API key is present in .env (same pattern
@@ -526,6 +541,71 @@ class MarkdownToSpeechFilter(BaseTextFilter):
         return clean_for_tts(text)
 
 
+class TranscriptCleanupProcessor(FrameProcessor):
+    """Rewrite each final STT utterance through a local text-normalizer LLM.
+
+    Parakeet is fast but its raw transcript is messy — no punctuation, filler
+    ("um", "uh"), word repeats. This stage sends every finalized utterance to
+    a small local model (s1-mini on LM Studio) that returns clean prose, so
+    the brain reads text that matches what was actually said. Live client
+    bubbles keep the raw STT text: the RTVI observer reports each frame once,
+    at its first sighting (the STT's push), so mutating this frame in place
+    never double-reports; only what reaches the aggregator — the LLM context
+    and the persisted transcript — is cleaned. Failures pass the raw text
+    through: cleanup must never stall or corrupt a turn."""
+
+    def __init__(self, model: str, base_url: str, api_key: str | None):
+        super().__init__()
+        self._model = model
+        self._client = httpx.AsyncClient(
+            base_url=base_url,
+            headers={"Authorization": f"Bearer {api_key}"} if api_key else {},
+            timeout=20.0,
+        )
+
+    async def process_frame(self, frame, direction):
+        # super() first: the base owns StartFrame handling — without it the
+        # processor never marks itself started and push_frame silently drops
+        # every frame (verified: the greeting's LLMRunFrame went missing).
+        await super().process_frame(frame, direction)
+        if (
+            direction == FrameDirection.DOWNSTREAM
+            and isinstance(frame, TranscriptionFrame)
+            and frame.finalized
+        ):
+            cleaned = await self._clean(frame.text)
+            if cleaned:
+                frame.text = cleaned
+        await self.push_frame(frame, direction)
+
+    async def _clean(self, text: str) -> str:
+        try:
+            r = await self._client.post(
+                "/chat/completions",
+                json={
+                    "model": self._model,
+                    "messages": [
+                        {"role": "system", "content": STT_CLEANUP_SYSTEM_PROMPT},
+                        {"role": "user", "content": f"{STT_CLEANUP_CONTROL_LINE}\n{text}"},
+                    ],
+                    "temperature": 0,
+                    "max_tokens": 1024,
+                },
+            )
+            r.raise_for_status()
+            msg = r.json()["choices"][0]["message"]
+            # s1-mini writes its answer in the reasoning channel — LM Studio
+            # returns it as reasoning_content and leaves content empty.
+            return (msg.get("content") or msg.get("reasoning_content") or "").strip()
+        except Exception as e:
+            logger.warning(f"Transcript cleanup failed, passing raw text through: {e}")
+            return ""
+
+    async def cleanup(self):
+        await self._client.aclose()
+        await super().cleanup()
+
+
 async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> None:
     body = runner_args.body or {}
     custom_data = body.get("custom_data") or {}
@@ -590,6 +670,7 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> Non
         f"llm={llm_choice['provider']}/{llm_choice.get('model')} "
         f"stt={stt_choice['provider']}/{stt_choice.get('model')} "
         f"tts={tts_choice['provider']}/{tts_choice.get('voice') or tts_choice.get('model')}"
+        + (f" cleanup={STT_CLEANUP_MODEL}" if STT_CLEANUP_MODEL else "")
     )
 
     stt = build_stt_service(stt_choice["provider"], stt_choice.get("model"))
@@ -625,17 +706,32 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> Non
         user_params=LLMUserAggregatorParams(vad_analyzer=SileroVADAnalyzer()),
     )
 
-    pipeline = Pipeline(
+    # Optional transcript cleanup: rewrite each finalized STT utterance through
+    # a local text-normalizer model (s1-mini on LM Studio) before the brain
+    # sees it. STT_CLEANUP_MODEL="" disables the stage entirely.
+    cleanup = (
+        TranscriptCleanupProcessor(
+            model=STT_CLEANUP_MODEL,
+            base_url=STT_CLEANUP_BASE_URL,
+            api_key=os.getenv("LMSTUDIO_API_KEY"),
+        )
+        if STT_CLEANUP_MODEL
+        else None
+    )
+
+    stages = [transport.input(), stt]  # user audio -> speech -> text
+    if cleanup:
+        stages.append(cleanup)  # ... -> clean the raw transcript
+    stages.extend(
         [
-            transport.input(),  # user audio from the browser
-            stt,                # Groq whisper: speech -> text
             user_aggregator,    # user turns into conversation context
-            llm,                # Groq llama: next assistant reply
+            llm,                # next assistant reply
             tts,                # Kokoro local: text -> speech (markdown stripped in-service)
             transport.output(), # audio back to the browser
             assistant_aggregator,  # assistant turns into conversation context
         ]
     )
+    pipeline = Pipeline(stages)
 
     worker = PipelineWorker(
         pipeline,

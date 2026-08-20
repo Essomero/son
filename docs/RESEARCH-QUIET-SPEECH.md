@@ -94,7 +94,9 @@ debug dumps (`quiet-*` + cleanup.log).
 
 1. **High-pass / low-band attenuation before the AGC.** A gentle rolloff on
    0–250 Hz (or a plain 80–120 Hz high-pass) removes the energy that hijacks
-   the RMS gain. Cheapest structural fix, pure DSP.
+   the RMS gain. Cheapest structural fix, pure DSP. (Confirmed load-bearing
+   by the offline A/B in lever 4: HP + one scalar gain ≥ the multiband AGC
+   on every capture.)
 2. **Multiband AGC (PCEN-lite).** Split the signal into ~3 bands (e.g.
    0–1 kHz, 1–3.5 kHz, 3.5–8 kHz), AGC each band to its own target with its
    own gate. The quiet-speech band gets lifted regardless of what the low end
@@ -112,27 +114,36 @@ debug dumps (`quiet-*` + cleanup.log).
    multiband AGC, both variants, transcribed with the server's whisper
    flags) points the same way:
 
-   | capture | RNNoise on | RNNoise off | read |
+   | capture | RNNoise on | RNNoise off (multiband) | RNNoise off (HP + scalar) |
    |---|---|---|---|
-   | 174654 (GT unknown) | "(indistinct)" | "Not that much, just chill out" | **off recovers speech from a failure** |
-   | 175059 (GT known) | WER 1.17 | WER 0.67 "Not too much, just chilling" | off better |
-   | 175228 (GT known) | WER 2.00 | WER 2.00 (keeps "…much, just chilling") | tie |
-   | 174756 (GT known) | WER 3.33 | WER 3.33 | tie |
-   | 171839 (GT unknown) | "The last purchase…" | "My last purchase…" | tie |
-   | 182013 (GT unknown) | "May I hide in" | "Hi, how are you doing" | **off better** — DeepFilterNet independently heard "Hey, how are you doing" on the same raw audio (§5) |
-   | 182114 | repetition loop | repetition loop | tie (both fail) |
-   | 182445 | "Thank you." — input is −78.6 dBFS ≈ silence | "[MUSIC]" | both fail; RNNoise suppressed the turn to silence (off: −31.6 dBFS) |
+   | 174654 (GT unknown) | "(indistinct)" | "Not that much, just chill out" | "Not that much, just chill out" — **both recover speech from a failure** |
+   | 175059 (GT known) | WER 1.17 | WER 0.67 "Not too much, just chilling" | WER 0.67 (identical) |
+   | 175228 (GT known) | WER 2.00 | WER 2.00 (keeps "…much, just chilling") | WER 1.50 "It's not a lot of stress" |
+   | 174756 (GT known) | WER 3.33 | WER 3.33 | WER 3.17 |
+   | 171839 (GT unknown) | "The last purchase…" | "My last purchase…" | "My last purchase…" |
+   | 182013 (GT unknown) | "May I hide in" | "Hi, how are you doing" | "Hi, how are you doing" — DeepFilterNet independently heard "Hey, how are you doing" on the same raw audio (§5) |
+   | 182114 | repetition loop | repetition loop | repetition loop (both fail) |
+   | 182445 | "Thank you." — input is −78.6 dBFS ≈ silence | "[MUSIC]" | "[MUSIC]" (both fail; RNNoise suppressed the turn to silence) |
 
    RNNoise off is at least as good on every row, clearly better on two
-   (174654, 182013), and never makes a GT-scored capture worse. Caveats:
-   only the 18:xx captures postdate the multiband AGC (commit a904fe0,
-   18:18) and replay faithfully — 182013's sim-vs-live correlation is 0.856;
-   the 17:xx rows are fair *within* the sim but their `.txt` baselines
-   describe the old single-band chain. Both variants start cold while the
-   live filters are warm. Strongly suggestive, not conclusive — the deciding
-   test is flipping `SON_DENOISE=0` in the running recorder for a day. The
-   two denoisers bracket whisper's tolerance: DeepFilterNet (§5) made every
-   row worse, RNNoise removal improves some — consistent with
+   (174654, 182013), and never makes a GT-scored capture worse. **The
+   HP + scalar variant** (`scripts/ab_denoise.py`, a 90 Hz high-pass + ONE
+   scalar AGC with the multiband's target/cap/gate/limiter params) matches
+   or beats the multiband on every row — 3.17/0.67/1.50 vs 3.33/0.67/2.00
+   on the GT-scored captures, identical transcripts on the recovered ones.
+   The old single-band AGC (git history, commit a904fe0^) had no
+   high-pass, which is why its gain went to the rumble: the HP is the
+   load-bearing piece, and the multiband's per-band split buys little on
+   this data. Caveats: only the 18:xx captures postdate the multiband AGC
+   (commit a904fe0, 18:18) and replay faithfully — 182013's sim-vs-live
+   correlation is 0.856; the 17:xx rows are fair *within* the sim but their
+   `.txt` baselines describe the old single-band chain; all variants start
+   cold while the live filters are warm. Strongly suggestive, not
+   conclusive — the deciding test is flipping `SON_DENOISE=0` in the
+   running recorder for a day, and if the simpler chain holds live it's the
+   candidate to swap in. The two denoisers bracket whisper's tolerance:
+   DeepFilterNet (§5) made every row worse, RNNoise removal improves some —
+   consistent with
    [whisper#2125](https://github.com/openai/whisper/discussions/2125): the
    model must be *trained* on the enhanced spectrum (see lever 5).
 5. **Match training to the runtime chain.** The 2125 insight: denoising helps

@@ -91,6 +91,11 @@ GROQ_REASONING_EFFORT = os.getenv("GROQ_REASONING_EFFORT", "medium")
 LMSTUDIO_BASE_URL = os.getenv("LMSTUDIO_BASE_URL", "http://127.0.0.1:1234/v1")
 LMSTUDIO_MODEL = os.getenv("LMSTUDIO_MODEL", "ornith-1.5-9b-mlx")
 
+# Local voice-model STT: the fine-tuned whisper served by whisper.cpp
+# (whisper_local.py shim on :8083 -> whisper-server on :8081). Keyless.
+WHISPER_LOCAL_BASE_URL = os.getenv("WHISPER_LOCAL_BASE_URL", "http://127.0.0.1:8083/v1")
+WHISPER_LOCAL_MODEL = os.getenv("WHISPER_LOCAL_MODEL", "whisper-small-son")
+
 # Optional STT transcript cleanup: rewrite each final utterance through a local
 # text-normalizer model (s1-mini on LM Studio) before the brain sees it.
 # Empty model = disabled. Auth reuses LMSTUDIO_API_KEY.
@@ -124,7 +129,8 @@ PROVIDER_ENV_KEYS = {
 STT_PROVIDER_ENV_KEYS = {
     "groq": "GROQ_API_KEY",
     "openrouter": "OPENROUTER_API_KEY",
-    "google": None,  # google: see google_stt_available()
+    "google": None,         # google: see google_stt_available()
+    "whisper-local": None,  # local: see whisper_local_available()
 }
 TTS_PROVIDER_ENV_KEYS = {"kokoro": None, "groq": "GROQ_API_KEY", "gemini": "GEMINI_API_KEY"}
 
@@ -152,6 +158,23 @@ def google_stt_available() -> bool:
     except Exception as e:
         logger.warning(f"Google credentials not usable ({type(e).__name__}: {e}); Google STT disabled")
         return False
+
+def whisper_local_available() -> bool:
+    """Local fine-tuned whisper (whisper.cpp server on 127.0.0.1:8081, fronted
+    by the whisper_local.py OpenAI-compat shim on :8083). Probe the server's
+    TCP port — it's the real dependency; the shim is inert without it."""
+    import socket
+
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(0.5)
+    try:
+        s.connect(("127.0.0.1", 8081))
+        return True
+    except OSError:
+        return False
+    finally:
+        s.close()
+
 
 # Fallbacks for manual /start calls that don't name a model.
 DEFAULT_MODELS = {
@@ -256,6 +279,17 @@ def build_stt_service(provider: str, model: str):
         # Local NVIDIA Parakeet TDT via sherpa-onnx (ONNX on CPU). The model
         # (~660 MB) downloads once into ~/.cache/son/parakeet on first use.
         return parakeet_stt.ParakeetSTTService(model=model)
+    if provider == "whisper-local":
+        # Fine-tuned whisper via whisper.cpp. whisper.cpp's /inference isn't
+        # OpenAI-shaped, so the whisper_local.py shim bridges the multipart
+        # /v1/audio/transcriptions call to it. The OpenAI SDK refuses falsy
+        # api_keys, so send a dummy "local" key — whisper-server ignores the
+        # Authorization header entirely (same trick as LM Studio).
+        return OpenAISTTService(
+            api_key=os.getenv("WHISPER_LOCAL_API_KEY", "local"),
+            base_url=WHISPER_LOCAL_BASE_URL,
+            settings=OpenAISTTService.Settings(model=model or WHISPER_LOCAL_MODEL),
+        )
     raise ValueError(f"Unknown STT provider: {provider}")
 
 
@@ -650,6 +684,8 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> Non
     stt_available = (
         google_stt_available()
         if stt_provider == "google"
+        else whisper_local_available()
+        if stt_provider == "whisper-local"
         else parakeet_stt.parakeet_stt_available()
         if stt_provider == "parakeet"
         else bool(os.getenv(STT_PROVIDER_ENV_KEYS.get(stt_provider, "")))
@@ -984,6 +1020,16 @@ def _fetch_models() -> dict:
     if parakeet_stt.parakeet_stt_available():
         for mid, label in parakeet_stt.PARAKEET_MODELS.items():
             stt.append({"provider": "parakeet", "id": mid, "label": label})
+
+    # Fine-tuned voice-model whisper: listed when the whisper.cpp server is up.
+    if whisper_local_available():
+        stt.append(
+            {
+                "provider": "whisper-local",
+                "id": WHISPER_LOCAL_MODEL,
+                "label": f"{WHISPER_LOCAL_MODEL} (voice fine-tune)",
+            }
+        )
 
     for voice in KOKORO_VOICES:
         tts.append({"provider": "kokoro", "id": voice, "label": voice})

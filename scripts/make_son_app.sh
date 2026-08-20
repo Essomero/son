@@ -1,7 +1,8 @@
 #!/bin/bash
 # Build ~/Applications/Son.app — a double-clickable launcher for the whole
-# agent: starts `uv run python son.py` in a Terminal window (or reuses the
-# running instance), waits for :7860, opens the page in the default browser.
+# agent: starts the whisper STT stack (whisper.cpp :8081 + the shim :8083)
+# and `uv run python son.py` in Terminal windows (or reuses running
+# instances), waits for :7860, opens the page in the default browser.
 #
 # Usage: ./scripts/make_son_app.sh        (from the repo root)
 # Then:  open ~/Applications/Son.app      (or add it to the Dock)
@@ -20,11 +21,16 @@ if [ ! -x "$UV" ]; then
   exit 1
 fi
 
+# whisper.cpp checkout serving the fine-tuned GGML model (see
+# finetune/README.md). The launcher skips the whisper servers when it's
+# missing, so a fresh clone still gets a working Son app.
+WHISPER="${WHISPER_CPP:-$HOME/.cache/son/whisper.cpp}"
+
 # --- assemble the app bundle -------------------------------------------------
 mkdir -p "$APPS_DIR"
 rm -rf "$BUNDLE"
 
-sed -e "s|__REPO__|$REPO|g" -e "s|__UV__|$UV|g" "$SRC_APPLE" | \
+sed -e "s|__REPO__|$REPO|g" -e "s|__UV__|$UV|g" -e "s|__WHISPER__|$WHISPER|g" "$SRC_APPLE" | \
   osacompile -o "$BUNDLE"
 
 # --- icon: SVG -> PNG -> iconset -> icns (best-effort) -----------------------

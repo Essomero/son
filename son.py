@@ -111,10 +111,12 @@ STT_CLEANUP_MODEL = os.getenv("STT_CLEANUP_MODEL", "")
 STT_CLEANUP_BASE_URL = os.getenv("STT_CLEANUP_BASE_URL", LMSTUDIO_BASE_URL)
 
 STT_CLEANUP_SYSTEM_PROMPT = (
-    "You are a text normalizer for speech-to-text transcripts. Clean the "
-    "transcript to match these settings: styling semi-formal, structure "
-    "prose, context general. Output only the cleaned text. Always output "
-    "something: if the input is a single word or fragment, output it as-is."
+    "You are a text normalizer for speech-to-text transcripts. Fix "
+    "punctuation, casing, and spacing only. You may remove filler words "
+    "('um', 'uh') and exact duplicated phrases. NEVER remove, shorten, "
+    "reword, or paraphrase content the speaker said — every meaningful "
+    "word must appear in the output. Output only the cleaned text. If the "
+    "input is a single word or fragment, output it as-is."
 )
 
 # --- Model providers ----------------------------------------------------------
@@ -707,6 +709,17 @@ class TranscriptCleanupProcessor(FrameProcessor):
                 # s1-mini occasionally emits nothing at all (empty reasoning
                 # channel); one retry before falling back to the raw text.
                 cleaned = await once()
+            if cleaned and len(cleaned.split()) < 0.6 * len(text.split()):
+                # s1-mini sometimes "normalizes" by deleting whole clauses
+                # the speaker actually said (live: 'I love spreadsheets,
+                # what's exciting about yours?' -> 'What's exciting about
+                # yours?'). Losing the user's words is worse than the raw
+                # text — fall back to it.
+                logger.warning(
+                    f"cleanup dropped content ({len(text.split())} -> "
+                    f"{len(cleaned.split())} words); keeping raw"
+                )
+                return ""
             return cleaned
         except Exception as e:
             logger.warning(f"Transcript cleanup failed, passing raw text through: {e}")

@@ -1,0 +1,580 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Son · voice session</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  /* ————— studio tokens —————
+     Warm lamp-lit charcoal, amber instrument lights, record red only for REC. */
+  :root {
+    --bg: #141110;  --panel: #1c1814; --panel2: #201a15; --well: #16120e;
+    --line: #2c2520; --line2: #3a312a;
+    --ink: #efe8dc; --ink2: #b3a99b; --dim: #7f7567;
+    --amber: #e8a33d; --amber-soft: #3a2f1c;
+    --red: #e2584b;  --red-soft: #3a201c;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { color-scheme: dark; }
+  body { background: var(--bg); color: var(--ink);
+    font: 15px/1.5 -apple-system, "SF Pro Text", "Helvetica Neue", system-ui, sans-serif;
+    min-height: 100vh; display: flex; flex-direction: column; align-items: center;
+    padding: 34px 16px 60px; }
+  .wrap { width: min(660px, 100%); display: flex; flex-direction: column; gap: 16px; }
+  button { font: inherit; }
+  :focus-visible { outline: 2px solid var(--amber); outline-offset: 3px; border-radius: 6px; }
+
+  /* ————— header: session id + tape counter ————— */
+  .top { display: grid; grid-template-columns: 1fr auto; gap: 4px 16px; }
+  .wordmark { font-family: "Space Grotesk", system-ui, sans-serif; font-weight: 600;
+    font-size: 15px; letter-spacing: .22em; text-transform: uppercase; color: var(--ink); }
+  .wordmark .sub { color: var(--dim); font-weight: 500; letter-spacing: .3em; }
+  .counters { text-align: right; }
+  .counter { font-family: "IBM Plex Mono", ui-monospace, monospace; font-weight: 500;
+    font-size: 14px; letter-spacing: .08em; color: var(--ink); font-variant-numeric: tabular-nums; }
+  .counter b { color: var(--amber); font-weight: 500; }
+  .tape { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 10.5px;
+    letter-spacing: .12em; color: var(--dim); font-variant-numeric: tabular-nums;
+    text-transform: uppercase; }
+  .track { grid-column: 1 / -1; height: 2px; background: var(--line); border-radius: 1px;
+    overflow: hidden; margin-top: 4px; }
+  .fill { height: 100%; width: 0; background: var(--amber); transition: width .35s ease; }
+
+  /* ————— the booth ————— */
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
+    padding: 26px 28px 22px; display: flex; flex-direction: column; gap: 14px; }
+  .cat { align-self: center; font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 10.5px; letter-spacing: .22em; text-transform: uppercase;
+    color: var(--amber); border: 1px solid var(--line2); background: var(--amber-soft);
+    border-radius: 999px; padding: 3px 12px; }
+  .cat.free { color: var(--red); background: var(--red-soft); border-color: #4a2c26; }
+  .prompt { font-family: "Space Grotesk", system-ui, sans-serif; font-weight: 500;
+    font-size: clamp(25px, 4.6vw, 32px); line-height: 1.42; text-align: center;
+    color: var(--ink); min-height: calc(clamp(25px, 4.6vw, 32px) * 1.42 * 3);
+    display: flex; align-items: center; justify-content: center;
+    transition: opacity .25s ease; }
+  .hint { text-align: center; color: var(--dim); font-size: 13px; max-width: 46ch;
+    margin: -2px auto 0; transition: opacity .25s ease; }
+  .card.rec .cat, .card.rec .hint { opacity: .55; }
+
+  /* ————— instrument panel: VU needle + readouts ————— */
+  .panel { background: var(--panel2); border: 1px solid var(--line); border-radius: 10px;
+    padding: 10px 14px; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 14px;
+    align-items: center; }
+  .vuwrap { width: 100%; max-width: 300px; justify-self: center; }
+  #vu { width: 100%; height: auto; display: block; }
+  .reads { display: flex; flex-direction: column; align-items: flex-end; gap: 3px; min-width: 118px; }
+  .recstat { display: flex; align-items: center; gap: 7px; font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 10.5px; letter-spacing: .22em; color: var(--dim); }
+  .recstat .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--line2);
+    transition: background .2s; }
+  .recstat.on { color: var(--red); }
+  .recstat.on .dot { background: var(--red); animation: blink 1.4s steps(1) infinite; }
+  .time { font-family: "IBM Plex Mono", ui-monospace, monospace; font-weight: 500;
+    font-size: 22px; letter-spacing: .02em; font-variant-numeric: tabular-nums; color: var(--ink); }
+  .time.hot { color: var(--red); }
+  .pk { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 10.5px;
+    letter-spacing: .14em; color: var(--dim); font-variant-numeric: tabular-nums;
+    text-transform: uppercase; }
+  .pk b { color: var(--amber); font-weight: 500; }
+  @keyframes blink { 50% { opacity: .15; } }
+
+  /* ————— controls: physical REC / keep / back ————— */
+  .controls { display: flex; align-items: center; justify-content: center; gap: 18px;
+    margin-top: 4px; }
+  .side { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
+  .recwrap { display: flex; flex-direction: column; align-items: center; gap: 7px; }
+  .record { position: relative; width: 74px; height: 74px; border-radius: 50%;
+    background: transparent; border: 2px solid var(--amber); cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    transition: border-color .2s, transform .12s ease; }
+  .record:hover { transform: scale(1.05); }
+  .record .core { width: 24px; height: 24px; border-radius: 50%; background: var(--red);
+    transition: all .2s; }
+  .record.on { border-color: var(--red); }
+  .record.on .core { width: 19px; height: 19px; border-radius: 3px; background: #fff; }
+  .record.on::before { content: ""; position: absolute; inset: -8px; border-radius: 50%;
+    border: 1px solid var(--red); animation: ring 1.6s ease-out infinite; }
+  .reclabel { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 10px;
+    letter-spacing: .28em; color: var(--amber); }
+  .record.on ~ .reclabel { color: var(--red); }
+  .keep { background: var(--amber); color: #1c140a; font-family: "Space Grotesk", system-ui, sans-serif;
+    font-weight: 600; font-size: 14.5px; border: 0; border-radius: 10px; padding: 13px 22px;
+    cursor: pointer; transition: background .2s, transform .12s ease, opacity .2s; }
+  .keep:hover:not(:disabled) { background: #f0b25a; transform: translateY(-1px); }
+  .keep:disabled { background: var(--line); color: var(--dim); cursor: default; transform: none; }
+  .ghost { background: transparent; border: 1px solid var(--line2); color: var(--ink2);
+    border-radius: 8px; padding: 7px 12px; font-size: 12.5px; cursor: pointer;
+    font-family: "Space Grotesk", system-ui, sans-serif; font-weight: 500;
+    transition: border-color .2s, color .2s; }
+  .ghost:hover:not(:disabled) { border-color: var(--amber); color: var(--amber); }
+  .ghost.red:hover:not(:disabled) { border-color: var(--red); color: var(--red); }
+  .ghost:disabled { opacity: .35; cursor: default; }
+  @keyframes ring { 0% { transform: scale(.9); opacity: .8; } 100% { transform: scale(1.35); opacity: 0; } }
+
+  /* ————— playback + take sheet ————— */
+  .preview { min-height: 0; }
+  .preview audio { width: 100%; height: 38px; margin-top: 6px; display: block; accent-color: var(--amber); }
+  .preview .pnote { text-align: center; color: var(--dim); font-size: 12.5px; margin-top: 4px; }
+  .strip { background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
+    padding: 14px 16px 16px; }
+  .striphead { display: flex; justify-content: space-between; align-items: baseline; gap: 12px;
+    margin-bottom: 10px; }
+  .striphead .ttl { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 10px;
+    letter-spacing: .24em; text-transform: uppercase; color: var(--dim); }
+  .legend { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 10px;
+    letter-spacing: .1em; color: var(--dim); display: flex; gap: 10px; align-items: center; }
+  .legend i { font-style: normal; display: inline-flex; align-items: center; gap: 4px; }
+  .legend i::before { content: ""; width: 7px; height: 7px; border-radius: 2px; display: inline-block; }
+  .legend i.k::before { background: var(--amber); }
+  .legend i.r::before { background: var(--red); }
+  .legend i.f::before { background: transparent; border: 1px dashed var(--line2); }
+  .statusstrip { display: grid; grid-template-columns: repeat(auto-fill, minmax(26px, 1fr)); gap: 4px;
+    max-height: 168px; overflow-y: auto; padding-right: 4px; }
+  .statusstrip::-webkit-scrollbar { width: 6px; }
+  .statusstrip::-webkit-scrollbar-thumb { background: var(--line2); border-radius: 3px; }
+  .chip { position: relative; height: 26px; border-radius: 6px; background: #241f19;
+    font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 10.5px; color: var(--dim);
+    display: flex; align-items: center; justify-content: center; cursor: pointer;
+    border: 1px solid transparent; transition: border-color .15s, color .15s, background .15s; }
+  .chip:hover { border-color: var(--line2); color: var(--ink2); }
+  .chip.kept { background: #4d3d22; color: #f0b45e; }
+  .chip.retaken::after { content: ""; position: absolute; top: 3px; right: 3px; width: 4px; height: 4px;
+    border-radius: 50%; background: var(--red); }
+  .chip.kept:hover { color: transparent; }
+  .chip.kept:hover::before { content: "▶"; position: absolute; color: var(--amber); font-size: 8px; }
+  .chip.free { border-bottom: 1px dashed var(--line2); }
+  .chip.cur { border-color: var(--amber); color: var(--amber); box-shadow: 0 0 0 1px var(--amber-soft); }
+
+  /* ————— footer + toast ————— */
+  .note { text-align: center; color: var(--dim); font-size: 12.5px; }
+  .note .sep { color: #4a4035; margin: 0 6px; }
+  .kbd { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 10.5px;
+    border: 1px solid var(--line2); border-bottom-width: 2px; border-radius: 4px;
+    padding: 1px 6px; margin: 0 2px; color: var(--ink2); }
+  .flash { position: fixed; left: 50%; bottom: 26px; transform: translateX(-50%) translateY(8px);
+    background: #2a2218; border: 1px solid #4a3a22; color: var(--ink);
+    padding: 9px 18px; border-radius: 9px; font-size: 13px; opacity: 0; transition: opacity .22s, transform .22s;
+    z-index: 9; font-family: "Space Grotesk", system-ui, sans-serif; }
+  .flash.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+  .flash.err { background: #2c1c1a; border-color: #52302a; color: #f0b0a8; }
+
+  @media (max-width: 560px) {
+    body { padding: 22px 10px 48px; }
+    .card { padding: 20px 16px 18px; }
+    .controls { gap: 12px; flex-wrap: wrap; }
+    .side { order: 3; flex-direction: row; width: 100%; justify-content: center; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .record.on::before, .recstat.on .dot { animation: none; }
+    .fill, .prompt, .hint { transition: none; }
+  }
+</style>
+</head>
+<body>
+<main class="wrap">
+  <header class="top">
+    <div class="wordmark">Son <span class="sub">voice session</span></div>
+    <div class="counters">
+      <div class="counter"><b id="counter">0</b> / <span id="total">517</span></div>
+      <div class="tape" id="tape">0:00:00 on tape</div>
+    </div>
+    <div class="track"><div class="fill" id="fill"></div></div>
+  </header>
+
+  <section class="card" id="card">
+    <span class="cat" id="cat">—</span>
+    <div class="prompt" id="prompt">Loading…</div>
+    <div class="hint" id="hint"></div>
+
+    <div class="panel">
+      <div class="vuwrap"><svg id="vu" viewBox="0 0 220 118" role="img" aria-label="input level"></svg></div>
+      <div class="reads">
+        <div class="recstat" id="recstat"><span class="dot"></span><span id="recstate">STANDBY</span></div>
+        <div class="time" id="timer">0:00.0</div>
+        <div class="pk">peak <b id="pk">—</b> db</div>
+      </div>
+    </div>
+
+    <div class="controls">
+      <div class="side">
+        <button class="ghost" id="backBtn">‹ Back</button>
+        <button class="ghost red" id="retakeBtn" disabled>Record again</button>
+      </div>
+      <div class="recwrap">
+        <button class="record" id="recBtn" aria-label="Record"><span class="core"></span></button>
+        <div class="reclabel" id="reclabel">Record</div>
+      </div>
+      <button class="keep" id="keepBtn" disabled>Keep take</button>
+    </div>
+
+    <div class="preview" id="preview"></div>
+  </section>
+
+  <section class="strip">
+    <div class="striphead">
+      <span class="ttl">Session takes</span>
+      <span class="legend"><i class="k">kept</i><i class="r">re-recorded</i><i class="f">ad-lib</i></span>
+    </div>
+    <div class="statusstrip" id="strip"></div>
+  </section>
+
+  <div class="note">
+    <span class="kbd">space</span> play / pause
+    <span class="sep">·</span>
+    <span class="kbd">←</span><span class="kbd">↑</span><span class="kbd">→</span><span class="kbd">↓</span> navigate
+    <span class="sep">·</span>
+    <span class="kbd">enter</span> record · stop · keep
+    <span class="sep">·</span>
+    <span class="kbd">⌫</span> re-record
+  </div>
+</main>
+<div class="flash" id="flash"></div>
+
+<script>
+"use strict";
+/* Son voice session — mic -> 16 kHz mono 16-bit WAV -> POST /clip.
+   Capture is raw PCM via ScriptProcessor, resampled by OfflineAudioContext,
+   then hand-encoded to WAV. The VU needle gets proper ballistics: fast rise,
+   slow fall, with a peak-hold flag. */
+const $ = (id) => document.getElementById(id);
+const MAX_PROMPT_S = 30, MAX_FREE_S = 90, SILENCE_MS = 2500, SILENCE_RMS = 0.008;
+const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+
+let prompts = [], done = new Set(), durById = {}, taken = new Map();
+let idx = 0, rec = null, previewUrl = null, currentBlob = null, lastDur = 0;
+let audioEl = null;   // the take currently loaded in the preview player
+let cols = 1;         // cells per row in the take sheet (grid)
+
+/* ————— VU meter ————— */
+const VU = { cx: 110, cy: 106, r: 92, a0: -52, a1: 52, lo: -40, hi: 3 };
+const NS = "http://www.w3.org/2000/svg";
+function pt(a, r) { return [VU.cx + r * Math.sin(a * Math.PI / 180), VU.cy - r * Math.cos(a * Math.PI / 180)]; }
+function line(x1, y1, x2, y2, w, color, opacity = 1) {
+  const l = document.createElementNS(NS, "line");
+  l.setAttribute("x1", x1); l.setAttribute("y1", y1); l.setAttribute("x2", x2); l.setAttribute("y2", y2);
+  l.setAttribute("stroke", color); l.setAttribute("stroke-width", w); l.setAttribute("stroke-linecap", "round");
+  if (opacity !== 1) l.setAttribute("opacity", opacity);
+  return l;
+}
+function buildVU() {
+  const svg = $("vu");
+  const defs = document.createElementNS(NS, "defs");
+  const g = document.createElementNS(NS, "linearGradient");
+  g.id = "sheen"; g.setAttribute("x1", 0); g.setAttribute("y1", 0); g.setAttribute("x2", 0); g.setAttribute("y2", 1);
+  const s1 = document.createElementNS(NS, "stop"); s1.setAttribute("offset", 0); s1.setAttribute("stop-color", "#262019");
+  const s2 = document.createElementNS(NS, "stop"); s2.setAttribute("offset", 1); s2.setAttribute("stop-color", "#15110d");
+  g.append(s1, s2); defs.append(g); svg.append(defs);
+  // scale arc + ticks
+  const [ax1, ay1] = pt(VU.a0, VU.r + 9), [ax2, ay2] = pt(VU.a1, VU.r + 9);
+  svg.append(line(ax1, ay1, ax2, ay2, 4, "url(#sheen)"));
+  const majors = new Set([-20, -10, 0, 3]);
+  for (let dB = -40; dB <= 3; dB += 5) {
+    const a = VU.a0 + ((dB - VU.lo) / (VU.hi - VU.lo)) * (VU.a1 - VU.a0);
+    const [x1, y1] = pt(a, VU.r), [x2, y2] = pt(a, VU.r - (majors.has(dB) ? 10 : 5));
+    svg.append(line(x1, y1, x2, y2, 1, "#4a4035"));
+    if (majors.has(dB)) {
+      const [lx, ly] = pt(a, VU.r - 21);
+      const t = document.createElementNS(NS, "text");
+      t.setAttribute("x", lx); t.setAttribute("y", ly + 3); t.setAttribute("text-anchor", "middle");
+      t.setAttribute("font-family", "IBM Plex Mono, monospace"); t.setAttribute("font-size", "8.5");
+      t.setAttribute("fill", "#6e6355"); t.textContent = dB === 3 ? "+3" : String(dB);
+      svg.append(t);
+    }
+  }
+  // needle drawn pointing up; JS rotates it around the pivot. peak flag sits at rest.
+  const [hx, hy] = pt(VU.a0, VU.r - 34), [px, py] = pt(VU.a0, VU.r - 30);
+  svg.append(line(VU.cx, VU.cy, hx, hy, 2.5, "#e8a33d", 0.9));
+  svg.append(line(VU.cx, VU.cy, px, py, 2, "#e2584b", 0.95));
+  const hub = document.createElementNS(NS, "circle");
+  hub.setAttribute("cx", VU.cx); hub.setAttribute("cy", VU.cy); hub.setAttribute("r", 4);
+  hub.setAttribute("fill", "#e8a33d"); svg.append(hub);
+}
+buildVU();
+const vuLines = $("vu").querySelectorAll("line");
+const needleEl = vuLines[vuLines.length - 2];
+const peakEl = vuLines[vuLines.length - 1];
+function setAngle(el, a) { el.setAttribute("transform", `rotate(${a.toFixed(2)} ${VU.cx} ${VU.cy})`); }
+
+let level = 0, needleA = VU.a0, peakA = VU.a0, prev = performance.now();
+const dB = (r) => 20 * Math.log10(Math.max(r, 1e-5));
+function vuTick(now) {
+  const dt = Math.min(0.05, (now - prev) / 1000); prev = now;
+  const tgt = rec ? VU.a0 + clamp((dB(level) - VU.lo) / (VU.hi - VU.lo), 0, 1) * (VU.a1 - VU.a0) : VU.a0;
+  const k = tgt > needleA ? 1 - Math.exp(-dt * 18) : 1 - Math.exp(-dt * 2.2);
+  needleA += (tgt - needleA) * k;
+  if (tgt > peakA) peakA = tgt; else peakA = Math.max(VU.a0, peakA - dt * 9);
+  setAngle(needleEl, needleA); setAngle(peakEl, peakA);
+  $("pk").textContent = rec && dB(level) > -60 ? dB(level).toFixed(1) : "—";
+  requestAnimationFrame(vuTick);
+}
+requestAnimationFrame(vuTick);
+
+/* ————— load session state ————— */
+async function load() {
+  const r = await fetch("/list");
+  const data = await r.json();
+  prompts = data.prompts; durById = data.done;
+  done = new Set(Object.keys(durById).map(Number));
+  const saved = Number(localStorage.getItem("son.recorder.idx") || 0);
+  idx = clamp(saved, 0, prompts.length - 1);
+  renderAll();
+  if (done.has(idx)) playStored(idx);   // resume onto a cell that already has a take
+}
+function p() { return prompts[idx]; }
+function fmtClock(s) { const m = Math.floor(s / 60); return `${m}:${String(Math.round(s % 60)).padStart(2, "0")}`; }
+function fmtTape(s) {
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), ss = Math.floor(s % 60);
+  return `${h}:${String(m).padStart(2, "0")}:${String(ss).padStart(2, "0")}`;
+}
+function renderAll() {
+  const total = prompts.length;
+  $("total").textContent = total;
+  $("counter").textContent = done.size;
+  $("fill").style.width = `${(done.size / total) * 100}%`;
+  $("tape").textContent = `${fmtTape(Object.values(durById).reduce((a, b) => a + b, 0))} on tape`;
+  const strip = $("strip"); strip.innerHTML = "";
+  prompts.forEach((pr, i) => {
+    const c = document.createElement("div");
+    c.className = "chip" + (done.has(i) ? " kept" : "") + (taken.has(i) ? " retaken" : "") +
+      (pr.text ? "" : " free") + (i === idx ? " cur" : "");
+    c.textContent = i + 1;
+    c.title = pr.text || "(ad-lib — no script)";
+    c.onclick = () => {
+      stopRec(); idx = i;
+      localStorage.setItem("son.recorder.idx", i);
+      renderPrompt();
+      if (done.has(i)) playStored(i);   // cells with audio replay their take
+    };
+    strip.appendChild(c);
+  });
+  measureCols();
+  renderPrompt();
+}
+function renderPrompt() {
+  const pr = p();
+  $("cat").textContent = pr.text ? (pr.category || "prompt") : "ad-lib · no script";
+  $("cat").className = "cat" + (pr.text ? "" : " free");
+  $("prompt").textContent = pr.text || "No script. Talk — about anything.";
+  $("hint").textContent = pr.text
+    ? (taken.has(idx) ? "Re-recording — this take replaces the previous one." : "Read it the way you'd actually say it to Son.")
+    : "A minute of you, unfiltered — your day, your work, whatever's on your mind.";
+  currentBlob = null;
+  audioEl = null;
+  if (previewUrl) { URL.revokeObjectURL(previewUrl); previewUrl = null; }
+  $("preview").innerHTML = "";
+  $("keepBtn").disabled = true;
+  $("retakeBtn").disabled = !done.has(idx);
+  $("timer").textContent = "0:00.0";
+  $("timer").classList.remove("hot");
+  lastDur = 0;
+  localStorage.setItem("son.recorder.idx", idx);
+  renderStripState();
+}
+function playStored(i) {
+  /* Replay a saved take: fetch it from the server into the preview player.
+     The Keep button stays off — this is a stored take, not a fresh one. */
+  if (previewUrl) { URL.revokeObjectURL(previewUrl); previewUrl = null; }
+  currentBlob = null;
+  const audio = document.createElement("audio");
+  audio.controls = true; audio.src = `/clip/${i}`;
+  audio.style.width = "100%"; audio.style.height = "38px";
+  const note = document.createElement("div");
+  note.className = "pnote";
+  const d = durById[i];
+  note.textContent = `Take ${i + 1} · ${d ? d.toFixed(1) + "s" : "recorded"} — stored take. ⌫ re-records it.`;
+  $("preview").innerHTML = "";
+  $("preview").append(audio, note);
+  audioEl = audio;
+  $("keepBtn").disabled = true;
+}
+function measureCols() {
+  /* How many cells per row, read from the live layout (the sheet is a grid
+     whose column count depends on window width). First-row chips share an
+     offsetTop — that count IS the row width. */
+  const strip = $("strip");
+  const first = strip.firstElementChild;
+  if (!first) { cols = 1; return; }
+  let n = 0;
+  for (const c of strip.children) { if (c.offsetTop === first.offsetTop) n++; else break; }
+  cols = Math.max(1, n);
+}
+function nav(delta) {
+  /* ← → / ↑ ↓ move through the sheet; a stored take on the target cell loads
+     into the player, same as clicking its chip. */
+  const next = clamp(idx + delta, 0, prompts.length - 1);
+  if (next === idx) return;
+  stopRec();
+  idx = next;
+  localStorage.setItem("son.recorder.idx", idx);
+  renderPrompt();
+  if (done.has(idx)) playStored(idx);
+  const c = $("strip").children[idx];
+  if (c) c.scrollIntoView({ block: "nearest", inline: "nearest" });
+}
+function togglePlay() {
+  /* Space is play/pause only — recording is Enter or R. Stopping a running
+     recording still counts as controlling playback. */
+  if (rec) { stopRec(); return; }
+  if (audioEl) { if (audioEl.paused) audioEl.play().catch(() => {}); else audioEl.pause(); return; }
+  flash("Nothing loaded to play — Enter to record.", true);
+}
+function renderStripState() {
+  [...$("strip").children].forEach((c, i) => {
+    c.className = "chip" + (done.has(i) ? " kept" : "") + (taken.has(i) ? " retaken" : "") +
+      (prompts[i].text ? "" : " free") + (i === idx ? " cur" : "");
+  });
+}
+
+/* ————— recording ————— */
+let ctx = null, stream = null, chunks = [], t0 = 0, silentSince = 0, timerIv = null;
+
+async function startRec() {
+  if (rec) return;
+  try {
+    ctx = new (window.AudioContext || window.webkitAudioContext)();
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+  } catch (e) { flash("Microphone blocked — allow access in the browser and try again.", true); return; }
+  const src = ctx.createMediaStreamSource(stream);
+  const proc = ctx.createScriptProcessor(4096, 1, 1);
+  const mute = ctx.createGain(); mute.gain.value = 0;
+  chunks = []; t0 = performance.now(); silentSince = 0;
+  proc.onaudioprocess = (e) => {
+    const ch = e.inputBuffer.getChannelData(0);
+    chunks.push(new Float32Array(ch));
+    let s = 0; for (let i = 0; i < ch.length; i++) s += ch[i] * ch[i];
+    level = Math.sqrt(s / ch.length);
+    const dur = (performance.now() - t0) / 1000;
+    const limit = p().text ? MAX_PROMPT_S : MAX_FREE_S;
+    if (level < SILENCE_RMS) silentSince += ch.length / ctx.sampleRate * 1000; else silentSince = 0;
+    if ((silentSince > SILENCE_MS && dur > 0.6) || dur > limit) stopRec();
+  };
+  src.connect(proc); proc.connect(mute); mute.connect(ctx.destination);
+  rec = { src, proc, mute };
+  $("card").classList.add("rec");
+  $("recBtn").classList.add("on");
+  $("reclabel").textContent = "Stop";
+  $("recstat").classList.add("on");
+  $("recstate").textContent = "REC";
+  timerIv = setInterval(() => {
+    const dur = (performance.now() - t0) / 1000;
+    const limit = p().text ? MAX_PROMPT_S : MAX_FREE_S;
+    $("timer").textContent = fmtClock(dur);
+    $("timer").classList.toggle("hot", dur > limit - 5);
+  }, 100);
+}
+function stopRec() {
+  if (!rec) return;
+  clearInterval(timerIv); timerIv = null;
+  lastDur = (performance.now() - t0) / 1000;
+  try { rec.proc.disconnect(); rec.src.disconnect(); } catch {}
+  stream.getTracks().forEach(t => t.stop());
+  rec = null; level = 0;
+  $("card").classList.remove("rec");
+  $("recBtn").classList.remove("on");
+  $("reclabel").textContent = "Record";
+  $("recstat").classList.remove("on");
+  $("recstate").textContent = "STANDBY";
+  const samples = concat(chunks); chunks = [];
+  if (samples.length < 16000 * 0.3) { flash("Take too short — hold on a beat longer and try again.", true); return; }
+  toWav(samples, ctx.sampleRate).then(blob => {
+    currentBlob = blob;
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
+    previewUrl = URL.createObjectURL(blob);
+    const audio = document.createElement("audio");
+    audio.controls = true; audio.src = previewUrl; audio.style.width = "100%"; audio.style.height = "38px";
+    const note = document.createElement("div");
+    note.className = "pnote";
+    note.textContent = `${lastDur.toFixed(1)}s — space plays it back. Enter keeps it, ⌫ re-records.`;
+    $("preview").innerHTML = "";
+    $("preview").append(audio, note);
+    audioEl = audio;
+    $("keepBtn").disabled = false;
+  });
+}
+function concat(chs) {
+  let n = 0; for (const c of chs) n += c.length;
+  const out = new Float32Array(n); let o = 0;
+  for (const c of chs) { out.set(c, o); o += c.length; }
+  return out;
+}
+async function toWav(samples, fromRate) {
+  if (fromRate !== 16000) {
+    const len = Math.round(samples.length * 16000 / fromRate);
+    const off = new OfflineAudioContext(1, len, 16000);
+    const buf = off.createBuffer(1, samples.length, fromRate);
+    buf.copyToChannel(samples, 0);
+    const src = off.createBufferSource(); src.buffer = buf; src.connect(off.destination); src.start();
+    samples = (await off.startRendering()).getChannelData(0);
+  }
+  const n = samples.length, ab = new ArrayBuffer(44 + n * 2), v = new DataView(ab);
+  const ws = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+  ws(0, "RIFF"); v.setUint32(4, 36 + n * 2, true); ws(8, "WAVE");
+  ws(12, "fmt "); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+  v.setUint32(24, 16000, true); v.setUint32(28, 32000, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+  ws(36, "data"); v.setUint32(40, n * 2, true);
+  let o = 44; for (let i = 0; i < n; i++) { const s = clamp(samples[i], -1, 1); v.setInt16(o, s < 0 ? s * 0x8000 : s * 0x7FFF, true); o += 2; }
+  return new Blob([ab], { type: "audio/wav" });
+}
+
+/* ————— save take ————— */
+async function keep() {
+  if (!currentBlob) return;
+  const pr = p();
+  const dur = currentBlob.size / 32000;
+  const form = new FormData();
+  form.append("id", idx);
+  form.append("text", pr.text || "");
+  form.append("duration", dur.toFixed(2));
+  form.append("file", currentBlob, `clip_${String(idx).padStart(4, "0")}.wav`);
+  const r = await fetch("/clip", { method: "POST", body: form });
+  const res = await r.json();
+  if (!res.ok) { flash("Save failed — " + res.error, true); return; }
+  done.add(idx); taken.set(idx, (taken.get(idx) || 0) + 1);
+  durById[idx] = dur;
+  if (previewUrl) { URL.revokeObjectURL(previewUrl); previewUrl = null; }
+  $("preview").innerHTML = "";
+  flash(`Take ${idx + 1} kept · ${dur.toFixed(1)}s`);
+  if (idx < prompts.length - 1) { idx++; localStorage.setItem("son.recorder.idx", idx); }
+  renderAll();
+  if (done.has(idx)) playStored(idx);   // landing cell may already have a take
+}
+
+/* ————— UI wiring ————— */
+function flash(msg, isErr) {
+  const f = $("flash"); f.textContent = msg;
+  f.classList.toggle("err", !!isErr); f.classList.add("show");
+  clearTimeout(flash.t); flash.t = setTimeout(() => f.classList.remove("show"), 2400);
+}
+$("recBtn").onclick = () => (rec ? stopRec() : startRec());
+$("keepBtn").onclick = keep;
+$("retakeBtn").onclick = () => { stopRec(); done.delete(idx); delete durById[idx]; renderPrompt();
+  flash("Recording again — the previous take is marked for replacement."); };
+$("backBtn").onclick = () => { if (idx > 0) { stopRec(); idx--; localStorage.setItem("son.recorder.idx", idx); renderPrompt(); } };
+document.addEventListener("keydown", (e) => {
+  if (e.code === "Space") { e.preventDefault(); togglePlay(); }
+  else if (e.code === "Enter") {   // cycle: record → stop → keep
+    e.preventDefault();
+    if (rec) stopRec();
+    else if (!$("keepBtn").disabled) keep();
+    else startRec();
+  }
+  else if (e.code === "Backspace" || (e.code === "KeyR" && !e.metaKey && !e.ctrlKey && !e.altKey)) {
+    e.preventDefault(); rec ? stopRec() : startRec();   // ⌫ / r = re-record
+  }
+  else if (e.code === "ArrowRight") { e.preventDefault(); nav(1); }
+  else if (e.code === "ArrowLeft") { e.preventDefault(); nav(-1); }
+  else if (e.code === "ArrowDown") { e.preventDefault(); nav(cols); }
+  else if (e.code === "ArrowUp") { e.preventDefault(); nav(-cols); }
+});
+
+window.addEventListener("resize", measureCols);
+
+load().catch(e => { $("prompt").textContent = "Can't reach the session server."; $("hint").textContent = "Check that it's still running, then reload."; console.error(e); });
+</script>
+</body>
+</html>

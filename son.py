@@ -110,12 +110,11 @@ STT_CLEANUP_MODEL = os.getenv("STT_CLEANUP_MODEL", "")
 STT_CLEANUP_BASE_URL = os.getenv("STT_CLEANUP_BASE_URL", LMSTUDIO_BASE_URL)
 
 STT_CLEANUP_SYSTEM_PROMPT = (
-    "You are a text normalizer for speech-to-text transcripts. The input "
-    "begins with a control line specifying the styling, structure, and context "
-    "settings; clean the transcript to match those settings and output only "
-    "the cleaned text."
+    "You are a text normalizer for speech-to-text transcripts. Clean the "
+    "transcript to match these settings: styling semi-formal, structure "
+    "prose, context general. Output only the cleaned text. Always output "
+    "something: if the input is a single word or fragment, output it as-is."
 )
-STT_CLEANUP_CONTROL_LINE = "[Styling: semi-formal] [Structure: prose] [Context: general]"
 
 # --- Model providers ----------------------------------------------------------
 # A provider is enabled only when its API key is present in .env (same pattern
@@ -590,6 +589,8 @@ class SegmentCaptureProcessor(FrameProcessor):
         await super().process_frame(frame, direction)
         if isinstance(frame, InputAudioRawFrame):
             capture.feed_post(frame.audio, frame.sample_rate)
+            capture.pre_turn_max = max(capture.pre_turn_max, capture.pre_rms)
+            capture.agc_turn_max = max(capture.agc_turn_max, capture.agc_gain)
         await self.push_frame(frame, direction)
 
 
@@ -611,6 +612,7 @@ class TranscriptCleanupProcessor(FrameProcessor):
     def __init__(self, model: str, base_url: str, api_key: str | None):
         super().__init__()
         self._model = model
+        self._last_raw = ""
         self._client = httpx.AsyncClient(
             base_url=base_url,
             headers={"Authorization": f"Bearer {api_key}"} if api_key else {},
@@ -630,15 +632,34 @@ class TranscriptCleanupProcessor(FrameProcessor):
             cleaned = await self._clean(frame.text)
             # Debug instrument for repeated-phrase transcriptions: log the
             # raw/cleaned pair every turn, and when either side contains a
-            # verbatim repeated n-gram, dump the last ~25 s of mic audio
-            # (pre- and post-filter) so the exact clip can be replayed.
+            # verbatim repeated n-gram — or the same finalized text arrives
+            # twice in a row (the short-utterance variant) — dump the last
+            # ~25 s of mic audio (pre- and post-filter) for replay.
             logger.info(f"cleanup: {frame.text!r} -> {cleaned!r}")
-            if repeat_phrase(frame.text) or (cleaned and repeat_phrase(cleaned)):
+            key = frame.text.strip().lower()
+            duplicate = bool(key) and key == self._last_raw
+            self._last_raw = key
+            if (
+                repeat_phrase(frame.text)
+                or (cleaned and repeat_phrase(cleaned))
+                or duplicate
+            ):
                 logger.warning(
                     "repeated phrase in transcript — audio dumped to "
                     "~/.cache/son/debug/repeat-*"
                 )
                 capture.dump(frame.text, cleaned)
+            # Quiet-turn capture: the turn's loudest pre-filter frame was
+            # <= -32 dBFS, or the AGC needed >= +6 dB — soft speech, the
+            # user-reported failure case. Throttled/capped inside dump_quiet.
+            quiet = (
+                0 < capture.pre_turn_max <= 10 ** (-32 / 20)
+                or capture.agc_turn_max >= 2.0
+            )
+            capture.pre_turn_max = -1.0
+            capture.agc_turn_max = 1.0
+            if quiet:
+                capture.dump_quiet(frame.text)
             if cleaned:
                 # New frame, same timestamp: a fresh id makes the RTVI observer
                 # emit a second user-transcription event, and the shared
@@ -654,14 +675,14 @@ class TranscriptCleanupProcessor(FrameProcessor):
         await self.push_frame(frame, direction)
 
     async def _clean(self, text: str) -> str:
-        try:
+        async def once() -> str:
             r = await self._client.post(
                 "/chat/completions",
                 json={
                     "model": self._model,
                     "messages": [
                         {"role": "system", "content": STT_CLEANUP_SYSTEM_PROMPT},
-                        {"role": "user", "content": f"{STT_CLEANUP_CONTROL_LINE}\n{text}"},
+                        {"role": "user", "content": text},
                     ],
                     "temperature": 0,
                     "max_tokens": 1024,
@@ -672,6 +693,14 @@ class TranscriptCleanupProcessor(FrameProcessor):
             # s1-mini writes its answer in the reasoning channel — LM Studio
             # returns it as reasoning_content and leaves content empty.
             return (msg.get("content") or msg.get("reasoning_content") or "").strip()
+
+        try:
+            cleaned = await once()
+            if not cleaned:
+                # s1-mini occasionally emits nothing at all (empty reasoning
+                # channel); one retry before falling back to the raw text.
+                cleaned = await once()
+            return cleaned
         except Exception as e:
             logger.warning(f"Transcript cleanup failed, passing raw text through: {e}")
             return ""

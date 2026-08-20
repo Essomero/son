@@ -63,6 +63,14 @@ class RepeatCapture:
         self.post = bytearray()
         self.pre_rate = 16000
         self.post_rate = 16000
+        # Turn-level telemetry for the quiet-turn trigger (reset per turn by
+        # the cleanup processor): the loudest pre-filter frame RMS and the
+        # highest AGC gain applied, so a dump fires when the turn was quiet.
+        self.pre_rms = 0.0
+        self.pre_turn_max = -1.0  # -1 = no data (filter chain off)
+        self.agc_gain = 1.0
+        self.agc_turn_max = 1.0
+        self._last_quiet_dump = 0.0
 
     def feed_pre(self, data: bytes, rate: int) -> None:
         self.pre_rate = rate
@@ -80,26 +88,31 @@ class RepeatCapture:
         if len(buf) > limit:
             del buf[: len(buf) - limit]
 
-    def dump(self, raw_text: str, cleaned_text: str) -> None:
-        import time
+    def _write(self, out_dir, prefix: str, stamp: str, note: str) -> None:
         import wave
-        from pathlib import Path
 
-        out_dir = Path.home() / ".cache" / "son" / "debug"
-        out_dir.mkdir(parents=True, exist_ok=True)
-        stamp = time.strftime("%Y%m%d-%H%M%S")
         for which, buf, rate in (
             ("pre", self.pre, self.pre_rate),
             ("post", self.post, self.post_rate),
         ):
-            path = out_dir / f"repeat-{stamp}-{which}.wav"
+            path = out_dir / f"{prefix}-{stamp}-{which}.wav"
             with wave.open(str(path), "wb") as w:
                 w.setnchannels(1)
                 w.setsampwidth(2)
                 w.setframerate(rate)
                 w.writeframes(bytes(buf))
-        (out_dir / f"repeat-{stamp}.txt").write_text(
-            f"raw: {raw_text!r}\ncleaned: {cleaned_text!r}\n"
+        (out_dir / f"{prefix}-{stamp}.txt").write_text(note)
+
+    def dump(self, raw_text: str, cleaned_text: str) -> None:
+        import time
+        from pathlib import Path
+
+        out_dir = Path.home() / ".cache" / "son" / "debug"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        self._write(
+            out_dir, "repeat", stamp,
+            f"raw: {raw_text!r}\ncleaned: {cleaned_text!r}\n",
         )
         # Instrument leftovers are small, but storage matters — drop any
         # older than a week on each dump.
@@ -107,6 +120,28 @@ class RepeatCapture:
         for p in out_dir.glob("repeat-*"):
             if p.stat().st_mtime < cutoff:
                 p.unlink()
+
+    def dump_quiet(self, raw_text: str) -> None:
+        """Dump the roll for a turn that was quiet (the soft-speech failure
+        case). Throttled to one a minute and capped at the 8 newest."""
+        import time
+        from pathlib import Path
+
+        if time.time() - self._last_quiet_dump < 60:
+            return
+        self._last_quiet_dump = time.time()
+        out_dir = Path.home() / ".cache" / "son" / "debug"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        self._write(
+            out_dir, "quiet", stamp,
+            f"raw: {raw_text!r}\n"
+            f"pre_turn_max: {self.pre_turn_max:.4f}\n"
+            f"agc_turn_max: {self.agc_turn_max:.2f}\n",
+        )
+        files = sorted(out_dir.glob("quiet-*"))
+        for p in files[:-24]:  # 8 captures x (txt + 2 wav)
+            p.unlink()
 
 
 capture = RepeatCapture()
@@ -125,6 +160,11 @@ class TeeFilter(BaseAudioFilter):
         pass
 
     async def filter(self, audio: bytes) -> bytes:
+        if len(audio) >= 2:
+            arr = np.frombuffer(audio, dtype=np.int16)
+            capture.pre_rms = float(
+                np.sqrt(np.mean((arr.astype(np.float64) / 32768.0) ** 2))
+            )
         capture.feed_pre(audio, capture.pre_rate)
         return audio
 
@@ -200,6 +240,7 @@ class GainAGCFilter(BaseAudioFilter):
             # sit with the floor boosted. Fast attack recovers on the next
             # speech onset (~2-3 frames).
             self._gain = 1.0 + (self._gain - 1.0) * 0.95
+        capture.agc_gain = self._gain  # telemetry for the quiet-turn trigger
         out = np.clip(arr * self._gain, -1.0, 1.0) * 32767.0
         return out.astype(np.int16).tobytes()
 

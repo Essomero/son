@@ -107,10 +107,12 @@ uv run scripts/gen_roles.py && cd client && npm run build && cd ..
 | `WHISPER_LOCAL_API_KEY` | `local` | Dummy key — the OpenAI SDK requires a non-empty value; whisper.cpp ignores Authorization |
 | `KOKORO_VOICE` | `af_heart` | Default Kokoro voice id |
 | `SON_DENOISE` | `1` | Noise suppression on mic input (RNNoise) before VAD/STT — set `0` to disable |
-| `SON_AGC` | `1` | Quiet-speech auto gain: normalizes level toward `SON_AGC_TARGET_DB`, gated so silence isn't amplified — set `0` to disable |
-| `SON_AGC_TARGET_DB` | `-22` | AGC target level (dBFS) |
-| `SON_AGC_MAX_DB` | `18` | AGC max gain (dB) — caps how far quiet speech is pushed |
-| `SON_AGC_GATE_DB` | `-45` | Below this input level (dBFS) the gain releases to 1 — no VAD pumping on silence |
+| `SON_AGC` | `1` | Quiet-speech auto gain: per-band normalization toward `SON_AGC_TARGET_DB` (mid band), gated so silence isn't amplified — set `0` to disable |
+| `SON_AGC_TARGET_DB` | `-18` | AGC target level (dBFS) for the 1–3.5 kHz speech band |
+| `SON_AGC_LOW_TARGET_DB` | `-25` | Target for the 0–1 kHz band — kept low so room rumble doesn't consume the gain budget |
+| `SON_AGC_HIGH_TARGET_DB` | `-20` | Target for the 3.5–8 kHz band (sibilants, whispered consonants) |
+| `SON_AGC_MAX_DB` | `24` | AGC max gain per band (dB) — caps how far quiet speech is pushed |
+| `SON_AGC_GATE_DB` | `-45` | Below this input level (dBFS) the gain releases to 1 — no VAD pumping on silence (speech bands gate 10 dB lower so the quietest speech still gets gain) |
 | `SON_VAD_CONFIDENCE` | `0.5` | Silero speech-probability threshold for turn detection (pipecat default `0.7` is tuned for loud speech) |
 | `SON_VAD_START_SECS` | `0.15` | Consecutive speech needed to open a turn (lower = soft onsets aren't clipped) |
 | `SON_VAD_STOP_SECS` | `0.7` | Consecutive silence needed to end a turn (higher = pauses don't chop soft speech into fragments) |
@@ -123,7 +125,7 @@ A provider is enabled only when its API key is present. The settings panel (⚙ 
 Click ⚙ to pick, per session:
 
 - **Brain** — the reasoning/chat model (Groq, Cerebras, DeepSeek, Gemini, OpenRouter, or a local LM Studio server).
-- **Speech-to-text** — how your voice becomes text (Groq Whisper, Google, OpenRouter, **NVIDIA Parakeet TDT** — a fully local ONNX model, no API key; the ~660 MB model downloads once on first use into `~/.cache/son/parakeet` — or **whisper-small-son**, a whisper fine-tuned on the author's voice and served locally by whisper.cpp; its second generation was retrained on soft/noisy audio for quiet speech). Set `STT_CLEANUP_MODEL` (e.g. `s1-mini` on LM Studio) and every final utterance is run through a local text normalizer before the brain sees it — Parakeet's raw transcript (no punctuation, "um"/"uh", repeats) arrives as clean prose. Before any provider sees it, mic audio goes through a clean-and-magnify stage: RNNoise denoise plus a quiet-speech AGC that levels soft speech toward -22 dBFS without amplifying silence.
+- **Speech-to-text** — how your voice becomes text (Groq Whisper, Google, OpenRouter, **NVIDIA Parakeet TDT** — a fully local ONNX model, no API key; the ~660 MB model downloads once on first use into `~/.cache/son/parakeet` — or **whisper-small-son**, a whisper fine-tuned on the author's voice and served locally by whisper.cpp; its second generation was retrained on soft/noisy audio for quiet speech). Set `STT_CLEANUP_MODEL` (e.g. `s1-mini` on LM Studio) and every final utterance is run through a local text normalizer before the brain sees it — Parakeet's raw transcript (no punctuation, "um"/"uh", repeats) arrives as clean prose. Before any provider sees it, mic audio goes through a clean-and-magnify stage: RNNoise denoise plus a per-band quiet-speech AGC (90 Hz high-pass, then 0–1 / 1–3.5 / 3.5–8 kHz bands normalized to −25 / −18 / −20 dBFS) that lifts the speech band even when low-frequency energy dominates — without amplifying silence.
 - **Voice** — the voice that reads replies (local Kokoro, or Groq/Gemini cloud TTS).
 
 Choices are saved in the browser and sent with each connection; the server falls back to the defaults if a provider's key is missing. Kokoro voices are synthesized on your machine; the others stream from their provider.

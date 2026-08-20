@@ -21,5 +21,8 @@ dependencies = [
     "accelerate>=1.14.0",
     "soundfile>=0.14.0",
     "jiwer>=4.0.0",
+    # Direct dep since 2026-08-20: the multiband AGC (audio_filters.py) uses
+    # scipy.signal.lfilter for its crossover chains; previously transitive.
+    "scipy>=1.11.0",
     "python-multipart>=0.0.32",
 ]

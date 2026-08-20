@@ -9,24 +9,37 @@ noise floor and the SNR collapses.
 These filters sit on the transport's audio-in path (TransportParams
 audio_in_filter), BEFORE VAD and every STT provider:
 
-  RNNoiseFilter   — neural noise suppression (pipecat's, open-source)
-  GainAGCFilter   — quiet-speech AGC: normalizes level toward a target
-                    RMS with a noise gate (silence is not amplified) and
-                    a max-gain cap, so the downstream STT/VAD always see
-                    audio near the level they were trained on.
+  RNNoiseFilter      — neural noise suppression (pipecat's, open-source)
+  MultibandAGCFilter — per-band quiet-speech AGC (PCEN-lite): splits the
+                       signal into 3 bands (Linkwitz-Riley crossovers at
+                       1 kHz / 3.5 kHz) and normalizes each band to its
+                       own target, so the quiet 1-3.5 kHz speech band gets
+                       lifted even when low-frequency energy dominates the
+                       total RMS. A single-band AGC spends its gain budget
+                       on the low end and leaves the intelligibility band
+                       below the STT's input range (see
+                       docs/RESEARCH-QUIET-SPEECH.md). A 90 Hz high-pass
+                       removes the rumble that hijacks the RMS estimate;
+                       a composite peak limiter caps the summed bands at
+                       -1 dBFS.
 
 Env knobs (all optional):
-  SON_DENOISE       1|0 — noise suppression on/off (default on when the
-                         pipecat rnnoise extra is installed)
-  SON_AGC           1|0 — quiet-speech AGC on/off (default on)
-  SON_AGC_TARGET_DB target level in dBFS (default -22)
-  SON_AGC_MAX_DB    max gain in dB (default +18)
-  SON_AGC_GATE_DB   below this input level the gain stays 1 (default -45)
+  SON_DENOISE         1|0 — noise suppression on/off (default on when the
+                           pipecat rnnoise extra is installed)
+  SON_AGC             1|0 — quiet-speech AGC on/off (default on)
+  SON_AGC_TARGET_DB   mid-band target in dBFS (default -18)
+  SON_AGC_LOW_TARGET_DB   low-band (0-1 kHz) target (default -25)
+  SON_AGC_HIGH_TARGET_DB  high-band (3.5-8 kHz) target (default -20)
+  SON_AGC_MAX_DB      max gain per band in dB (default +24)
+  SON_AGC_GATE_DB     low-band gate in dBFS; the speech bands gate 10 dB
+                      lower so the quietest speech still gets gain
+                      (default -45)
 """
 
 import os
 
 import numpy as np
+from scipy.signal import lfilter
 
 from pipecat.audio.filters.base_audio_filter import BaseAudioFilter
 from pipecat.audio.filters.rnnoise_filter import RNNoiseFilter
@@ -197,30 +210,95 @@ class ChainedFilter(BaseAudioFilter):
         return audio
 
 
-class GainAGCFilter(BaseAudioFilter):
-    """Quiet-speech AGC on int16 PCM.
+def _butter_biquad(kind: str, f0: float, fs: float) -> tuple[float, float, float, float, float]:
+    """2nd-order Butterworth (Q = 1/sqrt(2)) biquad, normalized (a0 = 1).
 
-    Per-frame gain with fast attack / slow release, a noise gate so
-    silences don't get amplified (which would feed VAD false turns), and
-    a max-gain cap so the quietest audible speech isn't pushed into the
-    noise. Frame-level uniform gain is enough here — the transport
-    delivers ~20 ms frames and the smoothing makes it inaudible.
+    Two cascaded copies of the same biquad form a Linkwitz-Riley 4th-order
+    section: -6 dB at the crossover, flat amplitude sum with its sibling.
+    """
+    w0 = 2.0 * np.pi * f0 / fs
+    c, s = np.cos(w0), np.sin(w0)
+    alpha = s / np.sqrt(2.0)
+    a0 = 1.0 + alpha
+    if kind == "lowpass":
+        b0 = (1.0 - c) / 2.0
+        b1 = 1.0 - c
+        b2 = (1.0 - c) / 2.0
+    else:  # highpass
+        b0 = (1.0 + c) / 2.0
+        b1 = -(1.0 + c)
+        b2 = (1.0 + c) / 2.0
+    return b0 / a0, b1 / a0, b2 / a0, -2.0 * c / a0, (1.0 - alpha) / a0
+
+
+class _BiquadChain:
+    """A cascade of biquad sections with lfilter state carried across frames."""
+
+    def __init__(self, sections: list[tuple[float, float, float, float, float]]):
+        self._b = np.array([[b0, b1, b2] for b0, b1, b2, _, _ in sections], dtype=np.float64)
+        self._a = np.array([[1.0, a1, a2] for _, _, _, a1, a2 in sections], dtype=np.float64)
+        self._zi = np.zeros((len(sections), 2), dtype=np.float64)
+
+    def process(self, x: np.ndarray) -> np.ndarray:
+        for i in range(len(self._b)):
+            y, self._zi[i] = lfilter(self._b[i], self._a[i], x, zi=self._zi[i])
+            x = y
+        return x
+
+
+class MultibandAGCFilter(BaseAudioFilter):
+    """Per-band quiet-speech AGC on int16 PCM (PCEN-lite).
+
+    A 90 Hz high-pass strips the rumble that dominates the RMS estimate,
+    then the signal is split into three bands at Linkwitz-Riley 4th-order
+    crossovers (1 kHz, 3.5 kHz) and each band is AGC'd to its own target
+    with its own noise gate. The 1-3.5 kHz speech band is lifted even when
+    low-frequency energy dominates — the failure mode of the single-band
+    AGC it replaces (captured live: the low band sat 20-40 dB above the
+    speech band and the gain budget went to the rumble). A composite peak
+    limiter caps the summed bands at -1 dBFS so the high-crest transients
+    of quiet speech don't clip (clipping distortion is a whisper
+    hallucination trigger).
+
+    Per-band gains use fast attack / slow release; below a band's gate the
+    gain releases toward 1.0 so silence isn't amplified (which would feed
+    VAD false turns). The speech bands gate 10 dB lower than the low band
+    so the quietest speech still gets gain while room noise doesn't pump.
     """
 
     def __init__(
         self,
-        target_db: float = -22.0,
-        max_gain_db: float = 18.0,
+        mid_target_db: float = -18.0,
+        low_target_db: float = -25.0,
+        high_target_db: float = -20.0,
+        max_gain_db: float = 24.0,
         gate_db: float = -45.0,
     ) -> None:
-        self._target = 10 ** (target_db / 20)
+        self._targets = [10 ** (t / 20) for t in (low_target_db, mid_target_db, high_target_db)]
         self._max_gain = 10 ** (max_gain_db / 20)
-        self._gate = 10 ** (gate_db / 20)
-        self._gain = 1.0
+        # Low band gates at gate_db; speech bands 10 dB lower.
+        self._gates = [10 ** (gate_db / 20), 10 ** ((gate_db - 10) / 20), 10 ** ((gate_db - 10) / 20)]
+        self._gain = np.array([1.0, 1.0, 1.0])
         self._filtering = True
+        self._hp = None  # built in start() from the sample rate
+        self._bands = None
 
     async def start(self, sample_rate: int):
-        self._gain = 1.0
+        fs = float(sample_rate)
+        # One-pole high-pass at 90 Hz: y[n] = x[n] - x[n-1] + R y[n-1].
+        r = np.exp(-2.0 * np.pi * 90.0 / fs)
+        self._hp = _BiquadChain([(1.0, -1.0, 0.0, -r, 0.0)])
+        # LR4 crossovers at 1 kHz and 3.5 kHz (2 cascaded biquads each).
+        lp1k = [_butter_biquad("lowpass", 1000.0, fs)] * 2
+        hp1k = [_butter_biquad("highpass", 1000.0, fs)] * 2
+        lp35k = [_butter_biquad("lowpass", 3500.0, fs)] * 2
+        hp35k = [_butter_biquad("highpass", 3500.0, fs)] * 2
+        self._bands = [
+            _BiquadChain(lp1k),        # 0-1 kHz
+            _BiquadChain([*hp1k, *lp35k]),  # 1-3.5 kHz
+            _BiquadChain(hp35k),       # 3.5-8 kHz
+        ]
+        self._gain = np.array([1.0, 1.0, 1.0])
 
     async def stop(self):
         pass
@@ -230,31 +308,32 @@ class GainAGCFilter(BaseAudioFilter):
             self._filtering = frame.enable
 
     async def filter(self, audio: bytes) -> bytes:
-        if not self._filtering or len(audio) < 2:
+        if not self._filtering or len(audio) < 2 or self._bands is None:
             return audio
-        arr = np.frombuffer(audio, dtype=np.int16).astype(np.float32) / 32768.0
-        rms = float(np.sqrt(np.mean(arr ** 2) + 1e-12))
-        if rms >= self._gate:
-            desired = min(self._target / rms, self._max_gain)
-            # attack faster than release: normalize quickly, let go slowly
-            rate = 0.6 if desired > self._gain else 0.08
-            self._gain = (1 - rate) * self._gain + rate * desired
-        else:
-            # Below the gate: slowly release the held gain so pauses don't
-            # sit with the floor boosted. Fast attack recovers on the next
-            # speech onset (~2-3 frames).
-            self._gain = 1.0 + (self._gain - 1.0) * 0.95
-        capture.agc_gain = self._gain  # telemetry for the quiet-turn trigger
+        x = np.frombuffer(audio, dtype=np.int16).astype(np.float64) / 32768.0
+        x = self._hp.process(x)
+        banded = [self._bands[i].process(x) for i in range(3)]
+        for i in range(3):
+            rms = float(np.sqrt(np.mean(banded[i] ** 2) + 1e-12))
+            if rms >= self._gates[i]:
+                desired = min(self._targets[i] / rms, self._max_gain)
+                # attack faster than release: normalize quickly, let go slowly
+                rate = 0.6 if desired > self._gain[i] else 0.08
+                self._gain[i] = (1 - rate) * self._gain[i] + rate * desired
+            else:
+                # Below the gate: slowly release the held gain so pauses
+                # don't sit with the floor boosted. Fast attack recovers on
+                # the next speech onset (~2-3 frames).
+                self._gain[i] = 1.0 + (self._gain[i] - 1.0) * 0.95
+        capture.agc_gain = float(np.max(self._gain))  # telemetry for the quiet-turn trigger
+        out = banded[0] * self._gain[0] + banded[1] * self._gain[1] + banded[2] * self._gain[2]
         # Peak-aware limiter: quiet speech has a high crest factor, so a
-        # big RMS-driven gain clips the transients (captured live: peaks
-        # at 0 dBFS). Cap this frame's gain so its peak lands at -1 dBFS —
-        # clipping distortion is a whisper hallucination trigger.
-        peak = float(np.max(np.abs(arr)))
-        gain = self._gain
+        # big RMS-driven gain clips the transients (captured live: peaks at
+        # 0 dBFS). Cap this frame so its peak lands at -1 dBFS.
+        peak = float(np.max(np.abs(out)))
         if peak > 1e-6:
-            gain = min(gain, 10 ** (-1.0 / 20) / peak)
-        out = np.clip(arr * gain, -1.0, 1.0) * 32767.0
-        return out.astype(np.int16).tobytes()
+            out = out * min(1.0, 10 ** (-1.0 / 20) / peak)
+        return (np.clip(out, -1.0, 1.0) * 32767.0).astype(np.int16).tobytes()
 
 
 def build_input_filter() -> BaseAudioFilter | None:
@@ -268,9 +347,11 @@ def build_input_filter() -> BaseAudioFilter | None:
         filters.append(RNNoiseFilter())
     if os.getenv("SON_AGC", "1") != "0":
         filters.append(
-            GainAGCFilter(
-                target_db=float(os.getenv("SON_AGC_TARGET_DB", "-22")),
-                max_gain_db=float(os.getenv("SON_AGC_MAX_DB", "18")),
+            MultibandAGCFilter(
+                mid_target_db=float(os.getenv("SON_AGC_TARGET_DB", "-18")),
+                low_target_db=float(os.getenv("SON_AGC_LOW_TARGET_DB", "-25")),
+                high_target_db=float(os.getenv("SON_AGC_HIGH_TARGET_DB", "-20")),
+                max_gain_db=float(os.getenv("SON_AGC_MAX_DB", "24")),
                 gate_db=float(os.getenv("SON_AGC_GATE_DB", "-45")),
             )
         )

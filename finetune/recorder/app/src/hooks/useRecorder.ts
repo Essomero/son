@@ -5,8 +5,9 @@ import { captureToWav } from "../lib/audio";
  *
  * start() opens the mic (raw PCM via ScriptProcessor), stop() encodes the
  * captured chunks to a 16 kHz WAV and stages the blob; the caller posts it
- * with keep() and then clears. Auto-stop on silence is a speech-booth
- * feature only — room tone IS silence, so it runs to maxS with a countdown.
+ * with keep() and then clears. Stopping a take is the user's call — the only
+ * automatic stop is the hard maxS cap. Room tone IS silence, so it has no
+ * level-based stop either; it just runs to maxS with a countdown.
  */
 
 export type RecState = "idle" | "rec" | "staged";
@@ -29,9 +30,6 @@ export interface Recorder {
   stop: () => Promise<void>;
   clear: () => void;
 }
-
-const SILENCE_MS = 2500;
-const SILENCE_RMS = 0.008;
 
 export function useRecorder(cfg: RecConfig): Recorder {
   const [state, setState] = useState<RecState>("idle");
@@ -111,22 +109,13 @@ export function useRecorder(cfg: RecConfig): Recorder {
       mute.gain.value = 0;
       const chunks: Float32Array<ArrayBuffer>[] = [];
       const t0 = performance.now();
-      let silentSince = 0;
       proc.onaudioprocess = (e) => {
         const ch = e.inputBuffer.getChannelData(0);
         chunks.push(new Float32Array(ch));
         let s = 0;
         for (let i = 0; i < ch.length; i++) s += ch[i] * ch[i];
         levelRef.current = Math.sqrt(s / ch.length);
-        const dur = (performance.now() - t0) / 1000;
-        if (kind !== "noise") {
-          if (levelRef.current < SILENCE_RMS)
-            silentSince += (ch.length / ctx.sampleRate) * 1000;
-          else silentSince = 0;
-        }
-        if (dur > maxS || (kind !== "noise" && silentSince > SILENCE_MS && dur > 0.6)) {
-          void stop();
-        }
+        if ((performance.now() - t0) / 1000 > maxS) void stop();
       };
       src.connect(proc);
       proc.connect(mute);

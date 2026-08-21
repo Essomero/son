@@ -30,12 +30,13 @@ uv run python finetune/recorder/server.py     # then open the printed URL
   WAV (`clip_XXXX.wav`) with a `manifest.jsonl` alongside:
   `{"id", "text", "duration", "path"}`. Re-recording a prompt overwrites
   its clip in place.
-- **Room-tone cell**: the page also has a "room tone" booth below the take
-  sheet — record ~3 minutes of silence with the mic as-is (no AGC / noise
-  suppression, so the real room floor comes through). Saves to
-  `recordings/noise/noise_0000.wav` + its own `noise_manifest.jsonl`,
-  deliberately separate from the speech manifest (used for gen3 quiet-speech
-  augmentation).
+- **Room tone**: the take sheet's header has a small **Record silence**
+  button — it opens a centered modal where you record ~3 minutes of silence
+  with the mic as-is (no AGC / noise suppression, so the real room floor
+  comes through; auto-stops at 3:00; click the backdrop or ESC to dismiss).
+  Saves to `recordings/noise/noise_0000.wav` + its own
+  `noise_manifest.jsonl`, deliberately separate from the speech manifest
+  (used for gen3 quiet-speech augmentation).
 - The reading list is `finetune/prompts/reading_list.jsonl`; regenerate it
   with `finetune/prompts/generate_prompts.py`.
 - ⚠️ `recordings/` + `manifest.jsonl` (and the `noise/` subdir) are user

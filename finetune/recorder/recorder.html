@@ -59,7 +59,10 @@
      styling lives on the .card div inside it. Author display rules on the
      dialog element break its UA behavior (closed-state hiding, modal
      rendering). */
-  #silenceDlg { border: 0; padding: 0; background: none; width: min(560px, 92vw); }
+  #silenceDlg { border: 0; padding: 0; background: none; width: min(560px, 92vw);
+    /* Center explicitly — UA dialog positioning differs across engines
+       (Safari doesn't center modal dialogs the way Chrome does). */
+    position: fixed; inset: 0; margin: auto; height: fit-content; }
   #silenceDlg::backdrop { background: rgba(8, 14, 18, .62); }
   #silenceDlg .dlg-body { max-height: 86vh; overflow-y: auto; }
   .dlghead { display: flex; justify-content: space-between; align-items: center; gap: 12px; }

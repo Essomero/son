@@ -1,12 +1,50 @@
 /** Capture pipeline ported from the pre-React recorder page.
  *
- * Raw PCM via ScriptProcessor, resampled by OfflineAudioContext to 16 kHz,
- * hand-encoded WAV (16-bit mono — whisper's native rate). ScriptProcessor
- * is deprecated, but it is the proven path here; port verbatim rather
- * than modernize. */
+ * Raw PCM via an AudioWorklet — ScriptProcessor ran on the main thread and
+ * silently dropped chunks whenever the page janked, punching holes in takes
+ * (the server's size/duration guard caught one as a 400). The worklet runs
+ * on the audio thread; its postMessage queue absorbs main-thread jank by
+ * delivering late instead of losing audio. Resampled by OfflineAudioContext
+ * to 16 kHz, hand-encoded WAV (16-bit mono — whisper's native rate). */
 
 export const clamp = (v: number, lo: number, hi: number) =>
   Math.min(hi, Math.max(lo, v));
+
+// Buffers the 128-frame render quanta into 4096-frame chunks (~85 ms at
+// 48 kHz) and ships each to the main thread.
+const WORKLET_SRC = `
+class CaptureProc extends AudioWorkletProcessor {
+  constructor() {
+    super();
+    this.buf = new Float32Array(4096);
+    this.n = 0;
+  }
+  process(inputs) {
+    const ch = inputs[0] && inputs[0][0];
+    if (!ch) return true;
+    let i = 0;
+    while (i < ch.length) {
+      const take = Math.min(ch.length - i, this.buf.length - this.n);
+      this.buf.set(ch.subarray(i, i + take), this.n);
+      this.n += take;
+      i += take;
+      if (this.n === this.buf.length) {
+        const out = this.buf.slice(0);
+        this.port.postMessage(out, [out.buffer]);
+        this.n = 0;
+      }
+    }
+    return true;
+  }
+}
+registerProcessor("capture", CaptureProc);
+`;
+
+export function captureWorkletUrl(): string {
+  return URL.createObjectURL(
+    new Blob([WORKLET_SRC], { type: "application/javascript" }),
+  );
+}
 
 export function captureToWav(
   samples: Float32Array<ArrayBuffer>,

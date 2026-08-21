@@ -1,13 +1,17 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
-import { captureToWav } from "../lib/audio";
+import { captureToWav, captureWorkletUrl } from "../lib/audio";
 
 /** Capture state machine, ported from the pre-React recorder page.
  *
- * start() opens the mic (raw PCM via ScriptProcessor), stop() encodes the
+ * start() opens the mic (raw PCM via AudioWorklet), stop() encodes the
  * captured chunks to a 16 kHz WAV and stages the blob; the caller posts it
  * with keep() and then clears. Stopping a take is the user's call — the only
  * automatic stop is the hard maxS cap. Room tone IS silence, so it has no
  * level-based stop either; it just runs to maxS with a countdown.
+ *
+ * Take duration comes from the captured samples, not the wall clock — the
+ * server validates the upload size against the reported duration, and only
+ * the sample count knows how much audio actually made it.
  */
 
 export type RecState = "idle" | "rec" | "staged";
@@ -44,7 +48,7 @@ export function useRecorder(cfg: RecConfig): Recorder {
   const recRef = useRef<{
     ctx: AudioContext;
     stream: MediaStream;
-    proc: ScriptProcessorNode;
+    node: AudioWorkletNode;
     src: MediaStreamAudioSourceNode;
     chunks: Float32Array<ArrayBuffer>[];
     t0: number;
@@ -59,17 +63,19 @@ export function useRecorder(cfg: RecConfig): Recorder {
       clearInterval(timerRef.current);
       timerRef.current = null;
     }
-    const dur = (performance.now() - r.t0) / 1000;
     try {
-      r.proc.disconnect();
+      r.node.port.onmessage = null;
+      r.node.disconnect();
       r.src.disconnect();
     } catch {
       /* already torn down */
     }
     r.stream.getTracks().forEach((t) => t.stop());
+    void r.ctx.close().catch(() => {});
     levelRef.current = 0;
     const samples = concat(r.chunks);
-    if (samples.length < cfgRef.current.minS * 16000) {
+    const dur = samples.length / r.ctx.sampleRate;
+    if (dur < cfgRef.current.minS) {
       setDrop("too-short");
       setState("idle");
       return;
@@ -103,24 +109,24 @@ export function useRecorder(cfg: RecConfig): Recorder {
               },
             };
       const stream = await navigator.mediaDevices.getUserMedia(opts);
+      await ctx.audioWorklet.addModule(captureWorkletUrl());
       const src = ctx.createMediaStreamSource(stream);
-      const proc = ctx.createScriptProcessor(4096, 1, 1);
-      const mute = ctx.createGain();
-      mute.gain.value = 0;
+      const node = new AudioWorkletNode(ctx, "capture", {
+        numberOfInputs: 1,
+        numberOfOutputs: 0,
+      });
       const chunks: Float32Array<ArrayBuffer>[] = [];
       const t0 = performance.now();
-      proc.onaudioprocess = (e) => {
-        const ch = e.inputBuffer.getChannelData(0);
-        chunks.push(new Float32Array(ch));
+      node.port.onmessage = (e) => {
+        const ch = e.data as Float32Array<ArrayBuffer>;
+        chunks.push(ch);
         let s = 0;
         for (let i = 0; i < ch.length; i++) s += ch[i] * ch[i];
         levelRef.current = Math.sqrt(s / ch.length);
         if ((performance.now() - t0) / 1000 > maxS) void stop();
       };
-      src.connect(proc);
-      proc.connect(mute);
-      mute.connect(ctx.destination);
-      recRef.current = { ctx, stream, proc, src, chunks, t0 };
+      src.connect(node);
+      recRef.current = { ctx, stream, node, src, chunks, t0 };
       setElapsed(0);
       setDrop(null);
       setState("rec");
@@ -145,6 +151,7 @@ export function useRecorder(cfg: RecConfig): Recorder {
     const r = recRef.current;
     if (r) {
       r.stream.getTracks().forEach((t) => t.stop());
+      void r.ctx.close().catch(() => {});
       recRef.current = null;
     }
   }, []);

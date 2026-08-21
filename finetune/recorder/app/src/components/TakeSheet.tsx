@@ -55,7 +55,9 @@ export function TakeSheet({
     cur?.scrollIntoView({ block: "nearest" });
   }, [idx]);
 
-  const hasFree = prompts.some((p) => !p.text);
+  // "Free" = an ad-lib cell with no take yet; a recorded ad-lib cell is
+  // done like any other (the dashed-red look would read as "missing").
+  const hasFree = prompts.some((p, i) => !p.text && !done(i));
 
   return (
     <section className="sheet">
@@ -88,7 +90,7 @@ export function TakeSheet({
             "chip",
             done(i) ? "done" : "",
             i === idx ? "cur" : "",
-            !p.text ? "free" : "",
+            !p.text && !done(i) ? "free" : "",
             done(i) && t > 1 ? "retaken" : "",
           ]
             .filter(Boolean)

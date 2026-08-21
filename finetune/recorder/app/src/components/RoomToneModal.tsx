@@ -161,7 +161,7 @@ export function RoomToneModal({
               ref={audioRef}
               controls
               preload="metadata"
-              src={`api/noise/${taken.id}`}
+              src={`noise/${taken.id}`}
             />
           </div>
         )}

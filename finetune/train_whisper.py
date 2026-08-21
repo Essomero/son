@@ -323,7 +323,9 @@ def main() -> None:
         callbacks=[LogCallback()],
     )
 
-    trainer.train()
+    # SON_RESUME=<checkpoint dir> resumes a preempted run (HF restores
+    # model/optimizer/scheduler/rng and replays up to the saved step).
+    trainer.train(resume_from_checkpoint=os.environ.get("SON_RESUME") or None)
     logger.info(f"best WER: {trainer.state.best_metric:.3f}")
 
     trainer.save_model(str(OUT_DIR))

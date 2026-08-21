@@ -150,7 +150,7 @@ export function Booth({
             ref={audioRef}
             controls
             preload="metadata"
-            src={`api/batch/${encodeURIComponent(meta.id)}/clip/${idx}`}
+            src={`batch/${encodeURIComponent(meta.id)}/clip/${idx}`}
           />
         </div>
       )}

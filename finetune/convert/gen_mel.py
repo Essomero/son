@@ -6,11 +6,19 @@ gone from the tree), and it isn't in the HF repo either. models/convert-
 h5-to-ggml.py hard-requires it to exist at <whisper.cpp>/whisper/assets/.
 It must contain key "mel_80" as float32 (80, 201) — and the values must
 match the filterbank OpenAI's feature extractor produces bit-for-bit, or
-the GGML model transcribes garbage.
+the GGML model transcribes garbage. whisper.cpp loads these from the model
+file at runtime (whisper_model_load), so a wrong bank poisons serving while
+HF transformers (which computes its own) stays fine — the divergence shows
+up hardest on low-SNR audio because the scales differ most in the low mel
+bins where speech fundamentals and room noise live.
 
-This reproduces torchaudio.functional.melscale_fbanks(n_freqs=201, f_min=0,
-f_max=8000, n_mels=80, sample_rate=16000, norm="slaney", mel_scale="htk")
-— the exact algorithm behind the original file. Pure numpy, no torch.
+OpenAI's reference is librosa.filters.mel(..., htk=False, norm="slaney"):
+slaney MEL SCALE (piecewise-linear below 1 kHz, log above) with slaney area
+normalization. An earlier version of this script used the HTK mel scale
+(2595·log10(1+f/700)) with slaney norm — close enough for clean audio, but
+structurally wrong, and it cost real WER on quiet takes served through
+whisper.cpp. This reproduces the librosa bank exactly (verified allclose
+against librosa.filters.mel). Pure numpy, no torch.
 
 Run:  uv run python finetune/convert/gen_mel.py [whisper.cpp repo root]
       (default: ~/.cache/son/whisper.cpp)
@@ -27,17 +35,30 @@ WHISPER_CPP = Path(sys.argv[1]) if len(sys.argv) > 1 else \
 n_freqs, sr, f_min, f_max, n_mels = 201, 16000, 0.0, 8000.0, 80
 
 
+F_MIN, F_SP = 0.0, 200.0 / 3        # slaney grid: linear ramp below ...
+MIN_LOG_HZ = 1000.0                 # ... 1 kHz, log above
+MIN_LOG_MEL = (MIN_LOG_HZ - F_MIN) / F_SP
+LOGSTEP = np.log(6.4) / 27.0
+
+
 def hz_to_mel(f):
-    return 2595.0 * np.log10(1.0 + f / 700.0)
+    lin = (f - F_MIN) / F_SP
+    return np.where(f >= MIN_LOG_HZ,
+                    MIN_LOG_MEL + np.log(f / MIN_LOG_HZ) / LOGSTEP,
+                    lin)
 
 
 def mel_to_hz(m):
-    return 700.0 * (10.0 ** (m / 2595.0) - 1.0)
+    lin = F_MIN + F_SP * m
+    return np.where(m >= MIN_LOG_MEL,
+                    MIN_LOG_HZ * np.exp(LOGSTEP * (m - MIN_LOG_MEL)),
+                    lin)
 
 
 all_freqs = np.linspace(0, sr // 2, n_freqs)
-m_pts = np.linspace(hz_to_mel(f_min), hz_to_mel(f_max), n_mels + 2)
-f_pts = mel_to_hz(m_pts)
+with np.errstate(divide="ignore"):   # f=0 hits log(0) in the unused branch
+    m_pts = np.linspace(hz_to_mel(f_min), hz_to_mel(f_max), n_mels + 2)
+    f_pts = mel_to_hz(m_pts)
 
 f_diff = f_pts[1:] - f_pts[:-1]
 slopes = f_pts[None, :] - all_freqs[:, None]           # (n_freqs, n_mels+2)

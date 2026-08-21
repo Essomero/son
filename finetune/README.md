@@ -30,12 +30,20 @@ uv run python finetune/recorder/server.py     # then open the printed URL
   WAV (`clip_XXXX.wav`) with a `manifest.jsonl` alongside:
   `{"id", "text", "duration", "path"}`. Re-recording a prompt overwrites
   its clip in place.
+- **Room-tone cell**: the page also has a "room tone" booth below the take
+  sheet — record ~3 minutes of silence with the mic as-is (no AGC / noise
+  suppression, so the real room floor comes through). Saves to
+  `recordings/noise/noise_0000.wav` + its own `noise_manifest.jsonl`,
+  deliberately separate from the speech manifest (used for gen3 quiet-speech
+  augmentation).
 - The reading list is `finetune/prompts/reading_list.jsonl`; regenerate it
   with `finetune/prompts/generate_prompts.py`.
-- ⚠️ `recordings/` + `manifest.jsonl` are user data. Never delete the
-  manifest; if it's lost, rebuild it from the WAVs + the reading list
-  (`clip_XXXX.wav` ↔ `reading_list.jsonl` id `XXXX`). Audio never enters
-  git (`.gitignore`).
+- ⚠️ `recordings/` + `manifest.jsonl` (and the `noise/` subdir) are user
+  data. Never delete the manifests; if one is lost, rebuild it from the WAVs
+  + the reading list (`clip_XXXX.wav` ↔ `reading_list.jsonl` id `XXXX`).
+  Audio never enters git (`.gitignore`).
+- `SON_RECORDINGS_DIR` overrides the recordings root — used for isolated
+  test runs and pointing the recorder at a shared bundle dir.
 
 ## 2. Train
 

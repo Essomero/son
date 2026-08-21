@@ -16,6 +16,7 @@
     --ink: #efe8dc; --ink2: #b3a99b; --dim: #7f7567;
     --amber: #e8a33d; --amber-soft: #3a2f1c;
     --red: #e2584b;  --red-soft: #3a201c;
+    --steel: #9db8c6; --steel-soft: #1d2a30;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   html { color-scheme: dark; }
@@ -51,6 +52,8 @@
     color: var(--amber); border: 1px solid var(--line2); background: var(--amber-soft);
     border-radius: 999px; padding: 3px 12px; }
   .cat.free { color: var(--red); background: var(--red-soft); border-color: #4a2c26; }
+  .cat.quiet { color: var(--steel); background: var(--steel-soft); border-color: #31414b; }
+  .card.muted { opacity: .45; }
   .prompt { font-family: "Space Grotesk", system-ui, sans-serif; font-weight: 500;
     font-size: clamp(25px, 4.6vw, 32px); line-height: 1.42; text-align: center;
     color: var(--ink); min-height: calc(clamp(25px, 4.6vw, 32px) * 1.42 * 3);
@@ -149,6 +152,12 @@
   .chip.free { border-bottom: 1px dashed var(--line2); }
   .chip.cur { border-color: var(--amber); color: var(--amber); box-shadow: 0 0 0 1px var(--amber-soft); }
 
+  .note-cell { text-align: center; color: var(--dim); font-size: 12.5px; cursor: pointer;
+    transition: color .2s; }
+  .note-cell:hover { color: var(--ink2); }
+  .note-cell.has { color: var(--steel); }
+  .note-cell.has:hover { color: #c3d6e0; }
+
   /* ————— footer + toast ————— */
   .note { text-align: center; color: var(--dim); font-size: 12.5px; }
   .note .sep { color: #4a4035; margin: 0 6px; }
@@ -214,6 +223,34 @@
     <div class="preview" id="preview"></div>
   </section>
 
+  <!-- Room-tone cell: 3 minutes of the room, for gen3 augmentation.
+       Records the raw mic — no AGC / noise suppression — so the real
+       floor (fan hum, AC) is captured as-is. -->
+  <section class="card" id="noiseCard">
+    <span class="cat quiet">room tone</span>
+    <div class="prompt" id="noisePrompt">The room, silent.</div>
+    <div class="hint" id="noiseHint">3 minutes of the room as it is — stay still, don't speak. Fan on if it's usually on, mic where you usually keep it.</div>
+
+    <div class="panel">
+      <div class="reads">
+        <div class="recstat" id="noiseRecstat"><span class="dot"></span><span id="noiseState">STANDBY</span></div>
+        <div class="time" id="noiseTimer">0:00.0</div>
+        <div class="pk">peak <b id="noisePk">—</b> db</div>
+      </div>
+    </div>
+
+    <div class="controls">
+      <div class="recwrap">
+        <button class="record" id="noiseRecBtn" aria-label="Record room tone"><span class="core"></span></button>
+        <div class="reclabel" id="noiseReclabel">Record</div>
+      </div>
+      <button class="keep" id="noiseKeepBtn" disabled>Keep take</button>
+    </div>
+
+    <div class="preview" id="noisePreview"></div>
+    <div class="note-cell" id="noiseNote">No take yet — record 3 minutes of silence.</div>
+  </section>
+
   <section class="strip">
     <div class="striphead">
       <span class="ttl">Session takes</span>
@@ -242,12 +279,26 @@
    slow fall, with a peak-hold flag. */
 const $ = (id) => document.getElementById(id);
 const MAX_PROMPT_S = 30, MAX_FREE_S = 90, SILENCE_MS = 2500, SILENCE_RMS = 0.008;
+const NOISE_S = 180, NOISE_MIN_S = 20;   // room-tone cell: 3 min target, min take
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 
 let prompts = [], done = new Set(), durById = {}, taken = new Map();
-let idx = 0, rec = null, previewUrl = null, currentBlob = null, lastDur = 0;
+let idx = 0, rec = null, previewUrl = null, noiseUrl = null, currentBlob = null, lastDur = 0;
 let audioEl = null;   // the take currently loaded in the preview player
 let cols = 1;         // cells per row in the take sheet (grid)
+let mode = "prompt";  // which booth owns the capture: "prompt" | "noise"
+let noiseTaken = null; // {id, duration} of the stored room tone, or null
+
+/* Both booths share the capture pipeline; each owns its readouts + buttons. */
+function cardUI(m) {
+  return m === "noise"
+    ? { card: $("noiseCard"), recstat: $("noiseRecstat"), state: $("noiseState"),
+        timer: $("noiseTimer"), pk: $("noisePk"), label: $("noiseReclabel"),
+        recBtn: $("noiseRecBtn"), preview: $("noisePreview"), keepBtn: $("noiseKeepBtn") }
+    : { card: $("card"), recstat: $("recstat"), state: $("recstate"),
+        timer: $("timer"), pk: $("pk"), label: $("reclabel"),
+        recBtn: $("recBtn"), preview: $("preview"), keepBtn: $("keepBtn") };
+}
 
 /* ————— VU meter ————— */
 const VU = { cx: 110, cy: 106, r: 92, a0: -52, a1: 52, lo: -40, hi: 3 };
@@ -308,7 +359,8 @@ function vuTick(now) {
   needleA += (tgt - needleA) * k;
   if (tgt > peakA) peakA = tgt; else peakA = Math.max(VU.a0, peakA - dt * 9);
   setAngle(needleEl, needleA); setAngle(peakEl, peakA);
-  $("pk").textContent = rec && dB(level) > -60 ? dB(level).toFixed(1) : "—";
+  const pkv = rec && dB(level) > -60 ? dB(level).toFixed(1) : "—";
+  $("pk").textContent = pkv; $("noisePk").textContent = pkv;   // both readouts mirror
   requestAnimationFrame(vuTick);
 }
 requestAnimationFrame(vuTick);
@@ -323,6 +375,7 @@ async function load() {
   idx = clamp(saved, 0, prompts.length - 1);
   renderAll();
   if (done.has(idx)) playStored(idx);   // resume onto a cell that already has a take
+  loadNoise();
 }
 function p() { return prompts[idx]; }
 function fmtClock(s) { const m = Math.floor(s / 60); return `${m}:${String(Math.round(s % 60)).padStart(2, "0")}`; }
@@ -367,6 +420,7 @@ function renderPrompt() {
   if (previewUrl) { URL.revokeObjectURL(previewUrl); previewUrl = null; }
   $("preview").innerHTML = "";
   $("keepBtn").disabled = true;
+  $("noiseKeepBtn").disabled = true;   // chip navigation invalidates a fresh noise take
   $("retakeBtn").disabled = !done.has(idx);
   $("timer").textContent = "0:00.0";
   $("timer").classList.remove("hot");
@@ -432,39 +486,45 @@ function renderStripState() {
 /* ————— recording ————— */
 let ctx = null, stream = null, chunks = [], t0 = 0, silentSince = 0, timerIv = null;
 
-async function startRec() {
+async function startRec(m) {
   if (rec) return;
+  mode = m;
+  const ui = cardUI(mode);
   try {
     ctx = new (window.AudioContext || window.webkitAudioContext)();
-    stream = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+    // Room tone must capture the real floor — no AGC / noise suppression.
+    const mic = mode === "noise"
+      ? { audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } }
+      : { audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } };
+    stream = await navigator.mediaDevices.getUserMedia(mic);
   } catch (e) { flash("Microphone blocked — allow access in the browser and try again.", true); return; }
   const src = ctx.createMediaStreamSource(stream);
   const proc = ctx.createScriptProcessor(4096, 1, 1);
   const mute = ctx.createGain(); mute.gain.value = 0;
   chunks = []; t0 = performance.now(); silentSince = 0;
+  const limit = mode === "noise" ? NOISE_S : (p().text ? MAX_PROMPT_S : MAX_FREE_S);
   proc.onaudioprocess = (e) => {
     const ch = e.inputBuffer.getChannelData(0);
     chunks.push(new Float32Array(ch));
     let s = 0; for (let i = 0; i < ch.length; i++) s += ch[i] * ch[i];
     level = Math.sqrt(s / ch.length);
     const dur = (performance.now() - t0) / 1000;
-    const limit = p().text ? MAX_PROMPT_S : MAX_FREE_S;
-    if (level < SILENCE_RMS) silentSince += ch.length / ctx.sampleRate * 1000; else silentSince = 0;
-    if ((silentSince > SILENCE_MS && dur > 0.6) || dur > limit) stopRec();
+    // Silence auto-stop is a speech-booth feature only — room tone IS silence.
+    if (mode !== "noise" && level < SILENCE_RMS) silentSince += ch.length / ctx.sampleRate * 1000; else silentSince = 0;
+    if (dur > limit || (mode !== "noise" && silentSince > SILENCE_MS && dur > 0.6)) stopRec();
   };
   src.connect(proc); proc.connect(mute); mute.connect(ctx.destination);
   rec = { src, proc, mute };
-  $("card").classList.add("rec");
-  $("recBtn").classList.add("on");
-  $("reclabel").textContent = "Stop";
-  $("recstat").classList.add("on");
-  $("recstate").textContent = "REC";
+  ui.card.classList.add("rec");
+  ui.recBtn.classList.add("on");
+  ui.label.textContent = "Stop";
+  ui.recstat.classList.add("on");
+  ui.state.textContent = "REC";
+  cardUI(mode === "noise" ? "prompt" : "noise").card.classList.add("muted");
   timerIv = setInterval(() => {
     const dur = (performance.now() - t0) / 1000;
-    const limit = p().text ? MAX_PROMPT_S : MAX_FREE_S;
-    $("timer").textContent = fmtClock(dur);
-    $("timer").classList.toggle("hot", dur > limit - 5);
+    ui.timer.textContent = fmtClock(dur);
+    ui.timer.classList.toggle("hot", dur > limit - 5);
   }, 100);
 }
 function stopRec() {
@@ -474,26 +534,43 @@ function stopRec() {
   try { rec.proc.disconnect(); rec.src.disconnect(); } catch {}
   stream.getTracks().forEach(t => t.stop());
   rec = null; level = 0;
-  $("card").classList.remove("rec");
-  $("recBtn").classList.remove("on");
-  $("reclabel").textContent = "Record";
-  $("recstat").classList.remove("on");
-  $("recstate").textContent = "STANDBY";
+  const ui = cardUI(mode);
+  ui.card.classList.remove("rec");
+  ui.recBtn.classList.remove("on");
+  ui.label.textContent = "Record";
+  ui.recstat.classList.remove("on");
+  ui.state.textContent = "STANDBY";
+  cardUI("prompt").card.classList.remove("muted");
+  cardUI("noise").card.classList.remove("muted");
   const samples = concat(chunks); chunks = [];
-  if (samples.length < 16000 * 0.3) { flash("Take too short — hold on a beat longer and try again.", true); return; }
+  const minLen = (mode === "noise" ? NOISE_MIN_S : 0.3) * 16000;
+  if (samples.length < minLen) {
+    flash(mode === "noise"
+      ? "Room tone too short — at least 20 s, aim for the full 3 minutes."
+      : "Take too short — hold on a beat longer and try again.", true);
+    return;
+  }
   toWav(samples, ctx.sampleRate).then(blob => {
     currentBlob = blob;
-    if (previewUrl) URL.revokeObjectURL(previewUrl);
-    previewUrl = URL.createObjectURL(blob);
+    if (mode === "noise") {
+      if (noiseUrl) URL.revokeObjectURL(noiseUrl);
+      noiseUrl = URL.createObjectURL(blob);
+    } else {
+      if (previewUrl) URL.revokeObjectURL(previewUrl);
+      previewUrl = URL.createObjectURL(blob);
+    }
     const audio = document.createElement("audio");
-    audio.controls = true; audio.src = previewUrl; audio.style.width = "100%"; audio.style.height = "38px";
+    audio.controls = true; audio.src = mode === "noise" ? noiseUrl : previewUrl;
+    audio.style.width = "100%"; audio.style.height = "38px";
     const note = document.createElement("div");
     note.className = "pnote";
-    note.textContent = `${lastDur.toFixed(1)}s — space plays it back. Enter keeps it, ⌫ re-records.`;
-    $("preview").innerHTML = "";
-    $("preview").append(audio, note);
+    note.textContent = mode === "noise"
+      ? `${lastDur.toFixed(1)}s — space plays it back. Keep saves it as the room tone.`
+      : `${lastDur.toFixed(1)}s — space plays it back. Enter keeps it, ⌫ re-records.`;
+    ui.preview.innerHTML = "";
+    ui.preview.append(audio, note);
     audioEl = audio;
-    $("keepBtn").disabled = false;
+    ui.keepBtn.disabled = false;
   });
 }
 function concat(chs) {
@@ -544,17 +621,71 @@ async function keep() {
   if (done.has(idx)) playStored(idx);   // landing cell may already have a take
 }
 
+/* ————— room-tone cell ————— */
+async function keepNoise() {
+  if (!currentBlob) return;
+  const dur = currentBlob.size / 32000;
+  const form = new FormData();
+  form.append("duration", dur.toFixed(2));
+  form.append("file", currentBlob, "noise_0000.wav");
+  const r = await fetch("/noise", { method: "POST", body: form });
+  const res = await r.json();
+  if (!res.ok) { flash("Save failed — " + res.error, true); return; }
+  noiseTaken = { id: res.id, duration: dur };
+  if (noiseUrl) { URL.revokeObjectURL(noiseUrl); noiseUrl = null; }
+  $("noisePreview").innerHTML = "";
+  renderNoise();
+  flash(`Room tone kept · ${dur.toFixed(1)}s`);
+}
+function playNoise() {
+  /* Replay the stored room tone (served by the server, not a blob). */
+  if (!noiseTaken) return;
+  if (previewUrl) { URL.revokeObjectURL(previewUrl); previewUrl = null; }
+  currentBlob = null;
+  $("noiseKeepBtn").disabled = true;   // stored take, not a fresh one
+  const audio = document.createElement("audio");
+  audio.controls = true; audio.src = `/noise/${noiseTaken.id}`;
+  audio.style.width = "100%"; audio.style.height = "38px";
+  const note = document.createElement("div");
+  note.className = "pnote";
+  note.textContent = `Room tone · ${noiseTaken.duration.toFixed(1)}s — stored take. Re-record to replace it.`;
+  $("noisePreview").innerHTML = "";
+  $("noisePreview").append(audio, note);
+  audioEl = audio;
+}
+function renderNoise() {
+  const n = $("noiseNote");
+  if (noiseTaken) {
+    n.textContent = `Room tone on tape · ${noiseTaken.duration.toFixed(1)}s — click to play`;
+    n.classList.add("has");
+  } else {
+    n.textContent = "No take yet — record 3 minutes of silence.";
+    n.classList.remove("has");
+  }
+}
+async function loadNoise() {
+  try {
+    const r = await fetch("/noise");
+    const d = await r.json();
+    noiseTaken = d.takes.length ? d.takes[0] : null;
+  } catch { noiseTaken = null; }
+  renderNoise();
+}
+
 /* ————— UI wiring ————— */
 function flash(msg, isErr) {
   const f = $("flash"); f.textContent = msg;
   f.classList.toggle("err", !!isErr); f.classList.add("show");
   clearTimeout(flash.t); flash.t = setTimeout(() => f.classList.remove("show"), 2400);
 }
-$("recBtn").onclick = () => (rec ? stopRec() : startRec());
+$("recBtn").onclick = () => (rec ? stopRec() : startRec("prompt"));
 $("keepBtn").onclick = keep;
 $("retakeBtn").onclick = () => { stopRec(); done.delete(idx); delete durById[idx]; renderPrompt();
   flash("Recording again — the previous take is marked for replacement."); };
 $("backBtn").onclick = () => { if (idx > 0) { stopRec(); idx--; localStorage.setItem("son.recorder.idx", idx); renderPrompt(); } };
+$("noiseRecBtn").onclick = () => (rec ? stopRec() : startRec("noise"));
+$("noiseKeepBtn").onclick = keepNoise;
+$("noiseNote").onclick = playNoise;
 document.addEventListener("keydown", (e) => {
   if (e.code === "Space") { e.preventDefault(); togglePlay(); }
   else if (e.code === "Enter") {   // cycle: record → stop → keep

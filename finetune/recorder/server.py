@@ -7,10 +7,19 @@ feature). Clips are 16 kHz mono PCM_16 (whisper's native rate), ~1.9 MB/min,
 written under ~/.cache/son/finetune/recordings/ with a manifest.jsonl in the
 same format the training script reads.
 
+The page also has a room-tone cell for recording silence (gen3 augmentation).
+Noise takes land in recordings/noise/noise_0000.wav with their own
+noise_manifest.jsonl — separate from the speech manifest on purpose, so the
+training script never sees them.
+
+SON_RECORDINGS_DIR overrides the data root (used for isolated test runs and
+for pointing the recorder at a shared bundle dir on other machines).
+
 Run:  uv run python finetune/recorder/server.py   (then open the printed URL)
 """
 
 import json
+import os
 from pathlib import Path
 
 import uvicorn
@@ -18,8 +27,13 @@ from fastapi import FastAPI, File, Form, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 
 PROMPTS = Path(__file__).resolve().parent.parent / "prompts" / "reading_list.jsonl"
-DATA_DIR = Path.home() / ".cache" / "son" / "finetune" / "recordings"
+DATA_DIR = Path(os.environ.get(
+    "SON_RECORDINGS_DIR",
+    Path.home() / ".cache" / "son" / "finetune" / "recordings",
+))
 MANIFEST = DATA_DIR / "manifest.jsonl"
+NOISE_DIR = DATA_DIR / "noise"
+NOISE_MANIFEST = NOISE_DIR / "noise_manifest.jsonl"
 PORT = 8082
 
 app = FastAPI(title="Son voice recorder")
@@ -42,8 +56,8 @@ def _load_manifest() -> dict[int, dict]:
     return records
 
 
-def _save_manifest(records: dict[int, dict]) -> None:
-    MANIFEST.write_text(
+def _save_manifest(records: dict[int, dict], path: Path = MANIFEST) -> None:
+    path.write_text(
         "".join(json.dumps(records[i]) + "\n" for i in sorted(records))
     )
 
@@ -99,6 +113,61 @@ def get_clip(clip_id: int) -> FileResponse:
     if clip_id not in records:
         return JSONResponse({"ok": False, "error": "no take for this prompt"}, status_code=404)
     path = Path(records[clip_id]["path"])
+    if not path.exists():
+        return JSONResponse({"ok": False, "error": "audio file missing"}, status_code=404)
+    return FileResponse(path, media_type="audio/wav")
+
+
+# ————— room-tone (noise) cell —————
+# One slot, retake semantics like speech: re-recording overwrites
+# noise_0000.wav in place. Stored separately from the speech manifest so
+# train_whisper.py (which filters on text) can never pick it up.
+
+def _load_noise() -> dict[int, dict]:
+    records = {}
+    if NOISE_MANIFEST.exists():
+        for line in NOISE_MANIFEST.read_text().splitlines():
+            r = json.loads(line)
+            records[r["id"]] = r
+    return records
+
+
+@app.get("/noise")
+def list_noise():
+    return {"takes": [
+        {"id": i, "duration": r["duration"]}
+        for i, r in sorted(_load_noise().items())
+    ]}
+
+
+@app.post("/noise")
+async def noise_clip(duration: float = Form(0.0), file: UploadFile = File(...)):
+    data = await file.read()
+    if len(data) < 44 or data[:4] != b"RIFF" or data[8:12] != b"WAVE":
+        return JSONResponse({"ok": False, "error": "not a WAV file"}, status_code=400)
+    expect = duration * 32000
+    if duration > 0 and abs(len(data) - expect) / expect > 0.15:
+        return JSONResponse(
+            {"ok": False, "error": f"size/duration mismatch ({len(data)}B vs {duration:.1f}s)"},
+            status_code=400,
+        )
+    NOISE_DIR.mkdir(parents=True, exist_ok=True)
+    path = NOISE_DIR / "noise_0000.wav"
+    path.write_bytes(data)
+    _save_manifest({0: {
+        "id": 0, "kind": "noise", "duration": round(duration, 2),
+        "path": str(path),
+    }}, path=NOISE_MANIFEST)
+    return {"ok": True, "id": 0, "duration": duration}
+
+
+@app.get("/noise/{noise_id}")
+def get_noise(noise_id: int) -> FileResponse:
+    """Serve the stored room-tone take for playback."""
+    records = _load_noise()
+    if noise_id not in records:
+        return JSONResponse({"ok": False, "error": "no noise take"}, status_code=404)
+    path = Path(records[noise_id]["path"])
     if not path.exists():
         return JSONResponse({"ok": False, "error": "audio file missing"}, status_code=404)
     return FileResponse(path, media_type="audio/wav")

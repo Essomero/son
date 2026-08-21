@@ -262,7 +262,9 @@ frontends.
 A comparison table (RNNoise / DeepFilterNet 3 / WebRTC APM via
 pywebrtc-audio / Krisp, plus virtual-mic setups) landed in the session; every
 row was checked against what actually exists and what Son can use, and the
-one tool that could plausibly help was A/B'd on the quiet captures.
+one tool that could plausibly help was A/B'd on the quiet captures. A second
+pasted list (GTCRN / Facebook Denoiser / ClearerVoice-Studio / DakeQQ
+ZipEnhancer / classical DSP) was then fully tested too — §5A below.
 
 | tool | claim | verdict |
 |---|---|---|
@@ -296,10 +298,82 @@ needs `libdf` (Rust extension, not on PyPI), the real-time LADSPA path is
 Linux/PipeWire-only, and the prebuilt binary is a file CLI, not an embeddable
 library — so this closes the question on both axes.
 
+### 5A. Second wave (2026-08-21): the whole pasted list, empirically tested
+
+The full pasted recommendation list (RNNoise / DeepFilterNet / GTCRN /
+Facebook Denoiser / ClearerVoice-Studio-MossFormer / DakeQQ
+Audio-Denoiser-ONNX incl. ZipEnhancer / classical DSP) was run on all 8 quiet
+captures with the same harness and whisper flags as the first wave (cold
+start, `-nt -bs 5 --no-speech-thold 0.75 --logprob-thold -0.5`,
+whisper-small-son-soft). Four tools were new this session; one was time-boxed
+without a run.
+
+| tool | status | verdict |
+|---|---|---|
+| RNNoise | already in the chain (`SON_DENOISE`) | offline it is the *worst* row on every GT capture; the live flip (`SON_DENOISE=0`) is the deciding test — §3A.4 |
+| DeepFilterNet 3 | A/B'd above | reject |
+| **GTCRN** (sherpa-onnx ONNX, `k2-fsa`) | **tried** — `scripts/ab_denoise.py` | reject — suppressor signature |
+| **Facebook Denoiser** (dns64, torch hub) | **tried** | reject — suppressor signature |
+| **ClearerVoice-Studio / MossFormer2-SE-48K** | **not tried** — time-boxed | 221 MB non-causal 48 kHz model; it is a sixth suppressor in a now 6-for-6 losing pattern (see below) — the only hypothesis it tests ("stronger suppression helps") is already falsified, so the run would cost 30+ min for a foregone conclusion |
+| **DakeQQ Audio-Denoiser-ONNX (ZipEnhancer)** | **tried** (PyTorch export; the Windows-optimized ONNX fails on macOS — `com.microsoft.nchwc` ops) | reject — suppressor signature, non-causal base config, RTF 1.2–2.0 on M3 CPU (README claims 0.25 on desktop GPU) |
+| **Classical DSP** (Wiener / spectral subtraction / MCRA) | **tried** — decision-directed Wiener + min-statistics floor, new `WienerFilter` in `scripts/ab_denoise.py` | reject — same signature; an MCRA noise floor is the same class of suppressor |
+
+**WER on the GT captures** (jiwer; REFERENCE strings from
+`scripts/bench_stt_models.py`):
+
+| chain | 174756 "I'm just swimming with a flow" | 175059 "I don't know much, just chilling." | 175228 "Nothing more, just chilling." |
+|---|---|---|---|
+| denoise (RNNoise+AGC — today's live chain) | 3.33 | 1.17 | 2.00 |
+| **nodenoise (multiband AGC only)** | 3.33 | **0.67** | 2.00 |
+| **hp-scalar (HP + scalar gain)** | 3.17 | **0.67** | **1.50** |
+| gtcrn raw | 3.17 | 0.67 | 1.50 |
+| gtcrn + agc | 3.33 | 0.83 | 2.00 |
+| zipe raw | 3.17 | 0.67 | 2.00 |
+| zipe + agc | 3.17 | 0.83 | 2.00 |
+| wiener raw | **2.83** | 0.67 | **1.25** |
+| wiener + agc | 2.83 | 1.00 | 1.50 |
+| fbdn raw | 3.17 | 0.83 | 2.00 |
+| fbdn + agc | 3.17 | 0.83 | 2.00 |
+
+Reading the table: on the GT rows every suppressor *ties or loses* to the
+no-suppressor baselines. GTCRN ties hp-scalar exactly; ZipEnhancer and FB
+tie two of three rows and lose the third. Wiener's "best" numbers (2.83 /
+1.25) are a **truncation artifact** — its output says less ("The screen with
+the flower ever comes to mind at the moment, no time has come yet"), so fewer
+hallucinated words = lower WER, with the target phrase still wrong.
+
+**What the suppressors break** — the recovery captures:
+
+| capture (GT) | no-suppressor chains | suppressor chains |
+|---|---|---|
+| 174654 "Not that much, just chill out" | nodenoise + hp-scalar → **exact** | RNNoise "(indistinct)", GTCRN "Nothing much, first channel", ZipEnhancer "Thank you very much, first channel", Wiener "Nothing just jet up.", FB "Silence." |
+| 182013 "Hi, how are you doing" | nodenoise + hp-scalar → **exact**; GTCRN/ZipEnhancer/FB also recover | RNNoise+AGC "May I hide in"; Wiener "Are you hiding?" / [MUSIC] |
+| 182445 (quietest, no GT) | AGC-only keeps the decoder in speech mode (hallucinates [MUSIC] but the turn survives) | suppressors drop the turn entirely — GTCRN [inaudible], FB [inaudible], ZipEnhancer "You", RNNoise+AGC "Thank you." |
+
+The rms mechanism is visible in the harness outputs: on 182445 the AGC-only
+output sits at −31.6 dBFS (a normal speech level) while RNNoise+AGC collapses
+it to −78.6, GTCRN to −40.3 and FB to −71.1 dBFS; on 174654 the same rows read
+−31.6 vs −36.6 / −36.5 / −72.5. Every suppressor — DNN or classical, causal or
+not — eats the low-level speech components on exactly the captures where the
+chain already fails, and whisper's static log-mel frontend cannot reconstruct
+what was suppressed (whisper#2125 mechanism, §1). RNNoise is the worst of the
+six on the quiet captures, which is why the live flip is still the cheapest
+possible test of the level hypothesis.
+
+Per-tool notes (for future reference): GTCRN is genuinely real-time-usable
+(MIT, 535 KB ONNX, RTF ≈ 0.002 on M3 CPU, causal) and still loses;
+ZipEnhancer's upstream repo (HarborZeng/ZipEnhancer) is gone — the toolchain
+lives on in the DakeQQ toolkit (Apache-2.0) and ModelScope
+(ClearerVoice-Studio, Apache-2.0); Facebook denoiser is NOASSERTION-licensed
+128 MB torch-checkpoint; the Wiener variant is ~free (numpy, 20 ms frames)
+and also loses.
+
 **What survives:** the in-process chain with the multiband AGC stays; the
 tool's answer to "does enhancement help" is *loudness normalization yes, noise
-suppression no*. Remaining levers in order: A/B `SON_DENOISE=0` live (§3A.4),
-gen3 fine-tune with the runtime chain applied to training audio (§3A.5), then
+suppression no* — now six tools deep (RNNoise, DeepFilterNet, GTCRN,
+ZipEnhancer, Wiener, Facebook denoiser), with the same signature on every
+one. Remaining levers in order: A/B `SON_DENOISE=0` live (§3A.4), gen3
+fine-tune with the runtime chain applied to training audio (§3A.5), then
 Calm-Whisper-style decoder-head tuning (§3C.10).
 
 ## 6. Sources
@@ -312,6 +386,11 @@ Calm-Whisper-style decoder-head tuning (§3C.10).
 - [Calm-Whisper: reduce hallucination by fine-tuning 3 decoder heads (arXiv:2505.12969)](https://arxiv.org/abs/2505.12969)
 - [GLM-ASR-Nano-2512 model card (zai-org)](https://huggingface.co/zai-org/GLM-ASR-Nano-2512)
 - [Mega-ASR: in-the-wild² speech recognition (2026-05)](https://github.com/xzf-thu/Mega-ASR)
+- [GTCRN: lightweight real-time SE model (Xiaobin-Rong/gtcrn, MIT)](https://github.com/Xiaobin-Rong/gtcrn)
+- [sherpa-onnx speech-enhancement models incl. GTCRN ONNX (k2-fsa)](https://github.com/k2-fsa/sherpa-onnx/releases/tag/speech-enhancement-models)
+- [DakeQQ/Audio-Denoiser-ONNX toolkit (Apache-2.0)](https://github.com/DakeQQ/Audio-Denoiser-ONNX)
+- [ClearerVoice-Studio / MossFormer2 (Speech Lab, Alibaba; Apache-2.0)](https://modelscope.cn/models/ClearerVoice-Studio)
+- [Facebook denoiser: first real-time speech enhancement benchmark (NOASSERTION)](https://github.com/facebookresearch/denoiser)
 - [sherpa-onnx pre-trained model index](https://k2-fsa.github.io/sherpa/onnx/pretrained_models/index.html)
 - [Best open-source speech-to-text models in 2026 (Gladia)](https://www.gladia.io/blog/best-open-source-speech-to-text-models)
 - [ASR in 2025–2026: a deep dive into model selection (ruoqijin.com)](https://ruoqijin.com/blog/asr-deep-dive-2025-2026)

@@ -11,6 +11,9 @@ the 16 kHz outputs to --out:
                the user's "min amplitude, just scale gain" idea — the old
                single-band AGC had no high-pass, which is why its gain
                went to the rumble; this is the never-tested version)
+- wiener     — 90 Hz HP + decision-directed Wiener with min-statistics
+               noise floor (the classical-DSP baseline from the tool audit)
+- wiener-agc — the same, followed by the multiband AGC (production shape)
 
 All variants start cold (gain 1.0), so comparisons are fair *within* the
 sim; the transcripts the .txt notes record for the 17:xx captures
@@ -102,6 +105,85 @@ class ScalarAGC(BaseAudioFilter):
             out = out * min(1.0, 10 ** (-1.0 / 20) / peak)
         return (np.clip(out, -1.0, 1.0) * 32767.0).astype(np.int16).tobytes()
 
+class WienerFilter(BaseAudioFilter):
+    """90 Hz HP + decision-directed Wiener suppression (classical DSP).
+
+    The tool audit's classical-DSP candidate: STFT per 20 ms frame (nfft
+    512, zero-padded), per-bin min-statistics noise floor (running minimum
+    that rises slowly), decision-directed prior SNR, gain xi/(1+xi) with a
+    -12 dB spectral floor so the suppressor can't eat quiet speech the way
+    the neural suppressors do. Same one-pole 90 Hz HP as the other variants
+    up front (the load-bearing piece).
+    """
+
+    def __init__(
+        self,
+        prior_alpha: float = 0.98,
+        noise_decay: float = 1.001,
+        gain_floor_db: float = -12.0,
+    ) -> None:
+        self._prior_alpha = prior_alpha
+        self._noise_decay = noise_decay
+        self._gain_floor = 10 ** (gain_floor_db / 20)
+        self._filtering = True
+        self._hp = None
+        self._sm_pow = None  # smoothed per-bin power (last frame)
+        self._min_pow = None  # min-statistics noise estimate
+        self._prev_speech = None  # |Xhat|^2 from the previous frame
+        self._win = None
+        self._nfft = 512
+
+    async def start(self, sample_rate: int):
+        fs = float(sample_rate)
+        r = np.exp(-2.0 * np.pi * 90.0 / fs)
+        self._hp = _BiquadChain([(1.0, -1.0, 0.0, -r, 0.0)])
+        self._win = np.hanning(self._nfft)
+        self._sm_pow = None
+        self._min_pow = None
+        self._prev_speech = None
+
+    async def stop(self):
+        pass
+
+    async def process_frame(self, frame: FilterControlFrame):
+        if isinstance(frame, FilterEnableFrame):
+            self._filtering = frame.enable
+
+    async def filter(self, audio: bytes) -> bytes:
+        if not self._filtering or len(audio) < 2 or self._hp is None:
+            return audio
+        x = np.frombuffer(audio, dtype=np.int16).astype(np.float64) / 32768.0
+        x = self._hp.process(x)
+        n = self._nfft
+        X = np.fft.rfft(x * self._win[: len(x)] if len(x) <= n else x, n)
+        p = np.abs(X) ** 2
+        # smoothed power + min-statistics noise floor (slow rise between
+        # frames, so the estimate tracks a stationary room tone)
+        if self._sm_pow is None:
+            self._sm_pow = p
+            self._min_pow = p
+        else:
+            self._sm_pow = 0.8 * self._sm_pow + 0.2 * p
+            self._min_pow = np.minimum(self._min_pow, p) * self._noise_decay
+        self._min_pow = np.maximum(self._min_pow, 1e-10)
+        gamma = self._sm_pow / self._min_pow  # posterior SNR
+        if self._prev_speech is None:
+            xi = np.maximum(gamma - 1.0, 0.0)
+        else:
+            xi = (
+                self._prior_alpha * self._prev_speech / self._min_pow
+                + (1 - self._prior_alpha) * np.maximum(gamma - 1.0, 0.0)
+            )
+        gain = np.clip(xi / (1.0 + xi), self._gain_floor, 1.0)
+        self._prev_speech = gain * gamma * self._min_pow
+        y = np.fft.irfft(X * gain, n)
+        # Invert the analysis window: with a zero-padded fft and no
+        # overlap, y[:len(x)] == x * win[:len(x)] when gain == 1, so the
+        # synthesis scale is 1/mean(win[:len(x)]), not 2/sum(win).
+        out = y[: len(x)] / np.mean(self._win[: len(x)])
+        return (np.clip(out, -1.0, 1.0) * 32767.0).astype(np.int16).tobytes()
+
+
 WHISPER = (
     Path.home() / ".cache" / "son" / "whisper.cpp" / "build" / "bin" / "whisper-cli"
 )
@@ -127,6 +209,8 @@ VARIANTS: dict[str, list] = {
     "denoise": [RNNoiseFilter, MultibandAGCFilter],
     "nodenoise": [MultibandAGCFilter],
     "hp-scalar": [ScalarAGC],
+    "wiener": [WienerFilter],
+    "wiener-agc": [WienerFilter, MultibandAGCFilter],
 }
 
 

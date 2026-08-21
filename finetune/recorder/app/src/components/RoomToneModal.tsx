@@ -157,7 +157,12 @@ export function RoomToneModal({
             <div className="note">
               <b>Current room tone</b> — {taken.duration.toFixed(1)}s.
             </div>
-            <audio ref={audioRef} controls preload="metadata" src="api/noise" />
+            <audio
+              ref={audioRef}
+              controls
+              preload="metadata"
+              src={`api/noise/${taken.id}`}
+            />
           </div>
         )}
         {!pending && !taken && (

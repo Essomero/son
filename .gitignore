@@ -10,6 +10,9 @@ uv.lock.tmp
 # OS
 .DS_Store
 
+# Node
+node_modules/
+
 # Pipecat runtime
 .runtime/
 

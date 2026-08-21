@@ -5,8 +5,9 @@ fine-tune `whisper-small.en` on it → convert to GGML → serve through
 whisper.cpp → pick it in Son. The result is **whisper-small-son**, served
 entirely on this machine, no API keys.
 
-- Dataset: 517 clips / 19.8 min of the author's voice (16 kHz mono),
-  95/5 train/dev split, deterministic shuffle seed 42
+- Dataset: 517 clips / 19.8 min of the author's voice (16 kHz mono, now
+  organized as batch-1-normal), 95/5 train/dev split, deterministic shuffle
+  seed 42
 - Best dev WER: **14.4%** (26 held-out clips) after 5 epochs on a GCP T4
 - Weights: `finetune/out/whisper-small-son/` (HF format) and
   `~/.cache/son/whisper.cpp/models/ggml-whisper-small-son.bin` (GGML f16,
@@ -20,31 +21,43 @@ reading_list.jsonl   (local or GCP T4)  + gen_mel.py           + whisper_local.p
 
 ## 1. Record
 
-The recorder page captures clips of you reading a 517-prompt reading list.
+The studio app (React, served by the same server) records clips batch by
+batch — the original 517-clip session lives as **batch-1-normal** after a
+one-time migration.
 
 ```bash
 uv run python finetune/recorder/server.py     # then open the printed URL
 ```
 
-- Clips land in `~/.cache/son/finetune/recordings/` as 16 kHz mono PCM_16
-  WAV (`clip_XXXX.wav`) with a `manifest.jsonl` alongside:
-  `{"id", "text", "duration", "path"}`. Re-recording a prompt overwrites
-  its clip in place.
-- **Room tone**: the take sheet's header has a small **Record silence**
-  button — it opens a centered modal where you record ~3 minutes of silence
-  with the mic as-is (no AGC / noise suppression, so the real room floor
-  comes through; auto-stops at 3:00; click the backdrop or ESC to dismiss).
-  Saves to `recordings/noise/noise_0000.wav` + its own
-  `noise_manifest.jsonl`, deliberately separate from the speech manifest
-  (used for gen3 quiet-speech augmentation).
+- **Batches** — `recordings/batches.json` is the registry; each batch has
+  its own dir (`batch-<id>/`) with `prompts.jsonl` + `manifest.jsonl` +
+  `clip_XXXX.wav` (16 kHz mono PCM_16). A new batch either clones the
+  reading list (best for comparing conditions — quiet, far, phone… — on
+  the same script) or takes a pasted custom script (blank lines delimit
+  paragraphs; each paragraph = one prompt). Batches can be toggled out of
+  training or archived — files are never deleted.
+- **The booth** — one prompt per take; ␣ record/stop (silence auto-stops
+  after 2.5 s), ⏎ keep, ⌫ retake (overwrites the clip in place), arrows
+  move. The keep-take sheet shows progress; the session resumes where you
+  left off (localStorage).
+- **Room tone** — **Record silence** in the booth header opens a modal for
+  ~3 minutes of the room with the mic as-is (no AGC / noise suppression, so
+  the real room floor comes through; auto-stops at 3:00; ESC dismisses).
+  Saves to `recordings/noise/noise_0000.wav` + `noise_manifest.jsonl`,
+  shared across batches (it's the room) and separate from the speech
+  manifests (used for quiet-speech augmentation).
 - The reading list is `finetune/prompts/reading_list.jsonl`; regenerate it
   with `finetune/prompts/generate_prompts.py`.
-- ⚠️ `recordings/` + `manifest.jsonl` (and the `noise/` subdir) are user
-  data. Never delete the manifests; if one is lost, rebuild it from the WAVs
-  + the reading list (`clip_XXXX.wav` ↔ `reading_list.jsonl` id `XXXX`).
-  Audio never enters git (`.gitignore`).
+- ⚠️ `recordings/` (incl. `noise/`) are user data. Never delete the
+  manifests; if one is lost, rebuild it from the WAVs + the prompts
+  (`clip_XXXX.wav` ↔ `prompts.jsonl` id `XXXX`). Audio never enters git
+  (`.gitignore`).
 - `SON_RECORDINGS_DIR` overrides the recordings root — used for isolated
   test runs and pointing the recorder at a shared bundle dir.
+- **Migrating the old flat layout** (a `recordings/manifest.jsonl` with no
+  `batches.json`): run `finetune/recorder/migrate.py` — dry-run by default,
+  `--apply` moves everything into `batch-1-normal/` and writes the
+  registry. Idempotent and reversible (pure moves).
 
 ## 2. Train
 
@@ -218,7 +231,7 @@ Authorization entirely.
 Smoke-test without Son:
 
 ```bash
-curl -F "file=@~/.cache/son/finetune/recordings/clip_0000.wav" \
+curl -F "file=@~/.cache/son/finetune/recordings/batch-1-normal/clip_0000.wav" \
      -F "model=whisper-small-son" \
      http://127.0.0.1:8083/v1/audio/transcriptions
 # {"text": "How are you doing today", ...}

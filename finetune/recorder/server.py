@@ -15,9 +15,9 @@ clip per prompt id; re-recording a prompt overwrites its clip in place
 its own noise_manifest.jsonl — separate from the speech manifests on
 purpose, so the training script never sees them.
 
-A legacy flat layout (manifest.jsonl directly in recordings/) is served
-through the batch-1 fallback but warns: run finetune/recorder/migrate.py
-to move it into batch-1-normal/.
+A legacy flat layout (manifest.jsonl directly in recordings/) is detected
+at startup and warns: run finetune/recorder/migrate.py to move it into
+batch-1-normal/. The app itself never auto-migrates user data.
 
 SON_PORT overrides the port (default 8082).
 
@@ -146,14 +146,6 @@ def _save_manifest(records: dict[int, dict], path: Path) -> None:
         "".join(json.dumps(records[i]) + "\n" for i in sorted(records)))
 
 
-def _legacy_manifest_path() -> Path:
-    """The flat-recorder manifest — or batch-1-normal's after migration —
-    so the pre-React page keeps working until it is replaced."""
-    if LEGACY_MANIFEST.exists():
-        return LEGACY_MANIFEST
-    return DATA_DIR / "batch-1-normal" / "manifest.jsonl"
-
-
 def _wav_error(data: bytes, duration: float) -> str | None:
     """Reject non-WAV and wildly size-inconsistent uploads."""
     if len(data) < 44 or data[:4] != b"RIFF" or data[8:12] != b"WAVE":
@@ -280,6 +272,7 @@ class BatchPatch(BaseModel):
     description: str | None = None
     max_duration: int | None = None
     include_in_training: bool | None = None
+    archived: bool | None = None  # restore = archive it again off
 
 
 @app.patch("/batch/{bid}")
@@ -305,56 +298,6 @@ def archive_batch(bid: str):
     batches[bid]["archived"] = True
     _save_batches(batches)
     return {"ok": True}
-
-
-# ————— legacy flat-recorder endpoints (pre-React page) —————
-# Kept until the studio app fully replaces recorder.html; they read/write
-# through the same fallback so the old page keeps working after migration.
-
-@app.get("/list")
-def list_prompts():
-    prompts = [json.loads(l) for l in PROMPTS.read_text().splitlines()]
-    records = _load_manifest(_legacy_manifest_path())
-    return {"prompts": prompts,
-            "done": {i: r["duration"] for i, r in records.items()}}
-
-
-@app.post("/clip")
-async def clip(
-    id: int = Form(...),
-    text: str = Form(""),
-    duration: float = Form(0.0),
-    file: UploadFile = File(...),
-):
-    data = await file.read()
-    err = _wav_error(data, duration)
-    if err:
-        return JSONResponse({"ok": False, "error": err}, status_code=400)
-    manifest = _legacy_manifest_path()
-    d = manifest.parent
-    d.mkdir(parents=True, exist_ok=True)
-    path = d / f"clip_{id:04d}.wav"
-    path.write_bytes(data)
-    records = _load_manifest(manifest)
-    records[id] = {
-        "id": id, "text": text, "duration": round(duration, 2),
-        "path": str(path),
-    }
-    _save_manifest(records, manifest)
-    return {"ok": True, "id": id, "duration": duration}
-
-
-@app.get("/clip/{clip_id}")
-def get_clip(clip_id: int) -> FileResponse:
-    records = _load_manifest(_legacy_manifest_path())
-    if clip_id not in records:
-        return JSONResponse(
-            {"ok": False, "error": "no take for this prompt"}, status_code=404)
-    path = Path(records[clip_id]["path"])
-    if not path.exists():
-        return JSONResponse(
-            {"ok": False, "error": "audio file missing"}, status_code=404)
-    return FileResponse(path, media_type="audio/wav")
 
 
 # ————— room-tone (noise) cell —————
@@ -406,6 +349,19 @@ def get_noise(noise_id: int) -> FileResponse:
         return JSONResponse(
             {"ok": False, "error": "audio file missing"}, status_code=404)
     return FileResponse(path, media_type="audio/wav")
+
+
+# ————— studio app (built React bundle) —————
+# Mounted last so the API routes above always win; html=True serves
+# index.html for "/" (the app has no client-side routes — views are
+# React state). Skipped when the bundle isn't built (vite dev proxy).
+
+DIST = Path(__file__).resolve().parent / "dist"
+
+if DIST.is_dir():
+    from fastapi.staticfiles import StaticFiles
+
+    app.mount("/", StaticFiles(directory=DIST, html=True), name="studio")
 
 
 if __name__ == "__main__":

@@ -61,9 +61,11 @@ logger.info(f"device: {device}")
 # floor (SNR collapse). Plain gain attenuation does not reproduce it —
 # verified on the dev set: 0.15x clean audio still transcribes perfectly,
 # because the noise floor scales down with the speech. So the quiet
-# variants mix pink noise at realistic SNRs. Deterministic per clip id
-# (one rng per variant), so reruns are reproducible. Dev rows are never
-# augmented — the held-out WER stays comparable across runs.
+# variants mix noise at realistic SNRs: the REAL room tone when a take
+# exists (recordings/noise/noise_0000.wav — measured floor ~-61 dBFS,
+# quiet speech lands 14-27 dB above it), pink noise otherwise. Deterministic
+# per clip id (one rng per variant), so reruns are reproducible. Dev rows
+# are never augmented — the held-out WER stays comparable across runs.
 AUG_VARIANTS = [
     (1.00, None),   # original
     (0.50, None),   # half volume, clean
@@ -72,6 +74,28 @@ AUG_VARIANTS = [
     (0.20, 10.0),   # very soft, 10 dB SNR
     (0.12, 5.0),    # whisper-quiet, 5 dB SNR
 ]
+
+
+def load_room_tone():
+    """The real room floor (recordings/noise/noise_0000.wav), or None.
+
+    Landed by the recorder's room-tone modal; travels with the GCP bundle
+    (train_on_gcp.sh tars the whole recordings/ dir). Falls back to pink
+    noise in augment() when absent.
+    """
+    p = RECORDINGS / "noise" / "noise_0000.wav"
+    if not p.exists():
+        return None
+    arr, sr = sf.read(p, dtype="float32")
+    if sr != 16000:
+        logger.warning(f"room tone sample rate {sr} != 16000; using pink noise")
+        return None
+    logger.info(f"room tone: {p.name} {len(arr) / sr:.0f}s "
+                f"RMS {20 * np.log10(np.sqrt(np.mean(arr ** 2))):.1f} dBFS")
+    return arr
+
+
+ROOM_TONE = load_room_tone()
 
 
 def pink_noise(n: int, rng: random.Random) -> np.ndarray:
@@ -84,12 +108,16 @@ def pink_noise(n: int, rng: random.Random) -> np.ndarray:
 
 
 def augment(arr: np.ndarray, variant, rng: random.Random) -> np.ndarray:
-    """Gain, plus optional pink noise mixed at a target SNR vs the speech."""
+    """Gain, plus optional noise (real room tone, else pink) at a target SNR."""
     gain, snr_db = variant
     arr = arr * gain
     if snr_db is not None:
         rms = float(np.sqrt(np.mean(arr ** 2)))
-        noise = pink_noise(len(arr), rng)
+        if ROOM_TONE is not None and len(ROOM_TONE) >= len(arr):
+            off = rng.randrange(len(ROOM_TONE) - len(arr))
+            noise = ROOM_TONE[off:off + len(arr)]
+        else:
+            noise = pink_noise(len(arr), rng)
         noise = noise / np.sqrt(np.mean(noise ** 2))      # RMS -> 1
         arr = arr + noise * (rms / 10 ** (snr_db / 20))
     return np.clip(arr, -1.0, 1.0).astype(np.float32)

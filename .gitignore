@@ -10,6 +10,9 @@ uv.lock.tmp
 # OS
 .DS_Store
 
+# Node
+node_modules/
+
 # Pipecat runtime
 .runtime/
 
@@ -30,3 +33,4 @@ finetune/out/
 *.wav
 *.flac
 *.mp3
+.claude/worktrees

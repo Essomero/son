@@ -296,10 +296,15 @@ body {
   display: flex;
   flex-direction: column;
   gap: 10px;
+  transition: transform 0.15s ease, border-color 0.15s ease,
+    box-shadow 0.15s ease, background 0.15s ease;
 }
 
 .card.batch:hover {
-  border-color: var(--edge-hi);
+  background: var(--card-hi);
+  border-color: var(--amber-dim);
+  transform: translateY(-2px);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.4), 0 0 0 1px var(--amber-dim);
 }
 
 .card.batch.off {
@@ -374,7 +379,8 @@ body {
   display: flex;
   align-items: center;
   gap: 10px;
-  margin-top: 4px;
+  margin-top: auto; /* cards have variable desc/stat height — actions sit on the same baseline */
+  padding-top: 6px;
 }
 
 .actions .btn {
@@ -675,28 +681,42 @@ body {
 
 .chips {
   display: grid;
-  grid-auto-flow: column;
-  grid-auto-columns: 1fr;
-  grid-template-rows: repeat(7, auto);
+  grid-template-columns: repeat(auto-fill, minmax(34px, 1fr));
   gap: 7px;
+  max-height: 252px; /* 7 rows × 30px + 6 gaps — the sheet scrolls, the page doesn't */
+  overflow-y: auto;
+  padding-right: 4px;
+  overscroll-behavior: contain;
+}
+
+.chips::-webkit-scrollbar {
+  width: 7px;
+}
+
+.chips::-webkit-scrollbar-thumb {
+  background: var(--edge-hi);
+  border-radius: 4px;
 }
 
 .chip {
   position: relative;
+  height: 30px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   background: var(--panel);
   border: 1px solid var(--edge);
   color: var(--dim);
-  border-radius: 9px;
-  padding: 8px 10px;
-  font: 500 13px var(--mono);
+  border-radius: 7px;
+  font: 500 12px var(--mono);
   cursor: pointer;
-  text-align: left;
-  min-width: 0;
-  overflow: hidden;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
 }
 
 .chip:hover {
   border-color: var(--edge-hi);
+  background: var(--card-hi);
   color: var(--ink);
 }
 
@@ -706,13 +726,13 @@ body {
 }
 
 .chip.done {
-  background: #241d13;
-  border-color: var(--amber-dim);
-  color: var(--amber);
+  background: #4d3d22;
+  border-color: transparent;
+  color: #f0b45e;
 }
 
 .chip.done b {
-  color: var(--amber);
+  color: #f0b45e;
 }
 
 .chip.cur {
@@ -730,13 +750,15 @@ body {
   color: var(--red-dim);
 }
 
-.chip .ticks {
+.chip.retaken::after {
+  content: "";
   position: absolute;
-  right: 8px;
-  top: 50%;
-  transform: translateY(-50%);
-  font-size: 11px;
-  color: var(--amber);
+  top: 4px;
+  right: 4px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--red);
 }
 
 /* ── dialogs ─────────────────────────────────────────────── */

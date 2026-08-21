@@ -30,8 +30,15 @@ export function TakeSheet({
     if (!g) return;
     const chip = g.firstElementChild as HTMLElement | null;
     if (!chip) return;
-    const rows = Math.floor(g.clientHeight / chip.offsetHeight) || 1;
-    onCols(Math.max(1, Math.ceil(g.children.length / rows)));
+    // Row-major flow (auto-fill columns): every chip on the first row
+    // shares the first chip's offsetTop. Counting them is exact — no
+    // division by a scroll-clamped clientHeight.
+    let cols = 1;
+    for (let i = 1; i < g.children.length; i++) {
+      if ((g.children[i] as HTMLElement).offsetTop === chip.offsetTop) cols++;
+      else break;
+    }
+    onCols(Math.max(1, cols));
   };
 
   useLayoutEffect(measure, [prompts.length]);
@@ -40,6 +47,13 @@ export function TakeSheet({
     return () => window.removeEventListener("resize", measure);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [prompts.length]);
+
+  // The sheet scrolls vertically — keep the cursor chip visible (landing
+  // on a resumed session, or arrow-nav moving past the fold).
+  useEffect(() => {
+    const cur = gridRef.current?.children[idx] as HTMLElement | null;
+    cur?.scrollIntoView({ block: "nearest" });
+  }, [idx]);
 
   const hasFree = prompts.some((p) => !p.text);
 
@@ -75,6 +89,7 @@ export function TakeSheet({
             done(i) ? "done" : "",
             i === idx ? "cur" : "",
             !p.text ? "free" : "",
+            done(i) && t > 1 ? "retaken" : "",
           ]
             .filter(Boolean)
             .join(" ");
@@ -82,16 +97,13 @@ export function TakeSheet({
             <button
               key={p.id}
               className={cls}
-              title={p.text || "ad-lib — no script"}
+              title={
+                `${p.text || "ad-lib — no script"}` +
+                (done(i) ? ` · kept ${t}×` : "")
+              }
               onClick={() => onSelect(i)}
             >
               <b>{String(i + 1).padStart(2, "0")}</b>
-              {done(i) && (
-                <span className="ticks">
-                  {"✓".repeat(Math.min(t, 3))}
-                  {t > 3 ? `×${t}` : ""}
-                </span>
-              )}
             </button>
           );
         })}

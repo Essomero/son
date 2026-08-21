@@ -229,7 +229,7 @@
   <section class="card" id="noiseCard">
     <span class="cat quiet">room tone</span>
     <div class="prompt" id="noisePrompt">The room, silent.</div>
-    <div class="hint" id="noiseHint">3 minutes of the room as it is — stay still, don't speak. Fan on if it's usually on, mic where you usually keep it.</div>
+    <div class="hint" id="noiseHint">3 minutes of the room as it is — stay still, don't speak. Fan on if it's usually on, mic where you usually keep it. Timer counts down; the take auto-stops at 0:00.</div>
 
     <div class="panel">
       <div class="reads">
@@ -379,6 +379,7 @@ async function load() {
 }
 function p() { return prompts[idx]; }
 function fmtClock(s) { const m = Math.floor(s / 60); return `${m}:${String(Math.round(s % 60)).padStart(2, "0")}`; }
+function fmtCount(s) { const m = Math.floor(s / 60); const ss = Math.min(59, Math.floor(s % 60)); return `${m}:${String(ss).padStart(2, "0")}`; }
 function fmtTape(s) {
   const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), ss = Math.floor(s % 60);
   return `${h}:${String(m).padStart(2, "0")}:${String(ss).padStart(2, "0")}`;
@@ -523,8 +524,15 @@ async function startRec(m) {
   cardUI(mode === "noise" ? "prompt" : "noise").card.classList.add("muted");
   timerIv = setInterval(() => {
     const dur = (performance.now() - t0) / 1000;
-    ui.timer.textContent = fmtClock(dur);
-    ui.timer.classList.toggle("hot", dur > limit - 5);
+    if (mode === "noise") {
+      // Room tone counts DOWN — the take auto-stops at 0:00.
+      const remain = Math.max(0, limit - dur);
+      ui.timer.textContent = fmtCount(remain);
+      ui.timer.classList.toggle("hot", remain < 5);
+    } else {
+      ui.timer.textContent = fmtClock(dur);
+      ui.timer.classList.toggle("hot", dur > limit - 5);
+    }
   }, 100);
 }
 function stopRec() {

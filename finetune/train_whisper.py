@@ -135,7 +135,9 @@ def augment(arr: np.ndarray, variant, rng: random.Random) -> np.ndarray:
 
 # ————— data —————
 def _batch_sources() -> list[tuple[str, Path]]:
-    """Recorded batches: recordings/batch-*/ with a manifest. A legacy flat
+    """Recorded batches: any recordings/ subdir with a manifest.jsonl (the
+    studio names dirs by batch id — batch-1-normal, quiet, …). The noise
+    cell uses noise_manifest.jsonl, so it can never match. A legacy flat
     manifest (pre-migration) is treated as batch-1-normal so no data is
     silently skipped. SON_BATCHES restricts the set; empty = all."""
     want = {b.strip() for b in SON_BATCHES.split(",") if b.strip()}
@@ -143,8 +145,9 @@ def _batch_sources() -> list[tuple[str, Path]]:
     if (RECORDINGS / "manifest.jsonl").exists() and (
             not want or "batch-1-normal" in want):
         sources.append(("batch-1-normal", RECORDINGS))
-    for d in sorted(RECORDINGS.glob("batch-*")):
-        if (d / "manifest.jsonl").exists() and (not want or d.name in want):
+    for d in sorted(p for p in RECORDINGS.iterdir()
+                    if p.is_dir() and (p / "manifest.jsonl").exists()):
+        if not want or d.name in want:
             sources.append((d.name, d))
     if want:
         found = {name for name, _ in sources}

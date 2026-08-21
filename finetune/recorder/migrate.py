@@ -72,12 +72,19 @@ def apply() -> None:
     if migrated():
         print("already migrated — nothing to do")
         return
+    if TARGET_MANIFEST.exists():
+        # Crash tail: clips + manifest already moved, registry never written.
+        _finish_tail()
+        return
     if not MANIFEST.exists():
         sys.exit(f"no legacy manifest at {MANIFEST} — nothing to migrate")
 
     TARGET.mkdir(parents=True, exist_ok=True)
     clips = sorted(DATA_DIR.glob("clip_*.wav"))
+    created = None  # snapshot mtimes BEFORE the move — the old paths die
     for w in clips:
+        mt = w.stat().st_mtime
+        created = mt if created is None else min(created, mt)
         shutil.move(str(w), str(TARGET / w.name))
 
     records = []
@@ -90,19 +97,27 @@ def apply() -> None:
         "".join(json.dumps(r) + "\n" for r in records))
     MANIFEST.unlink()
 
-    if not (TARGET / "prompts.jsonl").exists():
-        shutil.copyfile(PROMPTS, TARGET / "prompts.jsonl")
-    if not BATCHES.exists():
-        if records:
-            BATCH_1["created"] = records[0].get(
-                "created") or _oldest_mtime(clips)
-        BATCHES.write_text(json.dumps([BATCH_1], indent=2) + "\n")
+    if records:
+        BATCH_1["created"] = records[0].get("created") or _fmt_mtime(created)
+    else:
+        BATCH_1["created"] = _fmt_mtime(created)
+    _finish_tail()
     print(f"migrated: {len(clips)} clips, {len(records)} records -> {TARGET}")
 
 
-def _oldest_mtime(clips: list[Path]) -> str:
+def _finish_tail() -> None:
+    """Prompts copy + registry — the idempotent tail shared by the full
+    migration and a crash-tail rerun."""
+    if not (TARGET / "prompts.jsonl").exists():
+        shutil.copyfile(PROMPTS, TARGET / "prompts.jsonl")
+    if not BATCHES.exists():
+        BATCHES.write_text(json.dumps([BATCH_1], indent=2) + "\n")
+
+
+def _fmt_mtime(ts: float | None) -> str:
     import datetime
-    ts = min(p.stat().st_mtime for p in clips) if clips else 0
+    if not ts:
+        return ""
     return datetime.datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
 
 

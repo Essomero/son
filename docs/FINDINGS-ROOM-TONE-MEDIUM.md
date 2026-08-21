@@ -115,6 +115,33 @@ output. The A/B tables above stay controlled (identical decode path per
 model), but production "correct" results (174756, 175059, 175228) do not
 reproduce in a one-pass CLI decode.
 
+## 4. Follow-up (2026-08-21): chain × model on the quiet captures
+
+The offline quiet-capture A/B was extended with the missing axis: the
+winning chain variant from RESEARCH-QUIET-SPEECH.md §5A (`hp-scalar` — 90 Hz
+high-pass + one scalar gain) × both models, same decode flags. WER vs GT
+(this report's reference strings; `-` = no confirmed GT):
+
+| capture (GT) | hp-scalar + small | hp-scalar + medium | old chain + small (post) |
+|---|---|---|---|
+| 174654 ("Not that much, just chill out") | **0.00** ✅ exact | 0.67 | 0.83 |
+| 182013 ("Hi, how are you doing") | **0.00** ✅ exact | 0.40 | 1.00 |
+| 174756 ("I'm just swimming with a flow…") | 0.45 | 0.55 | 0.45 |
+| 175059 ("I don't know much, just chilling.") | 0.67 | 0.67 | 0.83 |
+| 175228 ("Nothing more, just chilling.") | **1.50** | 2.00 | 2.00 |
+| 171839 (no GT) | "My last purchase was exciting about yours" | "I love spritzes for sex-sitting about yours" | "The last purchase was exciting about yours" |
+
+**The hp-scalar chain alone — with the existing small model, no retrain, no
+medium — turns both GT-scored production mishears into exact hits** (0.83 →
+0.00, 1.00 → 0.00) and improves the rest. Medium's edge was surviving the
+damaged chain; once the chain stops damaging, the small model is better
+everywhere (its fine-tune carries more of the user's voice).
+
+Remaining step: the live flip — run the recorder with the hp-scalar chain
+(`SON_DENOISE=0` + HP + scalar gain) and the tuned decode flags, and record
+fresh quiet turns to confirm offline results hold live (the §3A.4 deciding
+test from RESEARCH-QUIET-SPEECH.md).
+
 ## Verdict
 
 1. **The room tone is a real, measured floor** (−61 dBFS, sub-1 kHz) and

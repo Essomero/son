@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """Fine-tune openai/whisper-small.en on the user's recorded voice.
 
-Data: the recorder's manifest.jsonl (~/.cache/son/finetune/recordings/),
-rows {id, text, duration, path}. Rows with an empty transcript (ad-lib free
-talk) are unsupervised and skipped. Clips are already 16 kHz mono 16-bit WAV.
+Data: the studio's recordings/ tree (~/.cache/son/finetune/recordings/) —
+per-batch manifests under recordings/batch-*/manifest.jsonl, rows
+{id, text, duration, path} (+ batch). SON_BATCHES (comma-separated ids)
+restricts which batches train; empty = all. Rows with an empty transcript
+(ad-lib free talk) are unsupervised and skipped. Clips are already
+16 kHz mono 16-bit WAV.
 
 Runs on CUDA when available (GCP T4), else MPS (Apple Silicon), else CPU.
 5 epochs over ~500 short clips is minutes on a T4, tens of minutes on MPS.
@@ -33,8 +36,15 @@ from transformers import (
     WhisperProcessor,
 )
 
-RECORDINGS = Path.home() / ".cache" / "son" / "finetune" / "recordings"
-MANIFEST = RECORDINGS / "manifest.jsonl"
+# SON_RECORDINGS_DIR overrides the data root (the studio server uses the
+# same override, so tests can point training at a scratch dir).
+RECORDINGS = Path(os.environ.get(
+    "SON_RECORDINGS_DIR",
+    str(Path.home() / ".cache" / "son" / "finetune" / "recordings"),
+))
+# SON_BATCHES restricts training to a comma-separated set of batch ids
+# (e.g. "batch-1-normal,batch-2-quiet"); empty = all batches.
+SON_BATCHES = os.environ.get("SON_BATCHES", "")
 # SON_OUT_DIR overrides the output name (e.g. the augmented retrain writes
 # whisper-small-son-soft so the live model is never clobbered).
 OUT_DIR = Path(os.environ.get(
@@ -124,17 +134,55 @@ def augment(arr: np.ndarray, variant, rng: random.Random) -> np.ndarray:
 
 
 # ————— data —————
-def load_rows():
-    rows = [json.loads(l) for l in MANIFEST.read_text().splitlines()]
-    rows = [r for r in rows if r["text"].strip() and 0.5 <= r["duration"] <= 30]
-    for r in rows:
+def _batch_sources() -> list[tuple[str, Path]]:
+    """Recorded batches: recordings/batch-*/ with a manifest. A legacy flat
+    manifest (pre-migration) is treated as batch-1-normal so no data is
+    silently skipped. SON_BATCHES restricts the set; empty = all."""
+    want = {b.strip() for b in SON_BATCHES.split(",") if b.strip()}
+    sources = []
+    if (RECORDINGS / "manifest.jsonl").exists() and (
+            not want or "batch-1-normal" in want):
+        sources.append(("batch-1-normal", RECORDINGS))
+    for d in sorted(RECORDINGS.glob("batch-*")):
+        if (d / "manifest.jsonl").exists() and (not want or d.name in want):
+            sources.append((d.name, d))
+    if want:
+        found = {name for name, _ in sources}
+        missing = sorted(want - found)
+        if missing:
+            raise SystemExit(
+                f"SON_BATCHES names unknown batches: {', '.join(missing)}")
+    return sources
+
+
+def _rows_for(batch: str, d: Path) -> list[dict]:
+    rows = []
+    for line in (d / "manifest.jsonl").read_text().splitlines():
+        r = json.loads(line)
+        if not r["text"].strip() or not 0.5 <= r["duration"] <= 30:
+            continue
+        r["batch"] = batch
         # The manifest records absolute paths from the machine that recorded
         # them (the Mac). When training elsewhere (GCP VM), the clips sit
-        # next to the manifest instead — resolve by basename. Clip names are
-        # unique (clip_XXXX.wav), so the fallback is unambiguous.
+        # next to the manifest instead — resolve by basename within the
+        # batch dir. Clip names are unique per batch (clip_XXXX.wav), so
+        # the fallback is unambiguous.
         if not Path(r["path"]).exists():
-            r["path"] = str(RECORDINGS / Path(r["path"]).name)
-    rows.sort(key=lambda r: r["id"])
+            r["path"] = str(d / Path(r["path"]).name)
+        rows.append(r)
+    return rows
+
+
+def load_rows():
+    sources = _batch_sources()
+    rows = []
+    for idx, (batch, d) in enumerate(sources):
+        batch_rows = _rows_for(batch, d)
+        for r in batch_rows:
+            r["_batch_idx"] = idx  # stable per-batch key for augmentation rng
+            rows.append(r)
+        logger.info(f"batch {batch}: {len(batch_rows)} clips")
+    rows.sort(key=lambda r: (r["batch"], r["id"]))
     rng = random.Random(SEED)
     rng.shuffle(rows)
     n_dev = max(1, round(len(rows) * DEV_FRAC))
@@ -145,7 +193,10 @@ def prep(processor):
     def fn(row, variant=None):
         arr, sr = sf.read(row["path"], dtype="float32")
         if variant is not None:
-            arr = augment(arr, variant, random.Random(SEED * 1000 + row["id"]))
+            # Seeded per (batch, id): clip ids repeat across batches, so a
+            # bare-id seed would give different batches identical noise.
+            seed = SEED * 1000 + row.get("_batch_idx", 0) * 100000 + row["id"]
+            arr = augment(arr, variant, random.Random(seed))
         # WhisperModel.forward hard-requires exactly 3000 mel frames
         # (modeling_whisper.py:613, != check), so keep the extractor's default
         # max_length padding — variable-length features are impossible. Memory

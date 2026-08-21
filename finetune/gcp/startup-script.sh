@@ -77,7 +77,7 @@ cd /root
 # is never clobbered — the rsync below ships whatever lands in /root/out.
 # __OUT_NAME__ is substituted by train_on_gcp.sh (SON_OUT_NAME env, default
 # whisper-small-son-soft), so a gen3 run can land in its own dir.
-SON_OUT_DIR=/root/out/__OUT_NAME__ "$PY" train_whisper.py > /tmp/train.log 2>&1 &
+SON_OUT_DIR=/root/out/__OUT_NAME__ SON_BATCHES="__BATCHES__" "$PY" train_whisper.py > /tmp/train.log 2>&1 &
 TPID=$!
 ( tail -f /tmp/train.log | while IFS= read -r l; do say "TRAIN: $l"; done ) &
 TLOG=$!

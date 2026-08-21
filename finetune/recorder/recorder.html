@@ -53,7 +53,7 @@
     border-radius: 999px; padding: 3px 12px; }
   .cat.free { color: var(--red); background: var(--red-soft); border-color: #4a2c26; }
   .cat.quiet { color: var(--steel); background: var(--steel-soft); border-color: #31414b; }
-  .card.muted { opacity: .45; }
+  .card.hidden { display: none; }
   .prompt { font-family: "Space Grotesk", system-ui, sans-serif; font-weight: 500;
     font-size: clamp(25px, 4.6vw, 32px); line-height: 1.42; text-align: center;
     color: var(--ink); min-height: calc(clamp(25px, 4.6vw, 32px) * 1.42 * 3);
@@ -524,7 +524,9 @@ async function startRec(m) {
   ui.label.textContent = "Stop";
   ui.recstat.classList.add("on");
   ui.state.textContent = "REC";
-  cardUI(mode === "noise" ? "prompt" : "noise").card.classList.add("muted");
+  // Exclusive paths: the inactive booth's card is hidden for the whole take,
+  // so a silence recording never sits under a card telling you to talk.
+  cardUI(mode === "noise" ? "prompt" : "noise").card.classList.add("hidden");
   timerIv = setInterval(() => {
     const dur = (performance.now() - t0) / 1000;
     if (mode === "noise") {
@@ -551,8 +553,8 @@ function stopRec() {
   ui.label.textContent = "Record";
   ui.recstat.classList.remove("on");
   ui.state.textContent = "STANDBY";
-  cardUI("prompt").card.classList.remove("muted");
-  cardUI("noise").card.classList.remove("muted");
+  cardUI("prompt").card.classList.remove("hidden");
+  cardUI("noise").card.classList.remove("hidden");
   const samples = concat(chunks); chunks = [];
   const minLen = (mode === "noise" ? NOISE_MIN_S : 0.3) * 16000;
   if (samples.length < minLen) {

@@ -53,7 +53,16 @@
     border-radius: 999px; padding: 3px 12px; }
   .cat.free { color: var(--red); background: var(--red-soft); border-color: #4a2c26; }
   .cat.quiet { color: var(--steel); background: var(--steel-soft); border-color: #31414b; }
-  .card.hidden { display: none; }
+  /* Room-tone capture lives behind the "Record silence" button — a small
+     modal, not a permanent second booth on the page. The <dialog> element
+     itself is left to the UA (top layer, centering, backdrop); the booth
+     styling lives on the .card div inside it. Author display rules on the
+     dialog element break its UA behavior (closed-state hiding, modal
+     rendering). */
+  #silenceDlg { border: 0; padding: 0; background: none; width: min(560px, 92vw); }
+  #silenceDlg::backdrop { background: rgba(8, 14, 18, .62); }
+  #silenceDlg .dlg-body { max-height: 86vh; overflow-y: auto; }
+  .dlghead { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
   .prompt { font-family: "Space Grotesk", system-ui, sans-serif; font-weight: 500;
     font-size: clamp(25px, 4.6vw, 32px); line-height: 1.42; text-align: center;
     color: var(--ink); min-height: calc(clamp(25px, 4.6vw, 32px) * 1.42 * 3);
@@ -67,6 +76,7 @@
   .panel { background: var(--panel2); border: 1px solid var(--line); border-radius: 10px;
     padding: 10px 14px; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 14px;
     align-items: center; }
+  #silenceDlg .panel { grid-template-columns: 1fr; }
   .vuwrap { width: 100%; max-width: 300px; justify-self: center; }
   #vu { width: 100%; height: auto; display: block; }
   .reads { display: flex; flex-direction: column; align-items: flex-end; gap: 3px; min-width: 118px; }
@@ -125,7 +135,8 @@
   .strip { background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
     padding: 14px 16px 16px; }
   .striphead { display: flex; justify-content: space-between; align-items: baseline; gap: 12px;
-    margin-bottom: 10px; }
+    flex-wrap: wrap; margin-bottom: 10px; }
+  #silenceBtn.has::after { content: " ✓"; color: var(--steel); }
   .striphead .ttl { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 10px;
     letter-spacing: .24em; text-transform: uppercase; color: var(--dim); }
   .legend { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 10px;
@@ -170,6 +181,11 @@
     z-index: 9; font-family: "Space Grotesk", system-ui, sans-serif; }
   .flash.show { opacity: 1; transform: translateX(-50%) translateY(0); }
   .flash.err { background: #2c1c1a; border-color: #52302a; color: #f0b0a8; }
+  /* The modal is in the top layer — fixed toasts sit behind it, so the
+     dialog carries its own in-flow toast while it's open. */
+  dialog .flash { position: static; transform: none; opacity: 0; transition: opacity .22s;
+    height: 0; overflow: hidden; padding: 0; border: 0; margin-top: 2px; }
+  dialog .flash.show { opacity: 1; height: auto; padding: 9px 18px; border: 1px solid #4a3a22; }
 
   @media (max-width: 560px) {
     body { padding: 22px 10px 48px; }
@@ -223,13 +239,26 @@
     <div class="preview" id="preview"></div>
   </section>
 
-  <!-- Room-tone cell: 3 minutes of the room, for gen3 augmentation.
-       Records the raw mic — no AGC / noise suppression — so the real
-       floor (fan hum, AC) is captured as-is. -->
-  <section class="card" id="noiseCard">
-    <span class="cat quiet">room tone</span>
+  <section class="strip">
+    <div class="striphead">
+      <span class="ttl">Session takes</span>
+      <span class="legend"><i class="k">kept</i><i class="r">re-recorded</i><i class="f">ad-lib</i></span>
+      <button class="ghost" id="silenceBtn">Record silence</button>
+    </div>
+    <div class="statusstrip" id="strip"></div>
+  </section>
+
+  <!-- Room-tone capture: tucked behind the "Record silence" button, in a
+       modal — the take sheet stays speech-only. Raw mic (no AGC / noise
+       suppression) so the real floor is captured; auto-stops at 3:00. -->
+  <dialog id="silenceDlg">
+    <div class="card dlg-body" id="dlgBody">
+    <div class="dlghead">
+      <span class="cat quiet">room tone</span>
+      <button class="ghost" id="silenceClose" aria-label="Close">✕</button>
+    </div>
     <div class="prompt" id="noisePrompt">The room, silent.</div>
-    <div class="hint" id="noiseHint">3 minutes of the room as it is — stay still, don't speak. Fan on if it's usually on, mic where you usually keep it. Timer counts down; the take auto-stops at 0:00.</div>
+    <div class="hint" id="noiseHint">3 minutes of the room as it is — stay still, don't speak. Fan on if it's usually on, mic where you usually keep it. Auto-stops at 0:00.</div>
 
     <div class="panel">
       <div class="reads">
@@ -249,15 +278,9 @@
 
     <div class="preview" id="noisePreview"></div>
     <div class="note-cell" id="noiseNote">No take yet — record 3 minutes of silence.</div>
-  </section>
-
-  <section class="strip">
-    <div class="striphead">
-      <span class="ttl">Session takes</span>
-      <span class="legend"><i class="k">kept</i><i class="r">re-recorded</i><i class="f">ad-lib</i></span>
+    <div class="flash" id="dlgFlash" role="status"></div>
     </div>
-    <div class="statusstrip" id="strip"></div>
-  </section>
+  </dialog>
 
   <div class="note">
     <span class="kbd">space</span> play / pause
@@ -293,7 +316,7 @@ let noiseTaken = null; // {id, duration} of the stored room tone, or null
 /* Both booths share the capture pipeline; each owns its readouts + buttons. */
 function cardUI(m) {
   return m === "noise"
-    ? { card: $("noiseCard"), recstat: $("noiseRecstat"), state: $("noiseState"),
+    ? { card: $("dlgBody"), recstat: $("noiseRecstat"), state: $("noiseState"),
         timer: $("noiseTimer"), pk: $("noisePk"), label: $("noiseReclabel"),
         recBtn: $("noiseRecBtn"), preview: $("noisePreview"), keepBtn: $("noiseKeepBtn") }
     : { card: $("card"), recstat: $("recstat"), state: $("recstate"),
@@ -493,6 +516,8 @@ async function startRec(m) {
   // No mode passed (keyboard path) → whatever booth was last used.
   mode = (m === "noise" || m === "prompt") ? m : lastMode;
   lastMode = mode;
+  // A noise take only makes sense with the modal visible (keyboard path too).
+  if (mode === "noise" && !$("silenceDlg").open) $("silenceDlg").showModal();
   const ui = cardUI(mode);
   try {
     ctx = new (window.AudioContext || window.webkitAudioContext)();
@@ -524,9 +549,6 @@ async function startRec(m) {
   ui.label.textContent = "Stop";
   ui.recstat.classList.add("on");
   ui.state.textContent = "REC";
-  // Exclusive paths: the inactive booth's card is hidden for the whole take,
-  // so a silence recording never sits under a card telling you to talk.
-  cardUI(mode === "noise" ? "prompt" : "noise").card.classList.add("hidden");
   timerIv = setInterval(() => {
     const dur = (performance.now() - t0) / 1000;
     if (mode === "noise") {
@@ -553,8 +575,6 @@ function stopRec() {
   ui.label.textContent = "Record";
   ui.recstat.classList.remove("on");
   ui.state.textContent = "STANDBY";
-  cardUI("prompt").card.classList.remove("hidden");
-  cardUI("noise").card.classList.remove("hidden");
   const samples = concat(chunks); chunks = [];
   const minLen = (mode === "noise" ? NOISE_MIN_S : 0.3) * 16000;
   if (samples.length < minLen) {
@@ -650,6 +670,7 @@ async function keepNoise() {
   currentBlob = null;
   $("noiseKeepBtn").disabled = true;
   renderNoise();
+  $("silenceDlg").close();   // saved means done — the modal tucks away
   flash(`Room tone kept · ${dur.toFixed(1)}s`);
 }
 function playNoise() {
@@ -669,6 +690,7 @@ function playNoise() {
   audioEl = audio;
 }
 function renderNoise() {
+  $("silenceBtn").classList.toggle("has", !!noiseTaken);
   const n = $("noiseNote");
   if (noiseTaken) {
     n.textContent = `Room tone on tape · ${noiseTaken.duration.toFixed(1)}s — click to play`;
@@ -689,7 +711,10 @@ async function loadNoise() {
 
 /* ————— UI wiring ————— */
 function flash(msg, isErr) {
-  const f = $("flash"); f.textContent = msg;
+  // The room-tone modal sits in the top layer — fixed toasts would render
+  // behind it, so the modal carries its own in-flow toast while it's open.
+  const f = $("silenceDlg").open ? $("dlgFlash") : $("flash");
+  f.textContent = msg;
   f.classList.toggle("err", !!isErr); f.classList.add("show");
   clearTimeout(flash.t); flash.t = setTimeout(() => f.classList.remove("show"), 2400);
 }
@@ -701,18 +726,31 @@ $("backBtn").onclick = () => { if (idx > 0) { stopRec(); idx--; localStorage.set
 $("noiseRecBtn").onclick = () => (rec ? stopRec() : startRec("noise"));
 $("noiseKeepBtn").onclick = keepNoise;
 $("noiseNote").onclick = playNoise;
+$("silenceBtn").onclick = () => { stopRec(); if (!$("silenceDlg").open) $("silenceDlg").showModal(); };
+$("silenceClose").onclick = () => { stopRec(); $("silenceDlg").close(); };
+$("silenceDlg").addEventListener("cancel", () => stopRec());   // ESC stops a running take
+$("silenceDlg").addEventListener("click", (e) => {
+  // Backdrop click closes the modal — the backdrop reports the dialog
+  // itself as the click target, never the card inside it.
+  if (e.target === $("silenceDlg")) { stopRec(); $("silenceDlg").close(); }
+});
 document.addEventListener("keydown", (e) => {
   if (e.code === "Space") { e.preventDefault(); togglePlay(); }
-  else if (e.code === "Enter") {   // cycle: record → stop → keep (last-used booth)
+  else if (e.code === "Enter") {   // cycle: record → stop → keep
     e.preventDefault();
     if (rec) stopRec();
+    else if ($("silenceDlg").open) {   // the modal owns Enter while it's up
+      if (!$("noiseKeepBtn").disabled) keepNoise();
+      else startRec("noise");
+    }
     else if (!$("keepBtn").disabled) keep();
     else if (!$("noiseKeepBtn").disabled) keepNoise();
     else startRec(lastMode);
   }
   else if (e.code === "Backspace" || (e.code === "KeyR" && !e.metaKey && !e.ctrlKey && !e.altKey)) {
-    e.preventDefault(); rec ? stopRec() : startRec(lastMode);   // ⌫ / r = re-record last booth
+    e.preventDefault(); rec ? stopRec() : startRec($("silenceDlg").open ? "noise" : lastMode);
   }
+  else if ($("silenceDlg").open) { }   // modal up: arrows don't navigate the sheet
   else if (e.code === "ArrowRight") { e.preventDefault(); nav(1); }
   else if (e.code === "ArrowLeft") { e.preventDefault(); nav(-1); }
   else if (e.code === "ArrowDown") { e.preventDefault(); nav(cols); }

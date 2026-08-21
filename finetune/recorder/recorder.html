@@ -287,6 +287,7 @@ let idx = 0, rec = null, previewUrl = null, noiseUrl = null, currentBlob = null,
 let audioEl = null;   // the take currently loaded in the preview player
 let cols = 1;         // cells per row in the take sheet (grid)
 let mode = "prompt";  // which booth owns the capture: "prompt" | "noise"
+let lastMode = "prompt"; // last booth that recorded — keyboard record/re-record targets it
 let noiseTaken = null; // {id, duration} of the stored room tone, or null
 
 /* Both booths share the capture pipeline; each owns its readouts + buttons. */
@@ -489,7 +490,9 @@ let ctx = null, stream = null, chunks = [], t0 = 0, silentSince = 0, timerIv = n
 
 async function startRec(m) {
   if (rec) return;
-  mode = m;
+  // No mode passed (keyboard path) → whatever booth was last used.
+  mode = (m === "noise" || m === "prompt") ? m : lastMode;
+  lastMode = mode;
   const ui = cardUI(mode);
   try {
     ctx = new (window.AudioContext || window.webkitAudioContext)();
@@ -642,6 +645,8 @@ async function keepNoise() {
   noiseTaken = { id: res.id, duration: dur };
   if (noiseUrl) { URL.revokeObjectURL(noiseUrl); noiseUrl = null; }
   $("noisePreview").innerHTML = "";
+  currentBlob = null;
+  $("noiseKeepBtn").disabled = true;
   renderNoise();
   flash(`Room tone kept · ${dur.toFixed(1)}s`);
 }
@@ -696,14 +701,15 @@ $("noiseKeepBtn").onclick = keepNoise;
 $("noiseNote").onclick = playNoise;
 document.addEventListener("keydown", (e) => {
   if (e.code === "Space") { e.preventDefault(); togglePlay(); }
-  else if (e.code === "Enter") {   // cycle: record → stop → keep
+  else if (e.code === "Enter") {   // cycle: record → stop → keep (last-used booth)
     e.preventDefault();
     if (rec) stopRec();
     else if (!$("keepBtn").disabled) keep();
-    else startRec();
+    else if (!$("noiseKeepBtn").disabled) keepNoise();
+    else startRec(lastMode);
   }
   else if (e.code === "Backspace" || (e.code === "KeyR" && !e.metaKey && !e.ctrlKey && !e.altKey)) {
-    e.preventDefault(); rec ? stopRec() : startRec();   // ⌫ / r = re-record
+    e.preventDefault(); rec ? stopRec() : startRec(lastMode);   // ⌫ / r = re-record last booth
   }
   else if (e.code === "ArrowRight") { e.preventDefault(); nav(1); }
   else if (e.code === "ArrowLeft") { e.preventDefault(); nav(-1); }

@@ -139,14 +139,28 @@ def _batch_sources() -> list[tuple[str, Path]]:
     studio names dirs by batch id — batch-1-normal, quiet, …). The noise
     cell uses noise_manifest.jsonl, so it can never match. A legacy flat
     manifest (pre-migration) is treated as batch-1-normal so no data is
-    silently skipped. SON_BATCHES restricts the set; empty = all."""
+    silently skipped. SON_BATCHES restricts the set; empty = all.
+    Batches the registry flags include_in_training=false (the holdout
+    bench batch) are skipped unless SON_BATCHES names them explicitly."""
     want = {b.strip() for b in SON_BATCHES.split(",") if b.strip()}
+    excluded = set()
+    if (RECORDINGS / "batches.json").exists():
+        try:
+            excluded = {
+                b["id"] for b in json.loads(
+                    (RECORDINGS / "batches.json").read_text())
+                if not b.get("include_in_training", True)
+            }
+        except (ValueError, KeyError, TypeError):
+            pass  # unreadable registry — don't silently drop batches
     sources = []
     if (RECORDINGS / "manifest.jsonl").exists() and (
             not want or "batch-1-normal" in want):
         sources.append(("batch-1-normal", RECORDINGS))
     for d in sorted(p for p in RECORDINGS.iterdir()
                     if p.is_dir() and (p / "manifest.jsonl").exists()):
+        if d.name in excluded and d.name not in want:
+            continue
         if not want or d.name in want:
             sources.append((d.name, d))
     if want:

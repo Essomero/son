@@ -42,7 +42,7 @@ on run
 -- keeps borderline quiet turns from being dropped as silence; logprob
 -- thold -0.5 forces the temperature fallback on unsure passes; -nt drops
 -- timestamp text (a hallucination surface).
-do script "cd " & quoted form of whisperPath & " && exec " & quoted form of whisperPath & "/build/bin/whisper-server -m models/ggml-whisper-small-son-soft.bin --host 127.0.0.1 --port 8081 --threads 8 -bs 5 --no-speech-thold 0.75 --logprob-thold -0.5 -nt"
+do script "cd " & quoted form of whisperPath & " && exec " & quoted form of whisperPath & "/build/bin/whisper-server -m models/ggml-whisper-small-son-soup.bin --host 127.0.0.1 --port 8081 --threads 8 -bs 5 --no-speech-thold 0.75 --logprob-thold -0.5 -nt"
 			end tell
 			my logLine("whisper do script issued")
 			repeat 30 times
@@ -112,7 +112,7 @@ end logLine
 -- and may be absent on a fresh machine — never block the launcher on it.
 on whisperReady(wPath)
 	try
-		do shell script "test -x " & quoted form of (wPath & "/build/bin/whisper-server") & " && test -f " & quoted form of (wPath & "/models/ggml-whisper-small-son-soft.bin")
+		do shell script "test -x " & quoted form of (wPath & "/build/bin/whisper-server") & " && test -f " & quoted form of (wPath & "/models/ggml-whisper-small-son-soup.bin")
 		return true
 	on error errMsg
 		my logLine("whisperReady FAIL: " & errMsg)

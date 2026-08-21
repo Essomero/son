@@ -171,11 +171,27 @@ soft/noisy mic audio. Same pipeline as above plus a 6-way augmentation in
 dev set was soft+noisy. Result: HF dev WER 15.3% vs 14.4% for v1 (worse on
 clean clips, as designed), but through the whisper.cpp serving path it
 scores 8.5% vs 8.9% on the 78-clip dev set and fixes several live soft
-mishears. This is the model Son's launcher serves now.
+mishears. It was the live model until the weight-averaged soup below
+superseded it.
 
 - Weights: `finetune/out/whisper-small-son-soft/` (HF) and
   `~/.cache/son/whisper.cpp/models/ggml-whisper-small-son-soft.bin` (GGML
-  f16, 465 MB). v1's files are kept for rollback.
+  f16, 465 MB). Kept for rollback.
+
+### Third generation: whisper-small-son-soup
+
+A real-quiet retrain (**v2** — batch-1-normal plus an actually-recorded
+quiet batch, on the GCP T4) and the augmented **soft** each won a different
+register on held-out audio: v2 best on quiet takes, soft on normal ones.
+Neither swept, so their weights were averaged into a **soup** — which beat
+both parents on every cell: 16.8% WER on 12 unseen takes (11.1% normal /
+23.1% quiet, beam search) vs 17.5–22.6% for anything else tested. This is
+the model Son's launcher serves now; the decode flags in §4 are unchanged
+(`-bs 5` carried over from bench to server unchanged).
+
+- Weights: `finetune/out/whisper-small-son-soup/` (HF; v2 alongside) and
+  `~/.cache/son/whisper.cpp/models/ggml-whisper-small-son-soup.bin`
+  (GGML f16, 465 MB). soft and v1 stay for rollback.
 
 ## 3. Convert to GGML
 
@@ -204,6 +220,12 @@ mv models/ggml-model.bin models/ggml-whisper-small-son.bin   # 465 MB, f16
 `Skipping proj_out.weight` during conversion is benign — it's the tied
 embedding's duplicate output.
 
+⚠️ The mel bank is loaded from the model file at runtime, so a wrong
+filterbank poisons serving while HF (computing its own) stays fine — the
+gap opens up hardest on low-SNR audio. The HTK-scale bank an earlier
+gen_mel.py produced cost ~15 WER points on quiet takes through
+whisper.cpp before being caught by a holdout A/B against HF.
+
 ## 4. Serve + wire into Son
 
 Two local processes, then Son finds it in the STT picker:
@@ -213,7 +235,7 @@ Two local processes, then Son finds it in the STT picker:
 #    quiet-speech fail-safes from docs/RESEARCH-QUIET-SPEECH.md §3B (keep
 #    in sync with scripts/Son.applescript).
 cd ~/.cache/son/whisper.cpp && ./build/bin/whisper-server \
-    -m models/ggml-whisper-small-son-soft.bin --host 127.0.0.1 --port 8081 --threads 8 -bs 5 \
+    -m models/ggml-whisper-small-son-soup.bin --host 127.0.0.1 --port 8081 --threads 8 -bs 5 \
     --no-speech-thold 0.75 --logprob-thold -0.5 -nt
 
 # 2. OpenAI-compat shim (:8083, from the repo root) — pipecat speaks

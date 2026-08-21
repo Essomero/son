@@ -23,6 +23,9 @@ set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"
 ZONES="${ZONES:-us-central1-a us-west1-b us-east1-d}"
+# SON_OUT_NAME names the output dir on the VM (and in finetune/out/ after
+# the pull): whisper-small-son-soft by default, e.g. -gen3 for a new run.
+OUT_NAME="${SON_OUT_NAME:-whisper-small-son-soft}"
 BUNDLE=/tmp/son-recordings.tar.gz
 STAMP="$(date +%s)"
 VM="son-train-$STAMP"
@@ -50,7 +53,7 @@ echo "Staged -> gs://$BUCKET/"
 # 3. Preemptible T4 with the autonomous startup script baked in. Boot disk
 #    must be >= 100GB (the DL image is 100GB; smaller disks are rejected).
 #    Create errors are NOT suppressed: they are the diagnosis.
-sed "s/__BUCKET__/$BUCKET/" finetune/gcp/startup-script.sh > /tmp/startup-script.sh
+sed "s/__BUCKET__/$BUCKET/; s/__OUT_NAME__/$OUT_NAME/" finetune/gcp/startup-script.sh > /tmp/startup-script.sh
 for ZONE in $ZONES; do
     echo "Trying $ZONE..."
     if gcloud compute instances create "$VM" \
@@ -98,4 +101,4 @@ gsutil -m rsync -r -x ".*checkpoint-[0-9]*" "gs://$BUCKET/out" finetune/out/
 # 6. VM and staging bucket are no longer needed.
 gcloud compute instances delete "$VM" --zone "$ZONE" --quiet
 gsutil rm -r "gs://$BUCKET"
-echo "Done -> finetune/out/whisper-small-son/ (temp bucket deleted)"
+echo "Done -> finetune/out/$OUT_NAME/ (temp bucket deleted)"

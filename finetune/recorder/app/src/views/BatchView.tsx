@@ -52,7 +52,13 @@ export function BatchView({ bid, onExit }: { bid: string; onExit: () => void }) 
     if (!rec.blob) return;
     const keptIdx = b.idx;
     const dur = rec.blobDur;
-    const ok = await b.keep(rec.blob, dur);
+    let ok: boolean;
+    try {
+      ok = await b.keep(rec.blob, dur);
+    } catch (e) {
+      flash(`Keep failed — ${e instanceof Error ? e.message : String(e)}`, true);
+      return;
+    }
     if (!ok) {
       flash("Save failed — is the server up?", true);
       return;

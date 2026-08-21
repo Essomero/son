@@ -141,6 +141,7 @@
   .striphead { display: flex; justify-content: space-between; align-items: baseline; gap: 12px;
     flex-wrap: wrap; margin-bottom: 10px; }
   #silenceBtn.has::after { content: " ✓"; color: var(--steel); }
+  #silenceBtn.pending::after { content: " ●"; color: #d9a53c; }
   .striphead .ttl { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 10px;
     letter-spacing: .24em; text-transform: uppercase; color: var(--dim); }
   .legend { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 10px;
@@ -262,7 +263,7 @@
       <button class="ghost" id="silenceClose" aria-label="Close">✕</button>
     </div>
     <div class="prompt" id="noisePrompt">The room, silent.</div>
-    <div class="hint" id="noiseHint">3 minutes of the room as it is — stay still, don't speak. Fan on if it's usually on, mic where you usually keep it. Auto-stops at 0:00.</div>
+    <div class="hint" id="noiseHint">3 minutes of the room as it is — stay still, don't speak. Fan on if it's usually on, mic where you usually keep it. Auto-stops at 0:00 — then press Keep take to save it.</div>
 
     <div class="panel">
       <div class="reads">
@@ -316,6 +317,7 @@ let cols = 1;         // cells per row in the take sheet (grid)
 let mode = "prompt";  // which booth owns the capture: "prompt" | "noise"
 let lastMode = "prompt"; // last booth that recorded — keyboard record/re-record targets it
 let noiseTaken = null; // {id, duration} of the stored room tone, or null
+let noisePending = false; // a take is staged in the browser but not yet kept
 
 /* Both booths share the capture pipeline; each owns its readouts + buttons. */
 function cardUI(m) {
@@ -592,6 +594,8 @@ function stopRec() {
     if (mode === "noise") {
       if (noiseUrl) URL.revokeObjectURL(noiseUrl);
       noiseUrl = URL.createObjectURL(blob);
+      noisePending = true;   // staged but not yet kept — shown as a dot on the button
+      $("silenceBtn").classList.toggle("pending", true);
     } else {
       if (previewUrl) URL.revokeObjectURL(previewUrl);
       previewUrl = URL.createObjectURL(blob);
@@ -669,6 +673,7 @@ async function keepNoise() {
   const res = await r.json();
   if (!res.ok) { flash("Save failed — " + res.error, true); return; }
   noiseTaken = { id: res.id, duration: dur };
+  noisePending = false;
   if (noiseUrl) { URL.revokeObjectURL(noiseUrl); noiseUrl = null; }
   $("noisePreview").innerHTML = "";
   currentBlob = null;
@@ -682,6 +687,8 @@ function playNoise() {
   if (!noiseTaken) return;
   if (previewUrl) { URL.revokeObjectURL(previewUrl); previewUrl = null; }
   currentBlob = null;
+  noisePending = false;
+  $("silenceBtn").classList.remove("pending");
   $("noiseKeepBtn").disabled = true;   // stored take, not a fresh one
   const audio = document.createElement("audio");
   audio.controls = true; audio.src = `/noise/${noiseTaken.id}`;
@@ -695,6 +702,7 @@ function playNoise() {
 }
 function renderNoise() {
   $("silenceBtn").classList.toggle("has", !!noiseTaken);
+  $("silenceBtn").classList.toggle("pending", noisePending);
   const n = $("noiseNote");
   if (noiseTaken) {
     n.textContent = `Room tone on tape · ${noiseTaken.duration.toFixed(1)}s — click to play`;
@@ -731,12 +739,20 @@ $("noiseRecBtn").onclick = () => (rec ? stopRec() : startRec("noise"));
 $("noiseKeepBtn").onclick = keepNoise;
 $("noiseNote").onclick = playNoise;
 $("silenceBtn").onclick = () => { stopRec(); if (!$("silenceDlg").open) $("silenceDlg").showModal(); };
-$("silenceClose").onclick = () => { stopRec(); $("silenceDlg").close(); };
-$("silenceDlg").addEventListener("cancel", () => stopRec());   // ESC stops a running take
+function dismissNoise() {
+  // Closing the modal only dismisses it — the take is staged in the browser
+  // and is NOT uploaded until Keep take is pressed. Warn when a staged take
+  // (or an in-flight noise recording) would be lost silently.
+  const losing = noisePending || (rec && mode === "noise");
+  stopRec(); $("silenceDlg").close();
+  if (losing) flash("Take not saved — reopen Record silence and press Keep take.", true);
+}
+$("silenceClose").onclick = dismissNoise;
+$("silenceDlg").addEventListener("cancel", dismissNoise);   // ESC
 $("silenceDlg").addEventListener("click", (e) => {
   // Backdrop click closes the modal — the backdrop reports the dialog
   // itself as the click target, never the card inside it.
-  if (e.target === $("silenceDlg")) { stopRec(); $("silenceDlg").close(); }
+  if (e.target === $("silenceDlg")) dismissNoise();
 });
 document.addEventListener("keydown", (e) => {
   if (e.code === "Space") { e.preventDefault(); togglePlay(); }

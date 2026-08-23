@@ -38,7 +38,11 @@ from pipecat.audio.vad.vad_analyzer import VADParams
 from pipecat.frames.frames import (
     AudioRawFrame,
     InputAudioRawFrame,
+    InterruptionFrame,
+    LLMFullResponseEndFrame,
+    LLMFullResponseStartFrame,
     LLMRunFrame,
+    LLMTextFrame,
     TranscriptionFrame,
 )
 from pipecat.pipeline.pipeline import Pipeline
@@ -877,6 +881,44 @@ class TranscriptCleanupProcessor(FrameProcessor):
         await super().cleanup()
 
 
+class EmptyTurnRetryProcessor(FrameProcessor):
+    """Retry an LLM run that produced no speech text.
+
+    Some model/provider hiccups answer a request with an empty completion
+    (Gemini's MALFORMED_RESPONSE finish reason, a locally reloaded model
+    returning nothing): the turn opens and closes with zero LLMTextFrame, so
+    the user hears nothing and the bot never answers. Retry once — a second
+    run of the same context usually succeeds (the observed recovery: the
+    following utterance produced the full reply). Skips the retry when the
+    run was interrupted by the user (a barge-in legitimately aborts it)."""
+
+    def __init__(self):
+        super().__init__()
+        self._text_seen = False
+        self._retried = False
+
+    async def process_frame(self, frame, direction):
+        await super().process_frame(frame, direction)
+        if isinstance(frame, LLMFullResponseStartFrame):
+            self._text_seen = False
+            self._retried = False
+        elif isinstance(frame, LLMTextFrame):
+            self._text_seen = True
+        elif isinstance(frame, InterruptionFrame):
+            # A barge-in legitimately aborts the run — don't re-answer a
+            # question the user already overrode.
+            self._retried = True
+        elif (
+            isinstance(frame, LLMFullResponseEndFrame)
+            and not self._text_seen
+            and not self._retried
+        ):
+            self._retried = True
+            logger.warning("LLM turn produced no text — retrying once")
+            await self.push_frame(LLMRunFrame(), FrameDirection.UPSTREAM)
+        await self.push_frame(frame, direction)
+
+
 async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> None:
     body = runner_args.body or {}
     custom_data = body.get("custom_data") or {}
@@ -1030,10 +1072,12 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> Non
         stages.append(stt)  # absent for web-speech: text comes from the browser
     if cleanup:
         stages.append(cleanup)  # ... -> clean the raw transcript
+    empty_retry = EmptyTurnRetryProcessor()
     stages.extend(
         [
             user_aggregator,    # user turns into conversation context
             llm,                # next assistant reply
+            empty_retry,  # one retry if the reply comes back empty (see class)
         ]
     )
     if tts is not None:

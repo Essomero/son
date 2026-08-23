@@ -307,6 +307,13 @@ export function useSonSession() {
         // go as null (Serializable; the server treats them as unset).
         const toPlain = (c?: Choice) =>
           c ? { provider: c.provider, id: c.id, ...(c.voice ? { voice: c.voice } : {}) } : null;
+        // client-js's needsInit() returns false when enableMic AND enableCam
+        // are false, so device init gets skipped and the audio output context
+        // is created lazily AFTER the /start round-trip — outside Chrome's
+        // autoplay gesture window — where resume() never resolves and the
+        // session hangs in "connecting" forever. Init explicitly here, inside
+        // the click gesture.
+        if (webSpeech) await client.initDevices();
         await client.startBotAndConnect({
           endpoint: BOT_ENDPOINT,
           requestData: {

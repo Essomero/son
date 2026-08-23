@@ -105,8 +105,18 @@ export function Picker({ options, value, onChange, variant = "list", placeholder
     }
   };
 
-  const selected = value ? options.find((o) => o.provider === value.provider && o.id === value.id) : null;
+  const selected = value
+    ? options.find(
+        (o) =>
+          o.provider === value.provider &&
+          o.id === value.id &&
+          (!o.voice || value.voice === o.voice),
+      )
+    : null;
   const isGrid = variant === "grid";
+  // Cloud TTS entries carry a lowercase voice id (e.g. "hannah"); kokoro
+  // cards name themselves from voiceMeta. Capitalize for display.
+  const displayVoice = (v?: string) => (v ? v.charAt(0).toUpperCase() + v.slice(1) : "");
 
   return (
     <div className={`picker${isGrid ? " picker-grid" : ""}`} ref={rootRef}>
@@ -121,7 +131,9 @@ export function Picker({ options, value, onChange, variant = "list", placeholder
         {isGrid && selected ? (
           <span className="picker-trigger-voice">
             <VoiceAvatar choice={{ provider: selected.provider, id: selected.id }} size={26} />
-            <span className="picker-trigger-voice-name">{voiceMeta(selected.id).name}</span>
+            <span className="picker-trigger-voice-name">
+              {displayVoice(selected.voice) || voiceMeta(selected.id).name}
+            </span>
           </span>
         ) : (
           <span className="picker-trigger-label">
@@ -158,9 +170,13 @@ export function Picker({ options, value, onChange, variant = "list", placeholder
                   <div className="picker-grid-list">
                     {list.map((o) => (
                       <VoiceOption
-                        key={o.id}
+                        key={`${o.id}:${o.voice ?? ""}`}
                         o={o}
-                        selected={value?.id === o.id && value.provider === o.provider}
+                        selected={
+                          value?.id === o.id &&
+                          value.provider === o.provider &&
+                          (!o.voice || value.voice === o.voice)
+                        }
                         cursor={flat.indexOf(o) === cursor}
                         onPick={() => pick(o)}
                       />
@@ -207,6 +223,7 @@ function VoiceOption({
 }) {
   const meta = voiceMeta(o.id);
   const glyph = meta.isKokoro ? meta.flag : "🛰️";
+  const name = o.voice ? o.voice.charAt(0).toUpperCase() + o.voice.slice(1) : meta.name;
   return (
     <button
       type="button"
@@ -215,15 +232,15 @@ function VoiceOption({
       onClick={onPick}
       role="option"
       aria-selected={selected}
-      title={o.id}
+      title={o.voice ? `${o.id} · ${o.voice}` : o.id}
     >
       <span className="picker-voice-avatar">
         <VoiceAvatar choice={{ provider: o.provider, id: o.id }} size={40} />
         {selected && <Check size={12} className="picker-voice-check" aria-hidden />}
       </span>
-      <span className="picker-voice-name">{meta.name}</span>
+      <span className="picker-voice-name">{name}</span>
       <span className="picker-voice-sub">
-        {glyph} {meta.accent ? `${meta.accent} · ${meta.gender}` : o.provider}
+        {glyph} {meta.accent ? `${meta.accent} · ${meta.gender}` : "Orpheus"}
       </span>
     </button>
   );

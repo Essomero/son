@@ -58,16 +58,19 @@ export function resolveChoice(
   saved?: Settings,
 ): Choice | null {
   const wanted = saved?.[cap] ?? DEFAULT_CHOICES[cap];
-  if (
-    wanted &&
-    options.some(
-      (o) =>
-        o.provider === wanted.provider &&
-        o.id === wanted.id &&
-        (!wanted.voice || o.voice === wanted.voice),
-    )
-  ) {
-    return wanted;
+  const match = wanted
+    ? options.find(
+        (o) =>
+          o.provider === wanted.provider &&
+          o.id === wanted.id &&
+          (!wanted.voice || o.voice === wanted.voice),
+      )
+    : undefined;
+  if (match) {
+    // Old saved choices predate the voice field (cloud TTS entries all
+    // share one model id) — adopt the roster's voice so exactly one card
+    // matches instead of all of them.
+    return !wanted.voice && match.voice ? { ...wanted, voice: match.voice } : wanted;
   }
   const first = options[0];
   return first ? { provider: first.provider, id: first.id } : null;

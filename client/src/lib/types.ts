@@ -8,17 +8,21 @@ export interface Role {
   content?: string;
 }
 
-/** One entry from the bot's /models roster: {provider, id, label}. */
+/** One entry from the bot's /models roster: {provider, id, label}.
+ *  Cloud TTS entries may carry a `voice` (e.g. Orpheus voices); id is the
+ *  model name there, so id alone can't round-trip the pick. */
 export interface ModelOption {
   provider: string;
   id: string;
   label?: string;
+  voice?: string;
 }
 
 /** A per-capability pick as stored in localStorage and sent in custom_data. */
 export interface Choice {
   provider: string;
   id: string;
+  voice?: string;
 }
 
 /** Output formats for the read page's Export panel (server-side ffmpeg). */

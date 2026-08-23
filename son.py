@@ -151,6 +151,10 @@ STT_PROVIDER_ENV_KEYS = {
 }
 TTS_PROVIDER_ENV_KEYS = {"kokoro": None, "groq": "GROQ_API_KEY", "gemini": "GEMINI_API_KEY"}
 
+# Groq's Orpheus TTS accepts exactly these voice ids (API-enforced).
+ORPHEUS_VOICES = ("autumn", "diana", "hannah", "austin", "daniel", "troy")
+ORPHEUS_DEFAULT_VOICE = "hannah"
+
 
 def google_stt_available() -> bool:
     """Cloud Speech-to-Text V2 needs real, usable Google credentials — a
@@ -429,7 +433,10 @@ def resolve_speak_voice(payload: dict) -> tuple[str, str | None, str | None]:
     if provider == "kokoro":
         model, voice = None, choice.get("id")
     else:
-        model, voice = choice.get("id"), None
+        model, voice = choice.get("id"), choice.get("voice")
+    if provider == "groq" and voice not in ORPHEUS_VOICES:
+        logger.warning(f"Groq TTS voice '{voice}' invalid; using '{ORPHEUS_DEFAULT_VOICE}'")
+        voice = ORPHEUS_DEFAULT_VOICE
     return provider, model, voice
 
 
@@ -831,6 +838,13 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> Non
             tts_choice["voice"] = tts_choice["id"]
     elif tts_choice.get("id"):
         tts_choice["model"] = tts_choice["id"]
+    # Groq's Orpheus TTS enforces its voice roster server-side; a kokoro
+    # voice id (the merged default) would 400 the whole turn.
+    if tts_choice.get("provider") == "groq" and tts_choice.get("voice") not in ORPHEUS_VOICES:
+        logger.warning(
+            f"Groq TTS voice '{tts_choice.get('voice')}' invalid; using '{ORPHEUS_DEFAULT_VOICE}'"
+        )
+        tts_choice["voice"] = ORPHEUS_DEFAULT_VOICE
 
     logger.info(
         f"Session: role={role_file} "
@@ -1058,8 +1072,10 @@ def _fetch_models() -> dict:
                 stt.append({"provider": "groq", "id": mid, "label": mid})
             elif low.startswith(("playai", "cartesia", "eleven")) or "tts" in low or "orpheus" in low:
                 # canopylabs/orpheus-* is Groq's TTS model (guard/safety ids
-                # hide mid-string, so match substrings, not prefixes)
-                tts.append({"provider": "groq", "id": mid, "label": mid})
+                # hide mid-string, so match substrings, not prefixes). The
+                # API enforces its voice roster, so offer one entry per voice.
+                for voice in ORPHEUS_VOICES:
+                    tts.append({"provider": "groq", "id": mid, "voice": voice, "label": f"Orpheus · {voice}"})
             elif "prompt-guard" not in low and "safeguard" not in low:
                 llm.append({"provider": "groq", "id": mid, "label": mid})
 

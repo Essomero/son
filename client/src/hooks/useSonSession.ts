@@ -272,7 +272,8 @@ export function useSonSession() {
         // Inline literals: client-js's Serializable requires an index
         // signature, which TS interfaces (Choice) don't satisfy. Absent picks
         // go as null (Serializable; the server treats them as unset).
-        const toPlain = (c?: Choice) => (c ? { provider: c.provider, id: c.id } : null);
+        const toPlain = (c?: Choice) =>
+          c ? { provider: c.provider, id: c.id, ...(c.voice ? { voice: c.voice } : {}) } : null;
         await client.startBotAndConnect({
           endpoint: BOT_ENDPOINT,
           requestData: {

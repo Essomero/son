@@ -79,7 +79,7 @@ export function Picker({ options, value, onChange, variant = "list", placeholder
 
   const pick = useCallback(
     (o: ModelOption) => {
-      onChange({ provider: o.provider, id: o.id });
+      onChange({ provider: o.provider, id: o.id, ...(o.voice ? { voice: o.voice } : {}) });
       setOpen(false);
     },
     [onChange],

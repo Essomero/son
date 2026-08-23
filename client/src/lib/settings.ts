@@ -25,6 +25,12 @@ export const FALLBACK_MODELS: Models = {
     { provider: "groq", id: "whisper-large-v3-turbo", label: "whisper-large-v3-turbo" },
   ],
   tts: [
+    ...["autumn", "diana", "hannah", "austin", "daniel", "troy"].map((v) => ({
+      provider: "groq",
+      id: "canopylabs/orpheus-v1-english",
+      voice: v,
+      label: `Orpheus · ${v}`,
+    })),
     { provider: "kokoro", id: "af_heart", label: "af_heart" },
     { provider: "kokoro", id: "af_bella", label: "af_bella" },
     { provider: "kokoro", id: "am_adam", label: "am_adam" },
@@ -52,7 +58,15 @@ export function resolveChoice(
   saved?: Settings,
 ): Choice | null {
   const wanted = saved?.[cap] ?? DEFAULT_CHOICES[cap];
-  if (wanted && options.some((o) => o.provider === wanted.provider && o.id === wanted.id)) {
+  if (
+    wanted &&
+    options.some(
+      (o) =>
+        o.provider === wanted.provider &&
+        o.id === wanted.id &&
+        (!wanted.voice || o.voice === wanted.voice),
+    )
+  ) {
     return wanted;
   }
   const first = options[0];

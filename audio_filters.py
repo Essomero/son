@@ -26,7 +26,14 @@ audio_in_filter), BEFORE VAD and every STT provider:
 Env knobs (all optional):
   SON_DENOISE         1|0 — noise suppression on/off (default on when the
                            pipecat rnnoise extra is installed)
-  SON_AGC             1|0 — quiet-speech AGC on/off (default on)
+  SON_AGC             1|0 — quiet-speech AGC on/off (default OFF: the raw
+                           mic here is well-leveled, and measured live the
+                           gain pump degrades BOTH local STTs — parakeet
+                           decoded the raw turn verbatim but lost words on
+                           the AGC'd one — and its idle boost lifts the
+                           browser AEC's echo residue into a VAD "turn"
+                           (the original garbage transcripts). Set to 1 on
+                           a quieter setup.)
   SON_AGC_TARGET_DB   mid-band target in dBFS (default -18)
   SON_AGC_LOW_TARGET_DB   low-band (0-1 kHz) target (default -25)
   SON_AGC_HIGH_TARGET_DB  high-band (3.5-8 kHz) target (default -20)
@@ -351,7 +358,7 @@ def build_input_filter() -> BaseAudioFilter | None:
     filters: list[BaseAudioFilter] = []
     if os.getenv("SON_DENOISE", "1") != "0":
         filters.append(RNNoiseFilter())
-    if os.getenv("SON_AGC", "1") != "0":
+    if os.getenv("SON_AGC", "0") != "0":
         filters.append(
             MultibandAGCFilter(
                 mid_target_db=float(os.getenv("SON_AGC_TARGET_DB", "-18")),

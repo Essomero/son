@@ -30,7 +30,7 @@ Env knobs (all optional):
   SON_AGC_TARGET_DB   mid-band target in dBFS (default -18)
   SON_AGC_LOW_TARGET_DB   low-band (0-1 kHz) target (default -25)
   SON_AGC_HIGH_TARGET_DB  high-band (3.5-8 kHz) target (default -20)
-  SON_AGC_MAX_DB      max gain per band in dB (default +24)
+  SON_AGC_MAX_DB      max gain per band in dB (default +48)
   SON_AGC_GATE_DB     low-band gate in dBFS; the speech bands gate 10 dB
                       lower so the quietest speech still gets gain
                       (default -45)
@@ -264,6 +264,12 @@ class MultibandAGCFilter(BaseAudioFilter):
     gain releases toward 1.0 so silence isn't amplified (which would feed
     VAD false turns). The speech bands gate 10 dB lower than the low band
     so the quietest speech still gets gain while room noise doesn't pump.
+
+    Defaults (max +48 dB, low gate -70 dBFS) are set for soft talkers —
+    measured live: natural speech lands ~-50..-75 dBFS band RMS on quiet
+    mics, which the old +24/-45 defaults gated out entirely. Safe because
+    RNNoise runs first: the post-suppression noise floor is ~-100 dBFS,
+    far below any gate here.
     """
 
     def __init__(
@@ -271,8 +277,8 @@ class MultibandAGCFilter(BaseAudioFilter):
         mid_target_db: float = -18.0,
         low_target_db: float = -25.0,
         high_target_db: float = -20.0,
-        max_gain_db: float = 24.0,
-        gate_db: float = -45.0,
+        max_gain_db: float = 48.0,
+        gate_db: float = -70.0,
     ) -> None:
         self._targets = [10 ** (t / 20) for t in (low_target_db, mid_target_db, high_target_db)]
         self._max_gain = 10 ** (max_gain_db / 20)

@@ -14,6 +14,7 @@ export const SESSIONS_URL = BOT_BASE + "/sessions";
 export const SPEAK_URL = BOT_BASE + "/speak";
 export const EXPORT_URL = BOT_BASE + "/export";
 export const EXPORT_DEFAULTS_URL = BOT_BASE + "/export/defaults";
+export const CLEANUP_URL = BOT_BASE + "/cleanup";
 // Root-absolute like the others: the chat route /s/<id> puts the page at a
 // different depth, so a relative "roles.json" would resolve under /s/... and
 // 404. Every fetch must use these, not a bare relative path.
@@ -24,6 +25,35 @@ let uidCounter = 0;
 export function uid(): string {
   uidCounter += 1;
   return `m${Date.now().toString(36)}-${uidCounter}`;
+}
+
+/**
+ * Punctuation/formatting pass for web-speech finals. Browser finals arrive
+ * via RTVI send-text and never enter the server's cleanup pipeline, so the
+ * client asks the server to normalize them with the same model/prompt/guard.
+ * Returns "" on any failure (server down, cleanup disabled, timeout) — the
+ * caller falls back to the raw text: a turn must never stall on cleanup.
+ */
+export async function cleanTranscript(text: string): Promise<string> {
+  try {
+    const ctl = new AbortController();
+    const timer = window.setTimeout(() => ctl.abort(), 4000);
+    try {
+      const r = await fetch(CLEANUP_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text }),
+        signal: ctl.signal,
+      });
+      if (!r.ok) return "";
+      const d = (await r.json()) as { text?: unknown };
+      return typeof d.text === "string" ? d.text.trim() : "";
+    } finally {
+      window.clearTimeout(timer);
+    }
+  } catch {
+    return "";
+  }
 }
 
 /**

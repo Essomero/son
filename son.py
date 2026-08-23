@@ -27,6 +27,7 @@ import time
 import wave
 from functools import lru_cache
 from pathlib import Path
+from typing import Callable
 
 import httpx
 from dotenv import load_dotenv
@@ -119,13 +120,102 @@ STT_CLEANUP_SYSTEM_PROMPT = (
     "input is a single word or fragment, output it as-is."
 )
 
+# Web-speech finals need FORMATTING only: the browser path's transcript is
+# already faithful (no repeats, few fillers), so the web pass adds
+# punctuation/casing/spacing and touches nothing else — no filler removal,
+# no dedup, no restructuring (the 0.6B normalizer happily rewrites "and
+# milk eggs and bread" into a bulleted list; it must not here). The pipeline
+# keeps the full normalizer prompt above.
+STT_CLEANUP_WEB_PROMPT = (
+    "You are a text formatter for speech-to-text transcripts. Add missing "
+    "punctuation and fix casing and spacing only — for lists of items that "
+    "means commas between them ('milk eggs and bread' -> 'milk, eggs, and "
+    "bread'), never bullets or newlines. Do not remove, add, reword, "
+    "reorder, or restructure anything the speaker said — keep fillers "
+    "('um', 'uh'), repeats, and the original word order exactly as they "
+    "are. Output ONLY the formatted text as one continuous line. If the "
+    "input is a single word or fragment, output it as-is."
+)
+
 # Words the cleanup stage may drop without losing meaning; every other
-# raw word must survive cleaning verbatim (see the guard in _clean).
-CLEANUP_FILLERS = {"um", "uh", "hmm", "hm", "ah", "er", "eh"}
+# raw word must survive cleaning verbatim (see the guard in _clean). The
+# fillers, plus the leading discourse markers the normalizer also drops
+# (live: "um so i need to..." -> "I need to...") — a discarded "so" is
+# worth more than losing the whole cleaned sentence to the guard.
+CLEANUP_FILLERS = {"um", "uh", "hmm", "hm", "ah", "er", "eh", "so", "well", "like", "oh", "yeah", "okay"}
 
 
 def _norm_words(s: str) -> set[str]:
-    return {w for w in re.findall(r"[a-z']+", s.lower())} - CLEANUP_FILLERS
+    # Apostrophe-stripped so contractions match their un-contracted form
+    # ("Let's" == "lets") — an apostrophe is punctuation, not a new word;
+    # without this the guard rejects a perfect "lets" -> "Let's".
+    return {w.replace("'", "") for w in re.findall(r"[a-z']+", s.lower())} - CLEANUP_FILLERS
+
+
+async def _clean_transcript_text(
+    text: str,
+    model: str,
+    client: httpx.AsyncClient,
+    prompt: str,
+    on_guard: Callable[[str], None] | None = None,
+) -> str:
+    """One normalizer pass (model on `client`) with the word-survival guard.
+    Shared by the pipeline stage (TranscriptCleanupProcessor, full cleanup
+    prompt) and the /cleanup route (web-speech finals, format-only prompt).
+    Returns "" on any failure — callers fall back to the raw text."""
+
+    async def once() -> str:
+        r = await client.post(
+            "/chat/completions",
+            json={
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": prompt},
+                    {"role": "user", "content": text},
+                ],
+                "temperature": 0,
+                "max_tokens": 1024,
+            },
+        )
+        r.raise_for_status()
+        msg = r.json()["choices"][0]["message"]
+        # s1-mini writes its answer in the reasoning channel — LM Studio
+        # returns it as reasoning_content and leaves content empty.
+        return (msg.get("content") or msg.get("reasoning_content") or "").strip()
+
+    try:
+        cleaned = await once()
+        if not cleaned:
+            # s1-mini occasionally emits nothing at all (empty reasoning
+            # channel); one retry before falling back to the raw text.
+            cleaned = await once()
+        # The formatter sometimes answers as a bulleted list no matter what
+        # the prompt says ("...bought:\n- Milk\n- Eggs\n- Bread"). Flatten
+        # deterministically so a list never reaches the transcript.
+        cleaned = re.sub(r"(?m)^\s*[•*\-]\s*", "", cleaned)
+        cleaned = re.sub(r"\s*\n\s*", " ", cleaned).strip()
+        missing = _norm_words(text) - _norm_words(cleaned)
+        if cleaned and missing:
+            # The normalizer sometimes "normalizes" by deleting or rewriting
+            # words the speaker actually said (live: 'I love spreadsheets,
+            # what's exciting about yours?' -> 'What's exciting about yours?',
+            # and 'The last purchase was exciting about yours' -> a
+            # same-length rewrite). A word-count ratio can't catch same-length
+            # rewrites, so require every raw word (minus fillers) to survive.
+            # Losing the user's words is worse than the raw text — fall back
+            # to it.
+            logger.warning(
+                f"cleanup dropped words {sorted(missing)!r} "
+                f"({text!r} -> {cleaned!r}); keeping raw"
+            )
+            if on_guard:
+                on_guard(f"GUARD keep raw (missing {sorted(missing)!r}): {text!r} -> {cleaned!r}")
+            return ""
+        return cleaned
+    except Exception as e:
+        logger.warning(f"Transcript cleanup failed, passing raw text through: {e}")
+        return ""
+
 
 # --- Model providers ----------------------------------------------------------
 # A provider is enabled only when its API key is present in .env (same pattern
@@ -778,55 +868,9 @@ class TranscriptCleanupProcessor(FrameProcessor):
         await self.push_frame(frame, direction)
 
     async def _clean(self, text: str) -> str:
-        async def once() -> str:
-            r = await self._client.post(
-                "/chat/completions",
-                json={
-                    "model": self._model,
-                    "messages": [
-                        {"role": "system", "content": STT_CLEANUP_SYSTEM_PROMPT},
-                        {"role": "user", "content": text},
-                    ],
-                    "temperature": 0,
-                    "max_tokens": 1024,
-                },
-            )
-            r.raise_for_status()
-            msg = r.json()["choices"][0]["message"]
-            # s1-mini writes its answer in the reasoning channel — LM Studio
-            # returns it as reasoning_content and leaves content empty.
-            return (msg.get("content") or msg.get("reasoning_content") or "").strip()
-
-        try:
-            cleaned = await once()
-            if not cleaned:
-                # s1-mini occasionally emits nothing at all (empty reasoning
-                # channel); one retry before falling back to the raw text.
-                cleaned = await once()
-            missing = _norm_words(text) - _norm_words(cleaned)
-            if cleaned and missing:
-                # s1-mini sometimes "normalizes" by deleting or rewriting
-                # words the speaker actually said (live: 'I love
-                # spreadsheets, what's exciting about yours?' -> 'What's
-                # exciting about yours?', and 'The last purchase was
-                # exciting about yours' -> a same-length rewrite). A
-                # word-count ratio can't catch same-length rewrites, so
-                # require every raw word (minus fillers) to survive.
-                # Losing the user's words is worse than the raw text —
-                # fall back to it.
-                logger.warning(
-                    f"cleanup dropped words {sorted(missing)!r} "
-                    f"({text!r} -> {cleaned!r}); keeping raw"
-                )
-                self._debug_log(
-                    f"GUARD keep raw (missing {sorted(missing)!r}): "
-                    f"{text!r} -> {cleaned!r}"
-                )
-                return ""
-            return cleaned
-        except Exception as e:
-            logger.warning(f"Transcript cleanup failed, passing raw text through: {e}")
-            return ""
+        return await _clean_transcript_text(
+            text, self._model, self._client, STT_CLEANUP_SYSTEM_PROMPT, self._debug_log
+        )
 
     async def cleanup(self):
         await self._client.aclose()
@@ -1342,6 +1386,49 @@ if __name__ == "__main__":
             logger.warning(f"/speak failed ({provider}): {e}")
             raise HTTPException(status_code=502, detail=f"Speech failed: {e}")
         return Response(content=wav, media_type="audio/wav")
+
+    @app.post("/cleanup", include_in_schema=False)
+    def cleanup(payload: dict = Body(...)) -> dict:
+        """Punctuation/formatting pass for browser-side STT. Web-speech finals
+        arrive via RTVI send-text and never enter TranscriptCleanupProcessor,
+        so the client normalizes them here with the same model/prompt/guard
+        before the brain sees the turn. Server-side STT (parakeet/groq/…)
+        cleans in-pipeline and never calls this route. Failures return the
+        original text — cleanup must never stall a turn."""
+        text = (payload.get("text") or "").strip()
+        if not text:
+            raise HTTPException(status_code=400, detail="Nothing to clean.")
+        if not STT_CLEANUP_MODEL:
+            raise HTTPException(
+                status_code=503,
+                detail="Cleanup disabled: set STT_CLEANUP_MODEL (a local model, e.g. on LM Studio).",
+            )
+
+        async def run() -> str:
+            # A fresh client per call: httpx pools are bound to the event
+            # loop the client was created in, and each asyncio.run spins a
+            # new loop — a reused client dies with "Event loop is closed".
+            # (The pipeline's processor keeps one client for its lifetime:
+            # the pipecat loop never changes.)
+            client = httpx.AsyncClient(
+                base_url=STT_CLEANUP_BASE_URL,
+                headers=(
+                    {"Authorization": f"Bearer {os.getenv('LMSTUDIO_API_KEY')}"}
+                    if os.getenv("LMSTUDIO_API_KEY")
+                    else {}
+                ),
+                timeout=20.0,
+            )
+            try:
+                # Web-speech finals are format-only: punctuation, casing,
+                # spacing — nothing else (see STT_CLEANUP_WEB_PROMPT).
+                return await _clean_transcript_text(
+                    text, STT_CLEANUP_MODEL, client, STT_CLEANUP_WEB_PROMPT
+                )
+            finally:
+                await client.aclose()
+
+        return {"text": asyncio.run(run()) or text}
 
     def unique_path(dst: Path) -> Path:
         """If dst exists, pick the next Finder-style name — "read (2).mp3",

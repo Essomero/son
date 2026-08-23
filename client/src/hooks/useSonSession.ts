@@ -18,6 +18,7 @@ import type { Choice, Msg, Models, Phase, Role, SessionMeta, Settings } from "..
 import {
   mergeBotText,
   mergeUserText,
+  cleanTranscript,
   BOT_ENDPOINT,
   MODELS_URL,
   ROLES_URL,
@@ -379,7 +380,7 @@ export function useSonSession() {
     }
   }, []);
 
-  const sendText = useCallback((text: string) => {
+  const sendText = useCallback((text: string, commit = true) => {
     const client = clientRef.current;
     if (!client || !text.trim()) return;
     // Typed messages ride the RTVI send-text message: the server appends the
@@ -389,6 +390,9 @@ export function useSonSession() {
     client.sendText(text, { run_immediately: true }).catch((e) => {
       console.warn("[Son] sendText failed:", e);
     });
+    // flushPending already committed its row (possibly cleaned); a second
+    // merge would duplicate the text or swallow a newer row.
+    if (!commit) return;
     const next = mergeUserText(messagesRef.current, text, true);
     messagesRef.current = next;
     setMessages(next);
@@ -416,17 +420,39 @@ export function useSonSession() {
   // (people pause mid-thought), so finals accumulate and only send after a
   // silence window — a pause isn't end-of-turn until the silence holds.
   const pendingUserRef = useRef("");
+  // The transcript row currently showing the pending text. mergeUserText
+  // builds a NEW row object on every merge (interim or finalize), so as long
+  // as the object is still the last row nothing newer has superseded it.
+  const pendingRowRef = useRef<Msg | null>(null);
   const sendTimerRef = useRef<number | null>(null);
   const PAUSE_SEND_MS = 900;
 
-  const flushPending = useCallback(() => {
+  const flushPending = useCallback(async () => {
     if (sendTimerRef.current !== null) {
       window.clearTimeout(sendTimerRef.current);
       sendTimerRef.current = null;
     }
     const text = pendingUserRef.current.trim();
     pendingUserRef.current = "";
-    if (text) sendText(text);
+    const row = pendingRowRef.current;
+    pendingRowRef.current = null;
+    if (!text) return;
+    // Web-speech finals bypass the server's cleanup pipeline (they arrive via
+    // send-text, stt=None server-side), so give the segment the same
+    // punctuation/formatting pass before the brain sees it. Any failure
+    // returns "" — send the raw text; a turn must never stall on cleanup.
+    const cleaned = (await cleanTranscript(text)) || text;
+    const msgs = messagesRef.current;
+    if (row && msgs[msgs.length - 1] === row) {
+      // Still the open row: finalize it with the cleaned text in place —
+      // the same live flip the server pipeline's cleanup does for its
+      // transcripts. If a newer interim replaced the row while we cleaned,
+      // leave it alone (its own flush will finalize it).
+      const next = mergeUserText(msgs, cleaned, true);
+      messagesRef.current = next;
+      setMessages(next);
+    }
+    sendText(cleaned, false);
   }, [sendText]);
 
   const onSpeechResult = useCallback(
@@ -451,6 +477,7 @@ export function useSonSession() {
           : mergeUserText(msgs, joined, false);
       messagesRef.current = next;
       setMessages(next);
+      pendingRowRef.current = next[next.length - 1];
       if (sendTimerRef.current !== null) window.clearTimeout(sendTimerRef.current);
       sendTimerRef.current = window.setTimeout(flushPending, PAUSE_SEND_MS);
     },

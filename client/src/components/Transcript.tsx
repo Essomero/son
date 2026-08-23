@@ -7,7 +7,7 @@
  * - auto-scrolls while you're near the bottom; stops if you scroll up
  */
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Send } from "lucide-react";
 
 import type { Choice, Msg, Phase, Role } from "../lib/types";
@@ -39,18 +39,6 @@ export function Transcript({
   const scrollRef = useRef<HTMLDivElement>(null);
   const stickRef = useRef(true);
 
-  // The web-speech cleanup hides the raw final behind a loading bubble; size
-  // that bubble to this session's average user utterance (~7.5px per char at
-  // 14.5px type) so the cleaned text lands without a layout jump. Fresh
-  // sessions fall back to a typical utterance length.
-  const avgUtterance = useMemo(() => {
-    const lens = messages
-      .filter((m) => m.role === "user" && m.final && m.base)
-      .map((m) => m.base.length);
-    if (!lens.length) return 64;
-    return lens.reduce((a, b) => a + b, 0) / lens.length;
-  }, [messages]);
-
   useEffect(() => {
     const el = scrollRef.current;
     if (el && stickRef.current) el.scrollTop = el.scrollHeight;
@@ -76,14 +64,20 @@ export function Transcript({
                 <span className="row-name">You</span>
                 <div className="bubble">
                   {m.pending && !m.final ? (
-                    <span
-                      className="bubble-loading"
-                      aria-label="Normalizing your speech…"
-                      style={{ minWidth: `${Math.min(Math.max(avgUtterance * 7.5, 90), 300)}px` }}
-                    >
-                      <span className="dot" />
-                      <span className="dot" />
-                      <span className="dot" />
+                    <span className="bubble-loading" aria-label="Normalizing your speech…">
+                      {/* The raw final is invisible but sizes the bubble to
+                          exactly that utterance's footprint (same wrap
+                          points) — the cleaned text differs by a few chars,
+                          so the swap lands in place, not on a generic
+                          average bubble. */}
+                      <span className="bubble-loading-sizer" aria-hidden>
+                        {m.text}
+                      </span>
+                      <span className="bubble-loading-dots" aria-hidden>
+                        <span className="dot" />
+                        <span className="dot" />
+                        <span className="dot" />
+                      </span>
                     </span>
                   ) : (
                     <Markdown>{m.text}</Markdown>

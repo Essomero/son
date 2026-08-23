@@ -791,10 +791,20 @@ code {
   border-radius: var(--r-md) 4px var(--r-md) var(--r-md);
 }
 
-/* The web-speech cleanup loading bubble: the raw final is hidden until the
-   cleaned text lands, and the bubble is pre-sized to the session's average
-   utterance (inline min-width) so nothing shifts on the swap. */
+/* The web-speech cleanup loading bubble: the raw final is never shown, but
+   an invisible copy inside the bubble sizes it to exactly that utterance's
+   text footprint (same wrap points), so the cleaned text lands in place. */
 .bubble-loading {
+  position: relative;
+  display: inline-block;
+  min-width: 60px; /* room for the dots on a bare fragment like "yes." */
+}
+.bubble-loading-sizer {
+  visibility: hidden;
+}
+.bubble-loading-dots {
+  position: absolute;
+  inset: 0;
   display: inline-flex;
   align-items: center;
   gap: 5px;

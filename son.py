@@ -3,7 +3,8 @@
 # Default stack (every capability is swappable in the client settings panel,
 # gated by which API keys are present in .env):
 #   - STT:  Groq (whisper-large-v3-turbo)  — cloud, free tier (also:
-#           OpenRouter when its key is set, Parakeet TDT local ONNX)
+#           OpenRouter when its key is set, Parakeet TDT + streaming
+#           zipformer local ONNX)
 #   - LLM:  Groq (openai/gpt-oss-120b)     — cloud, free tier (also:
 #           DeepSeek / Gemini / OpenRouter when their keys are set)
 #   - TTS:  Kokoro-82M (local, ONNX on CPU) — no cloud, no cost
@@ -74,6 +75,7 @@ from pipecat.transports.smallwebrtc.transport import SmallWebRTCTransport
 from pipecat.workers.runner import WorkerRunner
 
 import parakeet_stt
+import streaming_stt
 import sessions_store as sessions
 
 load_dotenv(override=True)
@@ -423,6 +425,11 @@ def build_stt_service(provider: str, model: str):
         # Local NVIDIA Parakeet TDT via sherpa-onnx (ONNX on CPU). The model
         # (~660 MB) downloads once into ~/.cache/son/parakeet on first use.
         return parakeet_stt.ParakeetSTTService(model=model)
+    if provider == "streaming":
+        # Local streaming zipformer via sherpa-onnx (ONNX on CPU): partial
+        # transcriptions land while the user talks, the web-speech feel,
+        # fully on-device (see streaming_stt.py).
+        return streaming_stt.StreamingSTTService(model=model)
     if provider == "whisper-local":
         # Fine-tuned whisper via whisper.cpp. whisper.cpp's /inference isn't
         # OpenAI-shaped, so the whisper_local.py shim bridges the multipart
@@ -957,6 +964,8 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> Non
         if stt_provider == "whisper-local"
         else parakeet_stt.parakeet_stt_available()
         if stt_provider == "parakeet"
+        else streaming_stt.streaming_stt_available()
+        if stt_provider == "streaming"
         else bool(os.getenv(STT_PROVIDER_ENV_KEYS.get(stt_provider, "")))
     )
     if not stt_available:
@@ -1344,6 +1353,9 @@ def _fetch_models() -> dict:
     if parakeet_stt.parakeet_stt_available():
         for mid, label in parakeet_stt.PARAKEET_MODELS.items():
             stt.append({"provider": "parakeet", "id": mid, "label": label})
+    if streaming_stt.streaming_stt_available():
+        for mid, label in streaming_stt.STREAMING_MODELS.items():
+            stt.append({"provider": "streaming", "id": mid, "label": label})
     # Browser-side STT (Chrome's SpeechRecognition): no server audio path,
     # text lands via RTVI send-text. Chrome-only by nature.
     stt.append({"provider": "web-speech", "id": "browser", "label": "Browser · Web Speech"})

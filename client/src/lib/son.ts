@@ -37,7 +37,10 @@ export function uid(): string {
 export async function cleanTranscript(text: string): Promise<string> {
   try {
     const ctl = new AbortController();
-    const timer = window.setTimeout(() => ctl.abort(), 4000);
+    // 10 s, not 4: the loading bubble hides the wait, and a cold-loaded
+    // local model (LM Studio unloads after idle) needs ~9 s on CPU — a 4 s
+    // cap silently degraded every first turn to raw text.
+    const timer = window.setTimeout(() => ctl.abort(), 10000);
     try {
       const r = await fetch(CLEANUP_URL, {
         method: "POST",

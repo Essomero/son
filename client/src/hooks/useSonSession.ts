@@ -477,32 +477,53 @@ export function useSonSession() {
   const sendTimerRef = useRef<number | null>(null);
   const PAUSE_SEND_MS = 900;
 
+  // A flush's cleanup round-trip can outlive the 900 ms silence window: if
+  // new finals land while it is in flight they build a NEW row object, so a
+  // later flush (which cleans the row's FULL text) must be the one to
+  // finalize and send. Concurrent flushes would both send and leave the
+  // row pending forever — keep one at a time.
+  const flushingRef = useRef(false);
   const flushPending = useCallback(async () => {
     if (sendTimerRef.current !== null) {
       window.clearTimeout(sendTimerRef.current);
       sendTimerRef.current = null;
     }
-    const text = pendingUserRef.current.trim();
-    pendingUserRef.current = "";
+    if (flushingRef.current) {
+      // Another flush is mid-cleanup: re-arm so the row's latest final still
+      // gets its finalize once that cleanup finishes, instead of leaving a
+      // pending row with no timer left to land it.
+      sendTimerRef.current = window.setTimeout(flushPending, PAUSE_SEND_MS);
+      return;
+    }
     const row = pendingRowRef.current;
-    pendingRowRef.current = null;
-    if (!text) return;
-    // Web-speech finals bypass the server's cleanup pipeline (they arrive via
-    // send-text, stt=None server-side), so give the segment the same
-    // punctuation/formatting pass before the brain sees it. Any failure
-    // returns "" — send the raw text; a turn must never stall on cleanup.
-    const cleaned = (await cleanTranscript(text)) || text;
+    if (!row) return;
     const msgs = messagesRef.current;
-    if (row && msgs[msgs.length - 1] === row) {
-      // Still the open row: finalize it with the cleaned text in place —
-      // the same live flip the server pipeline's cleanup does for its
-      // transcripts. If a newer interim replaced the row while we cleaned,
-      // leave it alone (its own flush will finalize it).
-      const next = mergeUserText(msgs, cleaned, true);
+    if (msgs[msgs.length - 1] !== row) return; // superseded — that row's flush owns it
+    flushingRef.current = true;
+    try {
+      // The row's OWN text is the truth (it holds every final joined so far);
+      // cleaning a snapshot instead would send half an utterance and the
+      // finalize would replace the joined row with a fragment.
+      const text = row.text;
+      // Web-speech finals bypass the server's cleanup pipeline (they arrive via
+      // send-text, stt=None server-side), so give the segment the same
+      // punctuation/formatting pass before the brain sees it. Any failure
+      // returns "" — send the raw text; a turn must never stall on cleanup.
+      const cleaned = (await cleanTranscript(text)) || text;
+      const now = messagesRef.current;
+      // Finals landed while we were cleaning (the row grew and got its own
+      // re-armed timer): step aside — the next flush cleans and sends the
+      // whole utterance in one go. Nothing is sent twice here either.
+      if (pendingRowRef.current !== row || now[now.length - 1] !== row) return;
+      const next = mergeUserText(now, cleaned, true); // finalize in place, pending: false
       messagesRef.current = next;
       setMessages(next);
+      pendingRowRef.current = null;
+      pendingUserRef.current = ""; // the next utterance's join starts fresh
+      sendText(cleaned, false);
+    } finally {
+      flushingRef.current = false;
     }
-    sendText(cleaned, false);
   }, [sendText]);
 
   const onSpeechResult = useCallback(
@@ -567,6 +588,8 @@ export function useSonSession() {
     setSessionId(sessionIdRef.current);
     setMessages([]);
     messagesRef.current = [];
+    pendingRowRef.current = null; // a pending speech row must not outlive the chat
+    pendingUserRef.current = "";
     setActiveBotId(null);
     setSpeaking(false);
     setMuted(false);
@@ -623,6 +646,8 @@ export function useSonSession() {
         setRole(r);
       setMessages(stored);
       messagesRef.current = stored;
+      pendingRowRef.current = null; // a pending speech row must not outlive the resume
+      pendingUserRef.current = "";
       pushSessionRoute(meta.id); // the URL now names this chat — reload reopens it
       await connect({ role: r, sessionId: meta.id, force: true });
     },

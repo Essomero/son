@@ -45,6 +45,12 @@ export function useAudioAnalyzer({ micTrack, botAudio: botAudioRef, active, micP
   const botAnalyserRef = useRef<AnalyserNode | null>(null);
   const botSourceRef = useRef<MediaElementAudioSourceNode | null>(null);
   const rafRef = useRef<number>(0);
+  // Read inside the rAF loop (which lives in the effect closure) — the
+  // prop itself must not tear the loop down on every pulse.
+  const micPulseRef = useRef(false);
+  useEffect(() => {
+    micPulseRef.current = !!micPulse;
+  }, [micPulse]);
 
   const subscribe = useCallback(
     (kind: "mic" | "bot", cb: LevelSubscriber) => {
@@ -132,7 +138,7 @@ export function useAudioAnalyzer({ micTrack, botAudio: botAudioRef, active, micP
           d = sample(analyser);
         } else {
           // A rounded hump that swells with sound and decays on silence.
-          pulse = micPulse ? 1 : pulse * 0.88;
+          pulse = micPulseRef.current ? 1 : pulse * 0.88;
           const bars = new Array<number>(BAR_COUNT);
           for (let i = 0; i < BAR_COUNT; i++) {
             bars[i] = pulse * (0.55 + 0.45 * Math.sin((i / BAR_COUNT) * Math.PI));

@@ -91,6 +91,9 @@ export function useSonSession() {
   const botAudioRef = useRef<HTMLAudioElement | null>(null);
   const mutedRef = useRef(false);
   const micTrackRef = useRef<MediaStreamTrack | null>(null);
+  /** Web-speech mode: a mic stream held ONLY for the waveform — never sent
+   *  to the transport (enableMic is off). Stopped on disconnect. */
+  const wsMicStreamRef = useRef<MediaStream | null>(null);
   const messagesRef = useRef<Msg[]>([]);
   const speakingHintRef = useRef<number | null>(null);
   // sessionId read at connect() time; resumeSession sets it directly (a state
@@ -218,11 +221,26 @@ export function useSonSession() {
           onConnected: () => {
             setPhase("connected");
             setStatus("Connected — you can talk.");
+            if (webSpeech) {
+              // No transport mic track in this mode — grab a stream purely
+              // for the waveform (never sent anywhere).
+              void navigator.mediaDevices
+                .getUserMedia({ audio: true })
+                .then((stream) => {
+                  wsMicStreamRef.current = stream;
+                  const t = stream.getAudioTracks()[0];
+                  if (t) setMicTrack(t);
+                })
+                .catch((e) => console.warn("[Son] waveform mic unavailable:", e));
+            }
           },
           onDisconnected: () => {
             setPhase("disconnected");
             setStatus("Disconnected.");
             browserSpeech.cancel();
+            flushPending();
+            wsMicStreamRef.current?.getTracks().forEach((t) => t.stop());
+            wsMicStreamRef.current = null;
             stopBotAudio();
             setMicTrack(null); // fresh session = fresh mic state
             setMuted(false);
@@ -394,22 +412,55 @@ export function useSonSession() {
 
   const webSpeech = settings.stt?.provider === "web-speech";
   const [micPulse, setMicPulse] = useState(false);
+  // Recognized-but-unsent text. The Web Speech API finalizes on ANY pause
+  // (people pause mid-thought), so finals accumulate and only send after a
+  // silence window — a pause isn't end-of-turn until the silence holds.
+  const pendingUserRef = useRef("");
+  const sendTimerRef = useRef<number | null>(null);
+  const PAUSE_SEND_MS = 900;
+
+  const flushPending = useCallback(() => {
+    if (sendTimerRef.current !== null) {
+      window.clearTimeout(sendTimerRef.current);
+      sendTimerRef.current = null;
+    }
+    const text = pendingUserRef.current.trim();
+    pendingUserRef.current = "";
+    if (text) sendText(text);
+  }, [sendText]);
+
   const onSpeechResult = useCallback(
     (text: string, final: boolean) => {
       if (final) {
-        sendText(text);
+        // Append to the pending utterance and restart the silence window.
+        const p = pendingUserRef.current;
+        const joined =
+          p && !p.endsWith(" ") && !text.startsWith(" ") ? `${p} ${text}` : `${p}${text}`;
+        pendingUserRef.current = joined;
+        const next = mergeUserText(messagesRef.current, joined, false);
+        messagesRef.current = next;
+        setMessages(next);
+        if (sendTimerRef.current !== null) window.clearTimeout(sendTimerRef.current);
+        sendTimerRef.current = window.setTimeout(flushPending, PAUSE_SEND_MS);
         return;
       }
       // The user started talking — cut the bot off (barge-in, browser TTS).
       browserSpeech.cancel();
-      const next = mergeUserText(messagesRef.current, text, false);
+      const msgs = messagesRef.current;
+      const last = msgs[msgs.length - 1];
+      const preview = pendingUserRef.current ? `${pendingUserRef.current} ${text}` : text;
+      const next =
+        last?.role === "user" && last.final && !pendingUserRef.current
+          ? [...msgs, { id: uid(), role: "user", text: preview, final: false, base: "", spans: [] }]
+          : mergeUserText(msgs, preview, false);
       messagesRef.current = next;
       setMessages(next);
     },
-    [sendText, browserSpeech.cancel],
+    [flushPending, browserSpeech.cancel],
   );
   // No mic track exists in web-speech mode — the waveform ring is driven
-  // by the recognition's sound events instead.
+  // by the recognition's sound events instead (until the waveform stream
+  // above lands, and as a fallback if it fails).
   useWebSpeech(onSpeechResult, webSpeech && phase === "connected", setMicPulse);
 
   const disconnect = useCallback(async () => {

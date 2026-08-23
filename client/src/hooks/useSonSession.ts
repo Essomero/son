@@ -431,30 +431,28 @@ export function useSonSession() {
 
   const onSpeechResult = useCallback(
     (text: string, final: boolean) => {
-      if (final) {
-        // Append to the pending utterance and restart the silence window.
-        const p = pendingUserRef.current;
-        const joined =
-          p && !p.endsWith(" ") && !text.startsWith(" ") ? `${p} ${text}` : `${p}${text}`;
-        pendingUserRef.current = joined;
-        const next = mergeUserText(messagesRef.current, joined, false);
-        messagesRef.current = next;
-        setMessages(next);
-        if (sendTimerRef.current !== null) window.clearTimeout(sendTimerRef.current);
-        sendTimerRef.current = window.setTimeout(flushPending, PAUSE_SEND_MS);
+      if (!final) {
+        // Interims morph as the engine refines them — never show them; only
+        // stable finals land in the transcript (the Groq-style UX). The
+        // event is still the "user started talking" signal (barge-in).
+        browserSpeech.cancel();
         return;
       }
-      // The user started talking — cut the bot off (barge-in, browser TTS).
-      browserSpeech.cancel();
+      // Append to the pending utterance and restart the silence window.
+      const p = pendingUserRef.current;
+      const joined =
+        p && !p.endsWith(" ") && !text.startsWith(" ") ? `${p} ${text}` : `${p}${text}`;
+      pendingUserRef.current = joined;
       const msgs = messagesRef.current;
       const last = msgs[msgs.length - 1];
-      const preview = pendingUserRef.current ? `${pendingUserRef.current} ${text}` : text;
       const next =
-        last?.role === "user" && last.final && !pendingUserRef.current
-          ? [...msgs, { id: uid(), role: "user", text: preview, final: false, base: "", spans: [] }]
-          : mergeUserText(msgs, preview, false);
+        last?.role === "user" && last.final
+          ? [...msgs, { id: uid(), role: "user", text: joined, final: false, base: "", spans: [] }]
+          : mergeUserText(msgs, joined, false);
       messagesRef.current = next;
       setMessages(next);
+      if (sendTimerRef.current !== null) window.clearTimeout(sendTimerRef.current);
+      sendTimerRef.current = window.setTimeout(flushPending, PAUSE_SEND_MS);
     },
     [flushPending, browserSpeech.cancel],
   );

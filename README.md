@@ -51,7 +51,7 @@ During client development, `cd client && npm run dev` serves the page with hot r
 
 ## Ubuntu
 
-Son runs on Ubuntu out of the box — no GPU, no audio drivers. The `uv sync` above resolves on Linux (manylinux wheels for both x86_64 and aarch64, Python 3.11–3.14), and both local models run on CPU: Parakeet STT idles around 480 MB RAM with short CPU bursts during a turn, Kokoro TTS the same. The server does no local audio I/O — the browser handles mic and speakers over WebRTC — so nothing ALSA/PulseAudio-related needs installing.
+Son runs on Ubuntu out of the box — no GPU, no audio drivers. The `uv sync` above resolves on Linux (manylinux wheels for both x86_64 and aarch64, Python 3.11–3.14), and both local models run on CPU: Parakeet STT idles around 480 MB RAM with short CPU bursts during a turn; Piper TTS (the default voice) is a 61 MB ONNX model that streams its first audio in ~50 ms, with the bigger Kokoro available alongside. The server does no local audio I/O — the browser handles mic and speakers over WebRTC — so nothing ALSA/PulseAudio-related needs installing.
 
 Run it the same way: `uv run python son.py` (wrap it in systemd or tmux if you want it daemonized; `scripts/make_son_app.sh` is macOS-only). Two footguns worth knowing:
 
@@ -126,7 +126,7 @@ Click ⚙ to pick, per session:
 
 - **Brain** — the reasoning/chat model (Groq, Cerebras, DeepSeek, Gemini, OpenRouter, or a local LM Studio server).
 - **Speech-to-text** — how your voice becomes text (Groq Whisper, Google, OpenRouter, **NVIDIA Parakeet TDT** — a fully local ONNX model, no API key; the ~660 MB model downloads once on first use into `~/.cache/son/parakeet` — or **whisper-small-son**, a whisper fine-tuned on the author's voice and served locally by whisper.cpp; its second generation was retrained on soft/noisy audio for quiet speech). Set `STT_CLEANUP_MODEL` (e.g. `s1-mini` on LM Studio) and every final utterance is run through a local text normalizer before the brain sees it — Parakeet's raw transcript (no punctuation, "um"/"uh", repeats) arrives as clean prose. Before any provider sees it, mic audio goes through a clean-and-magnify stage: RNNoise denoise plus a per-band quiet-speech AGC (90 Hz high-pass, then 0–1 / 1–3.5 / 3.5–8 kHz bands normalized to −25 / −18 / −20 dBFS) that lifts the speech band even when low-frequency energy dominates — without amplifying silence.
-- **Voice** — the voice that reads replies (local Kokoro, or Groq/Gemini cloud TTS).
+- **Voice** — the voice that reads replies (local Piper — the fast default — or Kokoro, Groq/Gemini cloud TTS, browser speechSynthesis).
 
 Choices are saved in the browser and sent with each connection; the server falls back to the defaults if a provider's key is missing. Kokoro voices are synthesized on your machine; the others stream from their provider.
 

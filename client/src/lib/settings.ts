@@ -11,7 +11,7 @@ const SETTINGS_KEY = "son.settings";
 export const DEFAULT_CHOICES: Record<Capability, Choice> = {
   llm: { provider: "groq", id: "openai/gpt-oss-120b" },
   stt: { provider: "parakeet", id: "csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8" },
-  tts: { provider: "kokoro", id: "af_heart" },
+  tts: { provider: "piper", id: "en_US-amy-medium" },
 };
 
 // If the bot isn't running the picker still needs a usable roster.
@@ -26,6 +26,10 @@ export const FALLBACK_MODELS: Models = {
     { provider: "web-speech", id: "browser", label: "Browser · Web Speech" },
   ],
   tts: [
+    { provider: "piper", id: "en_US-amy-medium", voice: "Amy (medium)", label: "Piper · Amy (medium)" },
+    { provider: "piper", id: "en_US-lessac-medium", voice: "Lessac (medium)", label: "Piper · Lessac (medium)" },
+    { provider: "piper", id: "en_US-ryan-high", voice: "Ryan (high)", label: "Piper · Ryan (high)" },
+    { provider: "piper", id: "en_US-hfc_male-medium", voice: "HFC Male (medium)", label: "Piper · HFC Male (medium)" },
     ...["autumn", "diana", "hannah", "austin", "daniel", "troy"].map((v) => ({
       provider: "groq",
       id: "canopylabs/orpheus-v1-english",

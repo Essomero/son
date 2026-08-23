@@ -222,7 +222,9 @@ function VoiceOption({
   onPick: () => void;
 }) {
   const meta = voiceMeta(o.id);
-  const glyph = meta.isKokoro ? meta.flag : "🛰️";
+  // Local providers get a local glyph; the satellite reads as "cloud" and
+  // would lie next to "Piper · local".
+  const glyph = meta.isKokoro ? meta.flag : o.provider === "piper" ? "🗣️" : "🛰️";
   const name = o.voice ? o.voice.charAt(0).toUpperCase() + o.voice.slice(1) : meta.name;
   return (
     <button
@@ -240,7 +242,14 @@ function VoiceOption({
       </span>
       <span className="picker-voice-name">{name}</span>
       <span className="picker-voice-sub">
-        {glyph} {meta.accent ? `${meta.accent} · ${meta.gender}` : "Orpheus"}
+        {glyph}{" "}
+        {meta.accent
+          ? `${meta.accent} · ${meta.gender}`
+          : o.provider === "browser"
+            ? "Browser · Google"
+            : o.provider === "piper"
+              ? "Piper · local"
+              : "Orpheus"}
       </span>
     </button>
   );

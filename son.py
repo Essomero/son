@@ -152,6 +152,7 @@ STT_PROVIDER_ENV_KEYS = {
 TTS_PROVIDER_ENV_KEYS = {
     "kokoro": None,
     "browser": None,  # Chrome speechSynthesis: the client speaks the text itself
+    "piper": None,  # local piper1-gpl (piper-tts): in-process ONNX, no key
     "groq": "GROQ_API_KEY",
     "gemini": "GEMINI_API_KEY",
 }
@@ -168,6 +169,20 @@ BROWSER_TTS_VOICES = {
 # Groq's Orpheus TTS accepts exactly these voice ids (API-enforced).
 ORPHEUS_VOICES = ("autumn", "diana", "hannah", "austin", "daniel", "troy")
 ORPHEUS_DEFAULT_VOICE = "hannah"
+
+# Piper (piper1-gpl) — a tiny ONNX engine that runs in-process on CPU and
+# streams its first audio in ~50 ms (kokoro's TTFB on a laptop is ~1.5 s for
+# comparison; piper is also ~real-time for full sentences). id → display
+# name; the roster is also the allowlist (the service would happily download
+# ANY voice name — we only offer these).
+PIPER_VOICES = {
+    "en_US-amy-medium": "Amy (medium)",
+    "en_US-lessac-medium": "Lessac (medium)",
+    "en_US-ryan-high": "Ryan (high)",
+    "en_US-hfc_male-medium": "HFC Male (medium)",
+}
+PIPER_DEFAULT_VOICE = "en_US-amy-medium"
+PIPER_MODEL_DIR = Path(os.getenv("PIPER_MODEL_DIR", str(Path.home() / ".cache/son/piper")))
 
 
 def google_stt_available() -> bool:
@@ -351,6 +366,22 @@ def build_tts_service(provider: str, model: str | None, voice: str | None):
         return GeminiTTSService(
             api_key=os.getenv("GEMINI_API_KEY"),
             settings=GeminiTTSService.Settings(model=model, voice=voice),
+            text_filters=filters,
+        )
+    if provider == "piper":
+        # piper-tts is GPL-3 — import lazily so plain son.py runs don't pay
+        # the import cost, and a missing package only fails this branch.
+        # Full module path: the package __init__ doesn't re-export the service.
+        from pipecat.services.piper.tts import PiperTTSService
+
+        # The client sends the piper voice id as `id` → model (display names
+        # arrive in `voice` and are not model names): accept roster ids only.
+        vid = model if model in PIPER_VOICES else None
+        if vid is None and voice in PIPER_VOICES:
+            vid = voice
+        return PiperTTSService(
+            settings=PiperTTSService.Settings(voice=vid or PIPER_DEFAULT_VOICE),
+            download_dir=PIPER_MODEL_DIR,
             text_filters=filters,
         )
     raise ValueError(f"Unknown TTS provider: {provider}")
@@ -819,7 +850,7 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> Non
     defaults = {
         "llm": {"provider": "groq", "model": GROQ_MODEL},
         "stt": {"provider": "parakeet", "model": "csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8"},
-        "tts": {"provider": "kokoro", "model": None, "voice": KOKORO_VOICE},
+        "tts": {"provider": "piper", "model": PIPER_DEFAULT_VOICE, "voice": None},
     }
 
     llm_choice = {**defaults["llm"], **(custom_data.get("llm") or {})}
@@ -1241,6 +1272,9 @@ def _fetch_models() -> dict:
 
     for voice in KOKORO_VOICES:
         tts.append({"provider": "kokoro", "id": voice, "label": voice})
+    # Piper local voices — in-process ONNX, no API key, first audio in ~50 ms.
+    for vid, vname in PIPER_VOICES.items():
+        tts.append({"provider": "piper", "id": vid, "voice": vname, "label": f"Piper · {vname}"})
     # Browser-native TTS (Chrome speechSynthesis, Google neural voices): no
     # server audio path — the client speaks the streamed text. Voice names
     # vary per browser/OS; the client resolves and falls back.

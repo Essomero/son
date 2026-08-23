@@ -95,6 +95,16 @@ export function useSonSession() {
   const [sessionId, setSessionId] = useState<string>(() => newId());
 
   const clientRef = useRef<PipecatClient | null>(null);
+  // Connection-generation counter: every connect/disconnect/newSession/
+  // resumeSession bumps it, and a connect that finds itself stale (a newer
+  // flow started while it was initializing) aborts before reaching the
+  // server instead of opening a second, unowned pipeline for the same chat.
+  // (clientRef, the synchronous owner slot, is what the callbacks gate on;
+  // the generation only covers the window before a client can be replaced.)
+  // Needed because a client that is still in initDevices has no peer
+  // connection, so the transport's stop() is a no-op — calling disconnect()
+  // on it does NOT cancel it.
+  const connectGenRef = useRef(0);
   const botAudioRef = useRef<HTMLAudioElement | null>(null);
   const mutedRef = useRef(false);
   const micTrackRef = useRef<MediaStreamTrack | null>(null);
@@ -214,6 +224,7 @@ export function useSonSession() {
       const r = roleOverride ?? role;
       if (!r) return;
       if (!opts?.force && (phase === "connected" || phase === "connecting")) return;
+      const gen = ++connectGenRef.current; // this connect owns the lifecycle now
       if (opts?.sessionId) sessionIdRef.current = opts.sessionId;
       setSessionId(sessionIdRef.current);
       setPhase("connecting");
@@ -229,6 +240,7 @@ export function useSonSession() {
         enableCam: false,
         callbacks: {
           onConnected: () => {
+            if (clientRef.current !== client) return; // superseded — never claim the phase
             setPhase("connected");
             setStatus("Connected — you can talk.");
             if (webSpeech) {
@@ -245,6 +257,9 @@ export function useSonSession() {
             }
           },
           onDisconnected: () => {
+            // A superseded client's teardown isn't ours to run (its close
+            // events can arrive while a newer client owns the lifecycle).
+            if (clientRef.current !== client) return;
             setPhase("disconnected");
             setStatus("Disconnected.");
             browserSpeech.cancel();
@@ -258,8 +273,12 @@ export function useSonSession() {
             setActiveBotId(null);
             setSpeaking(false);
           },
-          onBotReady: () => setStatus("Connected — you can talk."),
+          onBotReady: () => {
+            if (clientRef.current !== client) return;
+            setStatus("Connected — you can talk.");
+          },
           onError: (err: RTVIMessage) => {
+            if (clientRef.current !== client) return; // a newer flow owns the status now
             console.error("[Son] connect error", err);
             setStatus(`Error: ${errorMessage(err)}`);
           },
@@ -283,6 +302,7 @@ export function useSonSession() {
           },
           onTrackStopped: () => stopBotAudio(),
           onUserTranscript: (data: { text?: string; final?: boolean; timestamp?: string }) => {
+            if (clientRef.current !== client) return; // superseded — its events aren't ours
             if (!data?.text) return;
             // timestamp lets mergeUserText swap the raw STT final for the
             // cleaned one when the cleanup stage resends it.
@@ -291,6 +311,7 @@ export function useSonSession() {
             setMessages(next);
           },
           onBotOutput: (data: { text?: string }) => {
+            if (clientRef.current !== client) return; // superseded — its events aren't ours
             if (!data?.text) return;
             const fresh = freshBotRowRef.current;
             freshBotRowRef.current = false;
@@ -342,6 +363,15 @@ export function useSonSession() {
         // session hangs in "connecting" forever. Init explicitly here, inside
         // the click gesture.
         if (webSpeech) await client.initDevices();
+        if (gen !== connectGenRef.current) {
+          // A newer connect/disconnect/resume took over while we were
+          // initializing. A client this early has no peer connection, so
+          // disconnect() alone would be a no-op — bail before /start, or this
+          // orphaned connect opens a second pipeline for the same chat.
+          await client.disconnect().catch(() => {});
+          if (clientRef.current === client) clientRef.current = null;
+          return;
+        }
         await client.startBotAndConnect({
           endpoint: BOT_ENDPOINT,
           requestData: {
@@ -360,7 +390,18 @@ export function useSonSession() {
             },
           },
         });
+        if (gen !== connectGenRef.current) {
+          // Superseded while the connection was being established: the peer
+          // connection now exists, so disconnect() tears it down for real.
+          await client.disconnect().catch(() => {});
+          if (clientRef.current === client) clientRef.current = null;
+        }
       } catch (err) {
+        if (gen !== connectGenRef.current) {
+          await client.disconnect().catch(() => {});
+          if (clientRef.current === client) clientRef.current = null;
+          return;
+        }
         console.error("[Son] connect rejected", err);
         clientRef.current = null;
         setPhase("ready");
@@ -504,6 +545,7 @@ export function useSonSession() {
   useWebSpeech(onSpeechResult, webSpeech && phase === "connected", setMicPulse);
 
   const disconnect = useCallback(async () => {
+    connectGenRef.current += 1; // an in-flight connect is now stale
     const client = clientRef.current;
     if (!client) return;
     setStatus("Disconnecting…");
@@ -515,6 +557,7 @@ export function useSonSession() {
    *  finished session's row is already in sqlite — written live by the
    *  server's write-through context — so it stays in the panel. */
   const newSession = useCallback(async () => {
+    connectGenRef.current += 1; // an in-flight connect must not outlive the chat switch
     const client = clientRef.current;
     if (client) {
       await client.disconnect().catch(() => {});
@@ -551,6 +594,7 @@ export function useSonSession() {
       }
       // End any live call before switching — the write-through context has
       // already persisted everything finalized.
+      connectGenRef.current += 1; // an in-flight connect must not outlive the resume
       const client = clientRef.current;
       if (client) {
         await client.disconnect().catch(() => {});

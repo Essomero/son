@@ -57,14 +57,17 @@ async function loadRoles(): Promise<Role[]> {
   }
 }
 
-async function loadModels(): Promise<Models | null> {
+async function loadModels(): Promise<{ models: Models | null; cleanup: boolean }> {
   try {
     const res = await fetch(MODELS_URL, { signal: AbortSignal.timeout(6000) });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return (await res.json()) as Models;
+    const data = (await res.json()) as Models & { cleanup?: boolean };
+    // cleanup: the server's transcript-cleanup stage is on (STT_CLEANUP_MODEL
+    // set) — the client hides raw web-speech text behind a loading bubble.
+    return { models: data, cleanup: Boolean(data.cleanup) };
   } catch {
     console.warn("[Son] /models unreachable — using fallback list");
-    return null; // caller shows FALLBACK_MODELS and a retry affordance
+    return { models: null, cleanup: false }; // caller shows FALLBACK_MODELS and a retry affordance
   }
 }
 
@@ -79,6 +82,9 @@ export function useSonSession() {
   const [role, setRole] = useState<Role | null>(null);
   const [models, setModels] = useState<Models | null>(null);
   const [modelsLoading, setModelsLoading] = useState(false);
+  // The server's transcript-cleanup stage is on: web-speech finals show a
+  // loading bubble instead of raw text until the cleaned version lands.
+  const [cleanupOn, setCleanupOn] = useState(false);
   const [settings, setSettings] = useState<Settings>(() => readSettings());
   const [messages, setMessages] = useState<Msg[]>([]);
   const [muted, setMuted] = useState(false);
@@ -107,7 +113,10 @@ export function useSonSession() {
 
   useEffect(() => {
     void loadRoles().then(setRoles);
-    void loadModels().then(setModels);
+    void loadModels().then((m) => {
+      setModels(m.models);
+      setCleanupOn(m.cleanup);
+    });
   }, []);
 
   // Keep refs in sync so event callbacks (which live outside React) see the
@@ -471,17 +480,23 @@ export function useSonSession() {
       pendingUserRef.current = joined;
       const msgs = messagesRef.current;
       const last = msgs[msgs.length - 1];
-      const next =
+      const merged =
         last?.role === "user" && last.final
           ? [...msgs, { id: uid(), role: "user", text: joined, final: false, base: "", spans: [] }]
           : mergeUserText(msgs, joined, false);
+      // Cleanup on: the raw final is never shown — the row waits behind a
+      // loading bubble until flushPending lands the cleaned text.
+      const next =
+        cleanupOn && merged[merged.length - 1]?.role === "user"
+          ? [...merged.slice(0, -1), { ...merged[merged.length - 1], pending: true }]
+          : merged;
       messagesRef.current = next;
       setMessages(next);
       pendingRowRef.current = next[next.length - 1];
       if (sendTimerRef.current !== null) window.clearTimeout(sendTimerRef.current);
       sendTimerRef.current = window.setTimeout(flushPending, PAUSE_SEND_MS);
     },
-    [flushPending, browserSpeech.cancel],
+    [flushPending, browserSpeech.cancel, cleanupOn],
   );
   // No mic track exists in web-speech mode — the waveform ring is driven
   // by the recognition's sound events instead (until the waveform stream
@@ -580,7 +595,9 @@ export function useSonSession() {
   const refreshModels = useCallback(async () => {
     setModelsLoading(true);
     try {
-      setModels(await loadModels());
+      const m = await loadModels();
+      setModels(m.models);
+      setCleanupOn(m.cleanup);
     } finally {
       setModelsLoading(false);
     }

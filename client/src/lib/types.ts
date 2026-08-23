@@ -73,4 +73,7 @@ export interface Msg {
    *  stage resends a cleaned final with the raw final's timestamp, so a
    *  matching `ts` replaces the span in place instead of appending. */
   spans?: { ts?: string; text: string }[];
+  /** user rows (web-speech with cleanup on): the raw final is hidden behind
+   *  a loading bubble until the cleaned text lands — never shown as-is. */
+  pending?: boolean;
 }

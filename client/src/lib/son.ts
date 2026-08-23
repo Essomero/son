@@ -99,7 +99,14 @@ export function mergeUserText(msgs: Msg[], text: string, final: boolean, ts?: st
     if (final && !ts && !last.final && !last.spans?.length) {
       return [
         ...msgs.slice(0, -1),
-        { ...last, text, final: true, base: text, spans: [{ ts: undefined, text }] },
+        {
+          ...last,
+          text,
+          final: true,
+          base: text,
+          spans: [{ ts: undefined, text }],
+          pending: false, // a finalized row never shows the loading bubble
+        },
       ];
     }
     const spans = last.spans ?? [];
@@ -109,7 +116,10 @@ export function mergeUserText(msgs: Msg[], text: string, final: boolean, ts?: st
         const next = [...spans];
         next[i] = { ...next[i], text };
         const base = next.map((s) => s.text).join(" ");
-        return [...msgs.slice(0, -1), { ...last, spans: next, base, text: base, final: true }];
+        return [
+          ...msgs.slice(0, -1),
+          { ...last, spans: next, base, text: base, final: true, pending: false },
+        ];
       }
     }
     const nextSpans = final ? [...spans, { ts, text }] : spans;
@@ -117,7 +127,14 @@ export function mergeUserText(msgs: Msg[], text: string, final: boolean, ts?: st
     const nextText = base ? `${base} ${text}` : text;
     return [
       ...msgs.slice(0, -1),
-      { ...last, spans: nextSpans, text: nextText, final: final || last.final, base },
+      {
+        ...last,
+        spans: nextSpans,
+        text: nextText,
+        final: final || last.final,
+        base,
+        pending: final ? false : last.pending,
+      },
     ];
   }
   const spans = final ? [{ ts, text }] : [];

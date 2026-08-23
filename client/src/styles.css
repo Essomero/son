@@ -791,6 +791,42 @@ code {
   border-radius: var(--r-md) 4px var(--r-md) var(--r-md);
 }
 
+/* The web-speech cleanup loading bubble: the raw final is hidden until the
+   cleaned text lands, and the bubble is pre-sized to the session's average
+   utterance (inline min-width) so nothing shifts on the swap. */
+.bubble-loading {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 20px;
+}
+.bubble-loading .dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.3;
+  animation: bubble-loading-dot 1.2s ease-in-out infinite;
+}
+.bubble-loading .dot:nth-child(2) {
+  animation-delay: 0.15s;
+}
+.bubble-loading .dot:nth-child(3) {
+  animation-delay: 0.3s;
+}
+@keyframes bubble-loading-dot {
+  0%,
+  60%,
+  100% {
+    opacity: 0.3;
+    transform: translateY(0);
+  }
+  30% {
+    opacity: 1;
+    transform: translateY(-3px);
+  }
+}
+
 /* The bot ring canvas sits behind its avatar while that message speaks.
    Sizing is explicit ON PURPOSE: an unsized canvas lays out at its own
    attribute size, and drawRing sizes the buffer from clientWidth — those

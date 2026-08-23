@@ -1341,7 +1341,9 @@ if __name__ == "__main__":
         if _MODELS_CACHE is None or now - _MODELS_CACHE_AT > _MODELS_TTL:
             _MODELS_CACHE = _fetch_models()
             _MODELS_CACHE_AT = now
-        return _MODELS_CACHE
+        # Whether the transcript cleanup stage is on: the client hides the
+        # raw web-speech text behind a loading bubble when it's available.
+        return {**_MODELS_CACHE, "cleanup": bool(STT_CLEANUP_MODEL)}
 
     @app.get("/sessions")
     def sessions_list() -> list[dict]:

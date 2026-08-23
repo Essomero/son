@@ -17,9 +17,7 @@ const ID_TO_NAME: Record<string, string> = {
   "google-uk-english-male": "Google UK English Male",
 };
 
-function pickVoice(voiceId?: string): SpeechSynthesisVoice | null {
-  const synth = window.speechSynthesis;
-  const voices = synth.getVoices();
+function pickVoice(voices: SpeechSynthesisVoice[], voiceId?: string): SpeechSynthesisVoice | null {
   if (!voices.length) return null;
   const exact = voiceId ? voices.find((v) => v.name === ID_TO_NAME[voiceId]) : undefined;
   if (exact) return exact;
@@ -35,6 +33,19 @@ export function useBrowserSpeech(enabled: boolean, voiceId?: string) {
   const pendingRef = useRef(0);
   const enabledRef = useRef(enabled);
   enabledRef.current = enabled;
+  // Chrome populates getVoices() asynchronously; keep a cache that refreshes
+  // on voiceschanged so the first utterance already picks the right voice.
+  const voicesRef = useRef<SpeechSynthesisVoice[]>([]);
+  useEffect(() => {
+    const synth = window.speechSynthesis;
+    if (!synth) return;
+    const update = () => {
+      voicesRef.current = synth.getVoices();
+    };
+    update();
+    synth.addEventListener?.("voiceschanged", update);
+    return () => synth.removeEventListener?.("voiceschanged", update);
+  }, []);
 
   const markEnd = useCallback(() => {
     pendingRef.current = Math.max(0, pendingRef.current - 1);
@@ -46,7 +57,7 @@ export function useBrowserSpeech(enabled: boolean, voiceId?: string) {
       if (!enabledRef.current || !text.trim()) return;
       const synth = window.speechSynthesis;
       if (!synth) return;
-      const voice = pickVoice(voiceId);
+      const voice = pickVoice(voicesRef.current, voiceId);
       // Sentence-chunk so speech starts streaming in as the reply grows
       // (each utterance also resets Chrome's ~15s speech-synthesis pause).
       const sentences = text.split(/(?<=[.!?…])\s+/).filter(Boolean);

@@ -30,6 +30,27 @@ export function useWebSpeech(onResult: ResultHandler, enabled: boolean) {
     rec.continuous = true;
     rec.interimResults = true;
     rec.lang = "en-US";
+    // Best-effort on-device recognition (Chrome's processLocally): keeps the
+    // audio on this machine when a language pack is installed. Otherwise
+    // recognition stays server-based (cloud) and we kick off the pack
+    // download — future sessions will be local too.
+    try {
+      if (typeof SR.available === "function") {
+        void SR.available({ langs: ["en-US"], processLocally: true }).then(
+          async (status: string) => {
+            if (status === "available") {
+              rec.processLocally = true;
+            } else if (status === "downloadable" || status === "downloading") {
+              console.log("[Son] Installing on-device speech pack (en-US)…");
+              const ok = await SR.install({ langs: ["en-US"] });
+              if (ok) console.log("[Son] On-device speech pack installed");
+            }
+          },
+        );
+      }
+    } catch {
+      /* older Chrome — cloud recognition only */
+    }
     rec.onresult = (e: any) => {
       for (let i = e.resultIndex; i < e.results.length; ++i) {
         const r = e.results[i];

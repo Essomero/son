@@ -15,9 +15,15 @@ function speechRecognitionCtor(): any | null {
   return w.SpeechRecognition || w.webkitSpeechRecognition || null;
 }
 
-export function useWebSpeech(onResult: ResultHandler, enabled: boolean) {
+export function useWebSpeech(
+  onResult: ResultHandler,
+  enabled: boolean,
+  onSound?: (active: boolean) => void,
+) {
   const handlerRef = useRef(onResult);
   handlerRef.current = onResult;
+  const soundRef = useRef(onSound);
+  soundRef.current = onSound;
 
   useEffect(() => {
     if (!enabled) return;
@@ -57,6 +63,10 @@ export function useWebSpeech(onResult: ResultHandler, enabled: boolean) {
         if (r?.[0]?.transcript) handlerRef.current(r[0].transcript, r.isFinal);
       }
     };
+    // The mic waveform has no track to tap in this mode (enableMic=false),
+    // so the UI drives its ring from these sound events instead.
+    rec.onsoundstart = () => soundRef.current?.(true);
+    rec.onsoundend = () => soundRef.current?.(false);
     rec.onerror = (e: any) => {
       // "not-allowed"/"service-not-allowed" is permanent — stop restarting.
       if (e.error === "not-allowed" || e.error === "service-not-allowed") {

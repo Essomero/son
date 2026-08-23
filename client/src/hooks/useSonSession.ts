@@ -393,6 +393,7 @@ export function useSonSession() {
   }, [browserTTS, browserSpeech.speaking]);
 
   const webSpeech = settings.stt?.provider === "web-speech";
+  const [micPulse, setMicPulse] = useState(false);
   const onSpeechResult = useCallback(
     (text: string, final: boolean) => {
       if (final) {
@@ -407,7 +408,9 @@ export function useSonSession() {
     },
     [sendText, browserSpeech.cancel],
   );
-  useWebSpeech(onSpeechResult, webSpeech && phase === "connected");
+  // No mic track exists in web-speech mode — the waveform ring is driven
+  // by the recognition's sound events instead.
+  useWebSpeech(onSpeechResult, webSpeech && phase === "connected", setMicPulse);
 
   const disconnect = useCallback(async () => {
     const client = clientRef.current;
@@ -536,5 +539,6 @@ export function useSonSession() {
     sendText,
     updateSettings,
     refreshModels,
+    micPulse,
   };
 }

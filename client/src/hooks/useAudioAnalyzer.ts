@@ -28,9 +28,12 @@ interface AnalyzerOpts {
   botAudio: { current: HTMLAudioElement | null };
   /** Whether the session is live (the loop runs only while connected). */
   active: boolean;
+  /** Web-speech mode: no mic track exists, so this pulse (driven by the
+   *  recognition's sound events) synthesizes the mic ring. */
+  micPulse?: boolean;
 }
 
-export function useAudioAnalyzer({ micTrack, botAudio: botAudioRef, active }: AnalyzerOpts) {
+export function useAudioAnalyzer({ micTrack, botAudio: botAudioRef, active, micPulse }: AnalyzerOpts) {
   const [subscribers] = useState(() => ({
     mic: new Set<LevelSubscriber>(),
     bot: new Set<LevelSubscriber>(),
@@ -117,10 +120,25 @@ export function useAudioAnalyzer({ micTrack, botAudio: botAudioRef, active }: An
       return { level: data.length ? sum / BAR_COUNT : 0, bars };
     };
 
+    // Decaying synthetic level for the no-track (web-speech) mic ring.
+    let pulse = 0;
+
     const loop = () => {
       if (cancelled) return;
       if (subscribers.mic.size) {
-        const d = sample(micAnalyserRef.current);
+        const analyser = micAnalyserRef.current;
+        let d: LevelData;
+        if (analyser) {
+          d = sample(analyser);
+        } else {
+          // A rounded hump that swells with sound and decays on silence.
+          pulse = micPulse ? 1 : pulse * 0.88;
+          const bars = new Array<number>(BAR_COUNT);
+          for (let i = 0; i < BAR_COUNT; i++) {
+            bars[i] = pulse * (0.55 + 0.45 * Math.sin((i / BAR_COUNT) * Math.PI));
+          }
+          d = { level: pulse, bars };
+        }
         for (const cb of subscribers.mic) cb(d);
       }
       if (subscribers.bot.size) {

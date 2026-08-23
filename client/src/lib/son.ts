@@ -62,6 +62,16 @@ export function mergeUserText(msgs: Msg[], text: string, final: boolean, ts?: st
   if (!text) return msgs;
   const last = msgs[msgs.length - 1];
   if (last?.role === "user") {
+    // Web-speech path: finals arrive WITHOUT a ts while the last row holds
+    // the interim preview (no spans yet). Appending would duplicate the
+    // text — finalize in place instead (a corrected final replaces the
+    // preview).
+    if (final && !ts && !last.final && !last.spans?.length) {
+      return [
+        ...msgs.slice(0, -1),
+        { ...last, text, final: true, base: text, spans: [{ ts: undefined, text }] },
+      ];
+    }
     const spans = last.spans ?? [];
     if (final && ts) {
       const i = spans.findIndex((s) => s.ts === ts);

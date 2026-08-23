@@ -807,7 +807,9 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> Non
 
     stt_choice = {**defaults["stt"], **(custom_data.get("stt") or {})}
     stt_provider = stt_choice.get("provider")
-    stt_available = (
+    # "web-speech" is a browser-side STT (Chrome's SpeechRecognition): no
+    # server service, text arrives via RTVI send-text. Keyless, always on.
+    stt_available = stt_provider == "web-speech" or (
         google_stt_available()
         if stt_provider == "google"
         else whisper_local_available()
@@ -854,7 +856,11 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> Non
         + (f" cleanup={STT_CLEANUP_MODEL}" if STT_CLEANUP_MODEL else "")
     )
 
-    stt = build_stt_service(stt_choice["provider"], stt_choice.get("model"))
+    stt = (
+        None
+        if stt_choice["provider"] == "web-speech"  # text arrives via RTVI send-text
+        else build_stt_service(stt_choice["provider"], stt_choice.get("model"))
+    )
     llm = build_llm_service(llm_choice["provider"], llm_choice.get("model"), instruction)
     tts = build_tts_service(tts_choice["provider"], tts_choice.get("model"), tts_choice.get("voice"))
 
@@ -916,8 +922,9 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> Non
     stages = [
         transport.input(),
         SegmentCaptureProcessor(),  # repeat-capture roll (debug instrument)
-        stt,
     ]  # user audio -> speech -> text
+    if stt is not None:
+        stages.append(stt)  # absent for web-speech: text comes from the browser
     if cleanup:
         stages.append(cleanup)  # ... -> clean the raw transcript
     stages.extend(
@@ -1183,6 +1190,9 @@ def _fetch_models() -> dict:
     if parakeet_stt.parakeet_stt_available():
         for mid, label in parakeet_stt.PARAKEET_MODELS.items():
             stt.append({"provider": "parakeet", "id": mid, "label": label})
+    # Browser-side STT (Chrome's SpeechRecognition): no server audio path,
+    # text lands via RTVI send-text. Chrome-only by nature.
+    stt.append({"provider": "web-speech", "id": "browser", "label": "Browser · Web Speech"})
 
     # Fine-tuned voice-model whisper: listed when the whisper.cpp server is up.
     if whisper_local_available():

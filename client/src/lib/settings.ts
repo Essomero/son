@@ -23,6 +23,7 @@ export const FALLBACK_MODELS: Models = {
   stt: [
     { provider: "parakeet", id: "csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8", label: "parakeet-tdt-0.6b-v3 · local" },
     { provider: "groq", id: "whisper-large-v3-turbo", label: "whisper-large-v3-turbo" },
+    { provider: "web-speech", id: "browser", label: "Browser · Web Speech" },
   ],
   tts: [
     ...["autumn", "diana", "hannah", "austin", "daniel", "troy"].map((v) => ({

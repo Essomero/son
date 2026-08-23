@@ -27,6 +27,7 @@ import {
   errorMessage,
 } from "../lib/son";
 import { readSettings, saveSettings } from "../lib/settings";
+import { useWebSpeech } from "./useWebSpeech";
 import { loadCustomRoles, saveCustomRoles } from "../lib/customRoles";
 import { pushHomeRoute, pushSessionRoute } from "../lib/chatRoute";
 
@@ -205,9 +206,12 @@ export function useSonSession() {
       setStatus("Connecting…");
       freshBotRowRef.current = true;
 
+      const webSpeech = settings.stt?.provider === "web-speech";
       const client = new PipecatClient({
         transport: new SmallWebRTCTransport(),
-        enableMic: true,
+        // Browser-side STT: no mic track at all — the server VAD/STT must
+        // never hear this audio (text arrives via send-text instead).
+        enableMic: !webSpeech,
         enableCam: false,
         callbacks: {
           onConnected: () => {
@@ -335,6 +339,26 @@ export function useSonSession() {
     messagesRef.current = next;
     setMessages(next);
   }, []);
+
+  // Browser-side STT (Chrome's Web Speech API): finals ride send-text into
+  // the LLM (sendText mirrors them into the transcript); interims preview
+  // live through the same merge path as STT partials. Runs only while
+  // connected in web-speech mode; the mic track is off, so nothing else
+  // hears the audio.
+  const webSpeech = settings.stt?.provider === "web-speech";
+  const onSpeechResult = useCallback(
+    (text: string, final: boolean) => {
+      if (final) {
+        sendText(text);
+        return;
+      }
+      const next = mergeUserText(messagesRef.current, text, false);
+      messagesRef.current = next;
+      setMessages(next);
+    },
+    [sendText],
+  );
+  useWebSpeech(onSpeechResult, webSpeech && phase === "connected");
 
   const disconnect = useCallback(async () => {
     const client = clientRef.current;

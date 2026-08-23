@@ -10,7 +10,7 @@ const SETTINGS_KEY = "son.settings";
 
 export const DEFAULT_CHOICES: Record<Capability, Choice> = {
   llm: { provider: "groq", id: "openai/gpt-oss-120b" },
-  stt: { provider: "groq", id: "whisper-large-v3-turbo" },
+  stt: { provider: "parakeet", id: "csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8" },
   tts: { provider: "kokoro", id: "af_heart" },
 };
 
@@ -20,7 +20,10 @@ export const FALLBACK_MODELS: Models = {
     { provider: "groq", id: "openai/gpt-oss-120b", label: "openai/gpt-oss-120b" },
     { provider: "lmstudio", id: "ornith-1.5-9b-mlx", label: "ornith-1.5-9b-mlx" },
   ],
-  stt: [{ provider: "groq", id: "whisper-large-v3-turbo", label: "whisper-large-v3-turbo" }],
+  stt: [
+    { provider: "parakeet", id: "csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8", label: "parakeet-tdt-0.6b-v3 · local" },
+    { provider: "groq", id: "whisper-large-v3-turbo", label: "whisper-large-v3-turbo" },
+  ],
   tts: [
     { provider: "kokoro", id: "af_heart", label: "af_heart" },
     { provider: "kokoro", id: "af_bella", label: "af_bella" },

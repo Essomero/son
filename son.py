@@ -787,7 +787,7 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> Non
     # absent, unknown, or gated by a missing key falls back to the default.
     defaults = {
         "llm": {"provider": "groq", "model": GROQ_MODEL},
-        "stt": {"provider": "groq", "model": GROQ_STT_MODEL},
+        "stt": {"provider": "parakeet", "model": "csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8"},
         "tts": {"provider": "kokoro", "model": None, "voice": KOKORO_VOICE},
     }
 

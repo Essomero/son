@@ -29,10 +29,10 @@ from pipecat.utils.time import time_now_iso8601
 # Model repo id → picker label. Only sherpa-onnx NeMo transducer exports are
 # supported (the encoder/decoder/joiner + tokens layout below).
 PARAKEET_MODELS = {
-    # v3 trains on 24 languages and the Granary corpus (incl. accented English);
-    # v2 stays in the picker for A/B comparison. First entry = default.
+    # v3 trains on 24 languages and the Granary corpus (incl. accented English).
+    # Only v3 is offered; v2 was dropped per user preference (v3 wins on both
+    # accuracy and speed). First entry = default.
     "csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8": "parakeet-tdt-0.6b-v3 · local",
-    "csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8": "parakeet-tdt-0.6b-v2 · local",
 }
 PARAKEET_MODEL_FILES = ("encoder.int8.onnx", "decoder.int8.onnx", "joiner.int8.onnx", "tokens.txt")
 PARAKEET_CACHE_DIR = Path.home() / ".cache" / "son" / "parakeet"

@@ -6,7 +6,7 @@ A personal real-time voice agent. Pick a role (instruction file), talk to it in 
 
 | Piece | Tool (default) | Where it runs |
 |---|---|---|
-| Speech-to-text | Groq · whisper-large-v3-turbo (or **Parakeet TDT** / **whisper-small-son** local) | Cloud (free tier) / Local |
+| Speech-to-text | **Parakeet TDT** local (or Groq · whisper-large-v3-turbo / whisper-small-son) | Local / Cloud (free tier) |
 | Brain | Groq · openai/gpt-oss-120b | Cloud (free tier) |
 | Text-to-speech | Kokoro-82M | **Local** (ONNX on CPU) |
 | Voice pipeline | Pipecat 1.7 (BSD-2) | Local |

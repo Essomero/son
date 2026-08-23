@@ -74,6 +74,7 @@ from pipecat.transports.smallwebrtc.connection import SmallWebRTCConnection
 from pipecat.transports.smallwebrtc.transport import SmallWebRTCTransport
 from pipecat.workers.runner import WorkerRunner
 
+import echo_guard
 import parakeet_stt
 import streaming_stt
 import sessions_store as sessions
@@ -402,7 +403,7 @@ def build_llm_service(provider: str, model: str, instruction: str):
     raise ValueError(f"Unknown LLM provider: {provider}")
 
 
-def build_stt_service(provider: str, model: str):
+def build_stt_service(provider: str, model: str, echo_roll=None):
     if provider == "groq":
         return GroqSTTService(
             api_key=require_env("GROQ_API_KEY"),
@@ -424,12 +425,12 @@ def build_stt_service(provider: str, model: str):
     if provider == "parakeet":
         # Local NVIDIA Parakeet TDT via sherpa-onnx (ONNX on CPU). The model
         # (~660 MB) downloads once into ~/.cache/son/parakeet on first use.
-        return parakeet_stt.ParakeetSTTService(model=model)
+        return parakeet_stt.ParakeetSTTService(model=model, echo_roll=echo_roll)
     if provider == "streaming":
         # Local streaming zipformer via sherpa-onnx (ONNX on CPU): partial
         # transcriptions land while the user talks, the web-speech feel,
         # fully on-device (see streaming_stt.py).
-        return streaming_stt.StreamingSTTService(model=model)
+        return streaming_stt.StreamingSTTService(model=model, echo_roll=echo_roll)
     if provider == "whisper-local":
         # Fine-tuned whisper via whisper.cpp. whisper.cpp's /inference isn't
         # OpenAI-shaped, so the whisper_local.py shim bridges the multipart
@@ -1006,10 +1007,13 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> Non
         + (f" cleanup={STT_CLEANUP_MODEL}" if STT_CLEANUP_MODEL else "")
     )
 
+    # The echo guard's bot-audio roll: filled by the capture processor on the
+    # TTS branch, queried by the local STT services (see echo_guard.py).
+    echo_roll = echo_guard.BotAudioRoll()
     stt = (
         None
         if stt_choice["provider"] == "web-speech"  # text arrives via RTVI send-text
-        else build_stt_service(stt_choice["provider"], stt_choice.get("model"))
+        else build_stt_service(stt_choice["provider"], stt_choice.get("model"), echo_roll)
     )
     llm = build_llm_service(llm_choice["provider"], llm_choice.get("model"), instruction)
     tts = (
@@ -1093,6 +1097,9 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> Non
         # Kokoro local: text -> speech (markdown stripped in-service). Absent
         # for browser TTS: the client speaks the LLM text itself.
         stages.append(tts)
+        # Tee the bot's audio into the echo guard roll (the STT tests its
+        # candidate turns against this to drop the bot's own voice).
+        stages.append(echo_guard.BotAudioCaptureProcessor(echo_roll))
     stages.extend(
         [
             transport.output(), # audio back to the browser

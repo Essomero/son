@@ -298,7 +298,19 @@ export function useSonSession() {
             const el = botAudioRef.current;
             if (!el) return;
             el.srcObject = new MediaStream([track]);
-            void el.play().catch((e) => console.warn("[Son] audio play blocked:", e));
+            // Retry play() until it takes: a blocked first play() (no user
+            // gesture yet / element not ready) would otherwise leave bot audio
+            // stuck until the next pointerdown, long past the ~0.5 s window
+            // the browser's echo canceller can cancel against — the mic then
+            // hears the bot's own voice as a "user" turn and transcribes it.
+            // The loop dies on stopBotAudio(), which nulls srcObject.
+            const start = () => {
+              const a = botAudioRef.current;
+              if (!a || !a.srcObject) return; // track stopped — done
+              if (!a.paused) return; // already playing — done
+              a.play().then(() => {}).catch(() => setTimeout(start, 200));
+            };
+            start();
           },
           onTrackStopped: () => stopBotAudio(),
           onUserTranscript: (data: { text?: string; final?: boolean; timestamp?: string }) => {

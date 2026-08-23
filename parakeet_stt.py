@@ -14,6 +14,7 @@
 import asyncio
 import importlib.util
 import threading
+import time
 from collections.abc import AsyncGenerator
 from pathlib import Path
 
@@ -112,10 +113,11 @@ class ParakeetSTTService(SegmentedSTTService):
     start pays the one-time download + load, every turn after is instant.
     """
 
-    def __init__(self, *, model: str | None = None, **kwargs):
+    def __init__(self, *, model: str | None = None, echo_roll=None, **kwargs):
         self._model = model or next(iter(PARAKEET_MODELS))
         super().__init__(sample_rate=PARAKEET_SAMPLE_RATE, **kwargs)
         self._recognizer, self._inference_lock = _get_recognizer(self._model)
+        self._echo_roll = echo_roll  # BotAudioRoll; None disables the echo gate
 
     @property
     def wants_wav_segments(self) -> bool:
@@ -130,6 +132,24 @@ class ParakeetSTTService(SegmentedSTTService):
 
         # int16 PCM → float32 in [-1, 1], what sherpa-onnx wants.
         samples = np.frombuffer(audio, dtype=np.int16).astype(np.float32) / 32768.0
+
+        # Echo gate: the segment arrived whole at VAD stop; compare its onset
+        # against the bot's recent playback. The segment started
+        # len(samples)/rate seconds ago — that's the reference time.
+        if self._echo_roll is not None and len(samples) >= int(0.5 * PARAKEET_SAMPLE_RATE):
+            onset = samples[: int(0.5 * PARAKEET_SAMPLE_RATE)]
+            is_echo, score = await asyncio.to_thread(
+                self._echo_roll.match,
+                onset,
+                time.monotonic() - len(samples) / PARAKEET_SAMPLE_RATE,
+            )
+            if is_echo:
+                logger.warning(
+                    f"Echo turn dropped (bot-audio match {score:.2f}) — "
+                    "the mic heard the bot's own voice"
+                )
+                await self.stop_processing_metrics()
+                return
 
         def _transcribe() -> str:
             with self._inference_lock:

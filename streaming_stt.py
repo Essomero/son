@@ -19,6 +19,7 @@
 import asyncio
 import importlib.util
 import threading
+import time
 from collections.abc import AsyncGenerator
 from pathlib import Path
 
@@ -152,12 +153,18 @@ class StreamingSTTService(STTService):
     stage and aggregator treat both providers identically.
     """
 
-    def __init__(self, *, model: str | None = None, **kwargs):
+    def __init__(self, *, model: str | None = None, echo_roll=None, **kwargs):
         self._model = model or next(iter(STREAMING_MODELS))
         super().__init__(sample_rate=STREAMING_SAMPLE_RATE, **kwargs)
         self._recognizer, self._inference_lock = _get_recognizer(self._model)
+        self._echo_roll = echo_roll  # BotAudioRoll; None disables the echo gate
         self._stream = None
         self._last_partial = ""
+        self._onset = bytearray()  # mic audio since the VAD start (gate window)
+        self._onset_at = 0.0  # monotonic time of the VAD start
+        self._gate_decided = False
+        self._gate_task = None  # in-flight match(); awaited by a racing _end_utterance
+        self._echo_turn = False
 
     def can_generate_metrics(self) -> bool:
         return True
@@ -168,6 +175,33 @@ class StreamingSTTService(STTService):
             return
         # int16 PCM → float32 in [-1, 1], what sherpa-onnx wants.
         samples = np.frombuffer(audio, dtype=np.int16).astype(np.float32) / 32768.0
+        if self._echo_roll is not None and not self._gate_decided:
+            # Echo gate, decided once the onset has ~0.5 s of audio: if the
+            # turn's start matches the bot's recent playback, drop it (the
+            # bot was answering itself and the voice is its own). The match
+            # runs as a task so a VAD stop that races in just before the
+            # decision lands can await the same result instead of finalizing
+            # the echo (see _end_utterance).
+            self._onset += audio
+            if len(self._onset) >= int(0.5 * STREAMING_SAMPLE_RATE) * 2:
+                self._gate_decided = True
+                onset = np.frombuffer(self._onset, dtype=np.int16).astype(np.float32) / 32768.0
+                self._gate_task = asyncio.create_task(
+                    asyncio.to_thread(self._echo_roll.match, onset, self._onset_at)
+                )
+                is_echo, score = await self._gate_task
+                self._gate_task = None
+                if is_echo:
+                    logger.warning(
+                        f"Echo turn dropped (bot-audio match {score:.2f}) — "
+                        "the mic heard the bot's own voice"
+                    )
+                    self._echo_turn = True
+                    with self._inference_lock:
+                        self._stream = None
+                    return
+        if self._echo_turn:
+            return
         # CPU-bound ONNX inference must not block the pipeline event loop.
         text = await asyncio.to_thread(self._decode_chunk, samples)
         if text and text != self._last_partial:
@@ -188,16 +222,56 @@ class StreamingSTTService(STTService):
         with self._inference_lock:
             self._stream = self._recognizer.create_stream()
             self._last_partial = ""
+        # Fresh gate state for the new turn.
+        self._onset = bytearray()
+        self._onset_at = time.monotonic()
+        self._gate_decided = False
+        self._gate_task = None
+        self._echo_turn = False
 
     def _decode_chunk(self, samples: np.ndarray) -> str:
         with self._inference_lock:
+            # An echo turn may have been dropped mid-turn (stream already
+            # None after the gate); guard the decode against that.
+            if self._stream is None:
+                return ""
             self._stream.accept_waveform(STREAMING_SAMPLE_RATE, samples)
             while self._recognizer.is_ready(self._stream):
                 self._recognizer.decode_stream(self._stream)
             return self._recognizer.get_result(self._stream).strip()
 
     async def _end_utterance(self):
+        if self._gate_task is not None:
+            # The VAD stop raced ahead of the gate's match() — decide now,
+            # or the final path below would push the echo's transcription.
+            try:
+                is_echo, score = await self._gate_task
+            except Exception:
+                is_echo, score = False, 0.0
+            self._gate_task = None
+            if is_echo:
+                logger.warning(
+                    f"Echo turn dropped (bot-audio match {score:.2f}) — "
+                    "the mic heard the bot's own voice"
+                )
+                self._echo_turn = True
+                with self._inference_lock:
+                    self._stream = None
         if self._stream is None:
+            # Echo turn (stream dropped by the gate mid-turn) — close the
+            # metrics and stay silent; an empty user aggregation emits
+            # nothing, so the bot doesn't answer its own voice.
+            if self._echo_turn:
+                self._echo_turn = False
+                await self.stop_processing_metrics()
+            return
+        if self._echo_turn:
+            # The whole turn was the bot's echo — no final, nothing for the
+            # aggregator to push (an empty user aggregation emits nothing).
+            with self._inference_lock:
+                self._stream = None
+            self._echo_turn = False
+            await self.stop_processing_metrics()
             return
         text = await asyncio.to_thread(self._end_utterance_sync)
         if text:

@@ -46,17 +46,23 @@ STREAMING_MODELS = {
 }
 STREAMING_MODEL_FILES = {
     # Each model's export layout differs slightly, so files are per-model.
+    # model_type picks the sherpa-onnx decoder family: the 2023-06-26 export
+    # embeds query/value head dims (zipformer v2 metadata) and hard-aborts
+    # the process if loaded as plain "zipformer" (verified crash), while the
+    # 20m export embeds attention_dims (zipformer v1).
     "csukuangfj/sherpa-onnx-streaming-zipformer-en-2023-06-26": {
         "encoder": "encoder-epoch-99-avg-1-chunk-16-left-64.int8.onnx",
         "decoder": "decoder-epoch-99-avg-1-chunk-16-left-64.int8.onnx",
         "joiner": "joiner-epoch-99-avg-1-chunk-16-left-64.int8.onnx",
         "tokens": "tokens.txt",
+        "model_type": "zipformer2",
     },
     "csukuangfj/sherpa-onnx-streaming-zipformer-en-20M-2023-02-17": {
         "encoder": "encoder-epoch-99-avg-1.int8.onnx",
         "decoder": "decoder-epoch-99-avg-1.int8.onnx",
         "joiner": "joiner-epoch-99-avg-1.int8.onnx",
         "tokens": "tokens.txt",
+        "model_type": "zipformer",
     },
 }
 STREAMING_CACHE_DIR = Path.home() / ".cache" / "son" / "streaming"
@@ -86,7 +92,8 @@ def _download_file(url: str, dest: Path):
 def _ensure_model_files(model_id: str) -> Path:
     d = _model_dir(model_id)
     files = STREAMING_MODEL_FILES[model_id]
-    missing = [v for v in files.values() if not (d / v).is_file()]
+    # "model_type" is config, not a download; the rest are ONNX/token files.
+    missing = [v for k, v in files.items() if k != "model_type" and not (d / v).is_file()]
     if missing:
         total = "~430 MB" if "2023-06-26" in model_id else "~50 MB"
         logger.info(
@@ -124,7 +131,7 @@ def _get_recognizer(model_id: str):
                 feature_dim=80,
                 decoding_method="greedy_search",
                 provider="cpu",
-                model_type="zipformer",
+                model_type=files.get("model_type", "zipformer"),
             )
             logger.info(f"Streaming STT: loaded {model_id} (num_threads=2, provider=cpu)")
             entry = (recognizer, threading.Lock())

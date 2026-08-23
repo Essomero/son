@@ -30,8 +30,13 @@ export function drawRing(
   const dpr = window.devicePixelRatio || 1;
   // Track the canvas's ACTUAL css size (it stretches with .mic-wrap in
   // narrow layouts) — drawing at the constant spec.size would leave the
-  // ring centered on the wrong point and clip at the edges.
-  const css = canvas.clientWidth || spec.size;
+  // ring centered on the wrong point and clip at the edges. Trust
+  // clientWidth only up to 2x the spec: an unsized canvas reports its own
+  // attribute-driven size back as clientWidth, which would feedback-loop
+  // into a tens-of-millions-pixel buffer (Chrome paints that as failed
+  // white tiles — the giant white box).
+  const raw = canvas.clientWidth || spec.size;
+  const css = Math.min(raw, spec.size * 2);
   const scale = css / spec.size;
   if (canvas.width !== Math.round(css * dpr) || canvas.height !== Math.round(css * dpr)) {
     canvas.width = Math.round(css * dpr);

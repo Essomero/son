@@ -791,11 +791,18 @@ code {
   border-radius: var(--r-md) 4px var(--r-md) var(--r-md);
 }
 
-/* The bot ring canvas sits behind its avatar while that message speaks. */
+/* The bot ring canvas sits behind its avatar while that message speaks.
+   Sizing is explicit ON PURPOSE: an unsized canvas lays out at its own
+   attribute size, and drawRing sizes the buffer from clientWidth — those
+   two compound into a feedback loop (300 → 600 → 1200 … until Chrome
+   fails to allocate and paints white tiles). 64px must match
+   BOT_RING.size in Transcript.tsx. */
 .bot-ring {
   position: absolute;
   left: 50%;
   top: 50%;
+  width: 64px;
+  height: 64px;
   transform: translate(-50%, -50%);
   pointer-events: none;
 }

@@ -27,6 +27,7 @@ import {
   errorMessage,
 } from "../lib/son";
 import { readSettings, saveSettings } from "../lib/settings";
+import { useBrowserSpeech } from "./useBrowserSpeech";
 import { useWebSpeech } from "./useWebSpeech";
 import { loadCustomRoles, saveCustomRoles } from "../lib/customRoles";
 import { pushHomeRoute, pushSessionRoute } from "../lib/chatRoute";
@@ -221,6 +222,7 @@ export function useSonSession() {
           onDisconnected: () => {
             setPhase("disconnected");
             setStatus("Disconnected.");
+            browserSpeech.cancel();
             stopBotAudio();
             setMicTrack(null); // fresh session = fresh mic state
             setMuted(false);
@@ -241,6 +243,9 @@ export function useSonSession() {
               if (track?.kind === "audio") setMicTrack(track);
               return;
             }
+            // Browser TTS speaks the text itself — never play the (silent)
+            // server audio track.
+            if (browserTTS) return;
             if (track?.kind !== "audio" || botAudioRef.current?.srcObject) return;
             console.log("[Son] bot audio track received");
             const el = botAudioRef.current;
@@ -261,6 +266,30 @@ export function useSonSession() {
             if (!data?.text) return;
             const fresh = freshBotRowRef.current;
             freshBotRowRef.current = false;
+            if (browserTTS) {
+              // Speak only what's new: events are cumulative per row, but
+              // duplicates and appended segments also occur.
+              if (fresh) botSpokenRef.current = "";
+              const prev = botSpokenRef.current;
+              const t = data.text;
+              let delta: string;
+              let nextSpoken: string;
+              if (!prev) {
+                delta = t;
+                nextSpoken = t;
+              } else if (t.startsWith(prev)) {
+                delta = t.slice(prev.length); // cumulative growth
+                nextSpoken = t;
+              } else if (prev.startsWith(t) || prev.endsWith(t)) {
+                delta = ""; // duplicate segment
+                nextSpoken = prev;
+              } else {
+                delta = t; // genuinely new segment
+                nextSpoken = t;
+              }
+              botSpokenRef.current = nextSpoken;
+              if (delta.trim()) browserSpeech.speak(delta);
+            }
             const next = mergeBotText(messagesRef.current, data.text, fresh);
             messagesRef.current = next;
             setMessages(next);
@@ -345,6 +374,17 @@ export function useSonSession() {
   // live through the same merge path as STT partials. Runs only while
   // connected in web-speech mode; the mic track is off, so nothing else
   // hears the audio.
+  // Browser-native TTS (Chrome speechSynthesis): the bot's streamed text is
+  // spoken by the browser — no server audio. Delta-tracked so each event
+  // speaks only what's new.
+  const browserTTS = settings.tts?.provider === "browser";
+  const browserSpeech = useBrowserSpeech(browserTTS, settings.tts?.id);
+  const botSpokenRef = useRef("");
+  // The transcript ring follows the browser's speech queue in this mode.
+  useEffect(() => {
+    if (browserTTS) setSpeaking(browserSpeech.speaking);
+  }, [browserTTS, browserSpeech.speaking]);
+
   const webSpeech = settings.stt?.provider === "web-speech";
   const onSpeechResult = useCallback(
     (text: string, final: boolean) => {
@@ -352,11 +392,13 @@ export function useSonSession() {
         sendText(text);
         return;
       }
+      // The user started talking — cut the bot off (barge-in, browser TTS).
+      browserSpeech.cancel();
       const next = mergeUserText(messagesRef.current, text, false);
       messagesRef.current = next;
       setMessages(next);
     },
-    [sendText],
+    [sendText, browserSpeech.cancel],
   );
   useWebSpeech(onSpeechResult, webSpeech && phase === "connected");
 

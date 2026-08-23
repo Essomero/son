@@ -149,7 +149,21 @@ STT_PROVIDER_ENV_KEYS = {
     "google": None,         # google: see google_stt_available()
     "whisper-local": None,  # local: see whisper_local_available()
 }
-TTS_PROVIDER_ENV_KEYS = {"kokoro": None, "groq": "GROQ_API_KEY", "gemini": "GEMINI_API_KEY"}
+TTS_PROVIDER_ENV_KEYS = {
+    "kokoro": None,
+    "browser": None,  # Chrome speechSynthesis: the client speaks the text itself
+    "groq": "GROQ_API_KEY",
+    "gemini": "GEMINI_API_KEY",
+}
+
+# Browser-native TTS voice roster (Chrome speechSynthesis, Google voices).
+# id → the voice name Chrome reports; the client falls back to any Google
+# English voice when the exact one is missing.
+BROWSER_TTS_VOICES = {
+    "google-us-english": "Google US English",
+    "google-uk-english-female": "Google UK English Female",
+    "google-uk-english-male": "Google UK English Male",
+}
 
 # Groq's Orpheus TTS accepts exactly these voice ids (API-enforced).
 ORPHEUS_VOICES = ("autumn", "diana", "hannah", "austin", "daniel", "troy")
@@ -318,6 +332,10 @@ def build_tts_service(provider: str, model: str | None, voice: str | None):
     # MarkdownToSpeechFilter: strip markdown markers from what the TTS
     # synthesizes, per sentence, without touching the transcript stream.
     filters = [MarkdownToSpeechFilter()]
+    if provider == "browser":
+        # Browser-native TTS (Chrome speechSynthesis): no server synthesis —
+        # the client speaks the streamed LLM text itself.
+        return None
     if provider == "kokoro":
         return KokoroTTSService(
             settings=KokoroTTSService.Settings(voice=voice or KOKORO_VOICE),
@@ -430,6 +448,12 @@ def resolve_speak_voice(payload: dict) -> tuple[str, str | None, str | None]:
     ):
         logger.warning(f"TTS provider '{provider}' unavailable; using kokoro")
         provider = "kokoro"
+    if provider == "browser":
+        # Browser speechSynthesis can't return a WAV — the read page needs
+        # server-side synthesis, so fall back to the local voice (and drop
+        # the browser voice id, which kokoro would reject).
+        logger.warning("TTS provider 'browser' not usable for /speak; using kokoro")
+        provider, choice = "kokoro", {"provider": "kokoro", "id": None}
     if provider == "kokoro":
         model, voice = None, choice.get("id")
     else:
@@ -862,7 +886,11 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> Non
         else build_stt_service(stt_choice["provider"], stt_choice.get("model"))
     )
     llm = build_llm_service(llm_choice["provider"], llm_choice.get("model"), instruction)
-    tts = build_tts_service(tts_choice["provider"], tts_choice.get("model"), tts_choice.get("voice"))
+    tts = (
+        None
+        if tts_choice["provider"] == "browser"  # client speaks the text itself
+        else build_tts_service(tts_choice["provider"], tts_choice.get("model"), tts_choice.get("voice"))
+    )
 
     # Session persistence: the client owns the session id (a uuid sent in
     # custom_data), so a session survives reconnects and bot restarts. A
@@ -931,7 +959,14 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> Non
         [
             user_aggregator,    # user turns into conversation context
             llm,                # next assistant reply
-            tts,                # Kokoro local: text -> speech (markdown stripped in-service)
+        ]
+    )
+    if tts is not None:
+        # Kokoro local: text -> speech (markdown stripped in-service). Absent
+        # for browser TTS: the client speaks the LLM text itself.
+        stages.append(tts)
+    stages.extend(
+        [
             transport.output(), # audio back to the browser
             assistant_aggregator,  # assistant turns into conversation context
         ]
@@ -1206,6 +1241,11 @@ def _fetch_models() -> dict:
 
     for voice in KOKORO_VOICES:
         tts.append({"provider": "kokoro", "id": voice, "label": voice})
+    # Browser-native TTS (Chrome speechSynthesis, Google neural voices): no
+    # server audio path — the client speaks the streamed text. Voice names
+    # vary per browser/OS; the client resolves and falls back.
+    for vid, vname in BROWSER_TTS_VOICES.items():
+        tts.append({"provider": "browser", "id": vid, "label": f"Browser · {vname}"})
 
     return {"llm": llm, "stt": stt, "tts": tts}
 

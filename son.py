@@ -1074,6 +1074,10 @@ def _fetch_models() -> dict:
                 # canopylabs/orpheus-* is Groq's TTS model (guard/safety ids
                 # hide mid-string, so match substrings, not prefixes). The
                 # API enforces its voice roster, so offer one entry per voice.
+                # Only the English model is offered — the Arabic variant's
+                # voices don't fit the roster.
+                if "arabic" in low:
+                    continue
                 for voice in ORPHEUS_VOICES:
                     tts.append({"provider": "groq", "id": mid, "voice": voice, "label": f"Orpheus · {voice}"})
             elif "prompt-guard" not in low and "safeguard" not in low:

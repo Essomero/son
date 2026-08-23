@@ -58,6 +58,9 @@ export function useWebSpeech(
       /* older Chrome — cloud recognition only */
     }
     rec.onresult = (e: any) => {
+      // Any result proves the engine is listening again — reset the
+      // failed-restart counter and the per-burst error log.
+      quickEnds = 0;
       for (let i = e.resultIndex; i < e.results.length; ++i) {
         const r = e.results[i];
         if (r?.[0]?.transcript) handlerRef.current(r[0].transcript, r.isFinal);
@@ -72,21 +75,33 @@ export function useWebSpeech(
       if (e.error === "not-allowed" || e.error === "service-not-allowed") {
         console.warn("[Son] Web Speech permission denied:", e.error);
         rec.stop();
-      } else {
+        return;
+      }
+      // A dying session's errors come in bursts (no-speech storms after
+      // barge-ins) as the engine restarts; log the first of a burst only.
+      if (e.error !== "no-speech" || quickEnds === 0) {
         console.warn("[Son] Web Speech error:", e.error);
       }
     };
     // The API ends on silence; restart to keep listening (onend fires after
-    // stop() too, hence the flag).
+    // stop() too, hence the flag). A burst of quick failed sessions backs
+    // the restart off (0.6 s → 5 s) instead of churning the engine.
     let restarting = true;
+    let quickEnds = 0;
+    let restartTimer: number | null = null;
     rec.onend = () => {
-      if (restarting) {
+      if (!restarting) return;
+      const delay = Math.min(600 * 2 ** quickEnds, 5000);
+      quickEnds += 1;
+      restartTimer = window.setTimeout(() => {
+        restartTimer = null;
+        if (!restarting) return;
         try {
           rec.start();
         } catch {
           /* already starting/stopping — next onend will retry */
         }
-      }
+      }, delay);
     };
     try {
       rec.start();
@@ -95,6 +110,7 @@ export function useWebSpeech(
     }
     return () => {
       restarting = false;
+      if (restartTimer !== null) window.clearTimeout(restartTimer);
       try {
         rec.stop();
       } catch {

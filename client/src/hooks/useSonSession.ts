@@ -469,19 +469,20 @@ export function useSonSession() {
   // Recognized-but-unsent text. The Web Speech API finalizes on ANY pause
   // (people pause mid-thought), so finals accumulate and only send after a
   // silence window — a pause isn't end-of-turn until the silence holds.
+  // The join only continues a row whose *last* row is still the open speech
+  // row (see onSpeechResult): when the bot answered, the pending text gets
+  // sent on its own and a new utterance starts fresh.
   const pendingUserRef = useRef("");
-  // The transcript row currently showing the pending text. mergeUserText
-  // builds a NEW row object on every merge (interim or finalize), so as long
-  // as the object is still the last row nothing newer has superseded it.
-  const pendingRowRef = useRef<Msg | null>(null);
   const sendTimerRef = useRef<number | null>(null);
   const PAUSE_SEND_MS = 900;
 
-  // A flush's cleanup round-trip can outlive the 900 ms silence window: if
-  // new finals land while it is in flight they build a NEW row object, so a
-  // later flush (which cleans the row's FULL text) must be the one to
-  // finalize and send. Concurrent flushes would both send and leave the
-  // row pending forever — keep one at a time.
+  // A flush's cleanup round-trip can outlive the 900 ms silence window, and
+  // bot rows stream in while it is in flight (a barge-in's response). The
+  // messages array is the source of truth: the oldest row still waiting for
+  // cleanup gets flushed, one at a time, wherever it sits — a step-aside
+  // (or a cancelled timer) can never strand a row permanently, because
+  // whichever timer lives after a flush re-arms while any row is pending.
+  // Concurrent flushes would both send — keep one at a time.
   const flushingRef = useRef(false);
   const flushPending = useCallback(async () => {
     if (sendTimerRef.current !== null) {
@@ -489,18 +490,20 @@ export function useSonSession() {
       sendTimerRef.current = null;
     }
     if (flushingRef.current) {
-      // Another flush is mid-cleanup: re-arm so the row's latest final still
-      // gets its finalize once that cleanup finishes, instead of leaving a
+      // Another flush is mid-cleanup: re-arm so the rows' latest finals still
+      // get their finalize once that cleanup finishes, instead of leaving a
       // pending row with no timer left to land it.
       sendTimerRef.current = window.setTimeout(flushPending, PAUSE_SEND_MS);
       return;
     }
-    const row = pendingRowRef.current;
-    if (!row) return;
+    // Oldest pending row first: an earlier utterance's row must not starve
+    // behind newer ones, and its silence window opened sooner anyway.
     const msgs = messagesRef.current;
-    if (msgs[msgs.length - 1] !== row) return; // superseded — that row's flush owns it
+    const idxUser = msgs.findIndex((m) => m.role === "user" && !m.final);
+    if (idxUser < 0) return;
     flushingRef.current = true;
     try {
+      const row = msgs[idxUser];
       // The row's OWN text is the truth (it holds every final joined so far);
       // cleaning a snapshot instead would send half an utterance and the
       // finalize would replace the joined row with a fragment.
@@ -511,18 +514,40 @@ export function useSonSession() {
       // returns "" — send the raw text; a turn must never stall on cleanup.
       const cleaned = (await cleanTranscript(text)) || text;
       const now = messagesRef.current;
-      // Finals landed while we were cleaning (the row grew and got its own
-      // re-armed timer): step aside — the next flush cleans and sends the
-      // whole utterance in one go. Nothing is sent twice here either.
-      if (pendingRowRef.current !== row || now[now.length - 1] !== row) return;
-      const next = mergeUserText(now, cleaned, true); // finalize in place, pending: false
+      const idx = now.findIndex((m) => m === row);
+      // The row was replaced while we were cleaning (a final joined it into a
+      // NEW object), or it grew (a final landed on it) — either way that
+      // final re-armed the timer, so the next flush cleans and sends the whole
+      // utterance in one go. Nothing is sent twice here either.
+      if (idx < 0 || row.text !== text) return;
+      // Position-independent finalize: bot rows may sit after the user row
+      // (barge-in), so "in place" must mean where the row IS, not last.
+      const finalized: Msg = {
+        ...row,
+        text: cleaned,
+        final: true,
+        base: cleaned,
+        spans: [{ ts: undefined, text: cleaned }],
+        pending: false, // a finalized row never shows the loading bubble
+      };
+      const next = [...now.slice(0, idx), finalized, ...now.slice(idx + 1)];
       messagesRef.current = next;
       setMessages(next);
-      pendingRowRef.current = null;
-      pendingUserRef.current = ""; // the next utterance's join starts fresh
+      // Clear ONLY if this row still owns the join — a newer utterance may
+      // already be accumulating its own pending text.
+      if (pendingUserRef.current === text) pendingUserRef.current = "";
       sendText(cleaned, false);
     } finally {
       flushingRef.current = false;
+      // Keep the chain alive: a newer final's timer may be pending, or this
+      // flush was the last one standing. Either way, exactly one timer
+      // exists while anything is still pending.
+      if (
+        sendTimerRef.current === null &&
+        messagesRef.current.some((m) => m.role === "user" && !m.final)
+      ) {
+        sendTimerRef.current = window.setTimeout(flushPending, PAUSE_SEND_MS);
+      }
     }
   }, [sendText]);
 
@@ -535,16 +560,20 @@ export function useSonSession() {
         browserSpeech.cancel();
         return;
       }
-      // Append to the pending utterance and restart the silence window.
-      const p = pendingUserRef.current;
+      const msgs = messagesRef.current;
+      const last = msgs[msgs.length - 1];
+      // A new utterance starts whenever the last row isn't the still-open
+      // speech row (the bot answered, or an earlier utterance was already
+      // flushed) — the join must not carry the previous utterance's text
+      // into it.
+      const continuing = last?.role === "user" && !last.final;
+      const p = continuing ? pendingUserRef.current : "";
       const joined =
         p && !p.endsWith(" ") && !text.startsWith(" ") ? `${p} ${text}` : `${p}${text}`;
       pendingUserRef.current = joined;
-      const msgs = messagesRef.current;
-      const last = msgs[msgs.length - 1];
       const merged =
         last?.role === "user" && last.final
-          ? [...msgs, { id: uid(), role: "user", text: joined, final: false, base: "", spans: [] }]
+          ? [...msgs, { id: uid(), role: "user" as const, text: joined, final: false, base: "", spans: [] }]
           : mergeUserText(msgs, joined, false);
       // Cleanup on: the raw final is never shown — the row waits behind a
       // loading bubble until flushPending lands the cleaned text.
@@ -554,7 +583,6 @@ export function useSonSession() {
           : merged;
       messagesRef.current = next;
       setMessages(next);
-      pendingRowRef.current = next[next.length - 1];
       if (sendTimerRef.current !== null) window.clearTimeout(sendTimerRef.current);
       sendTimerRef.current = window.setTimeout(flushPending, PAUSE_SEND_MS);
     },
@@ -588,8 +616,7 @@ export function useSonSession() {
     setSessionId(sessionIdRef.current);
     setMessages([]);
     messagesRef.current = [];
-    pendingRowRef.current = null; // a pending speech row must not outlive the chat
-    pendingUserRef.current = "";
+    pendingUserRef.current = ""; // a pending utterance must not outlive the chat
     setActiveBotId(null);
     setSpeaking(false);
     setMuted(false);
@@ -646,8 +673,7 @@ export function useSonSession() {
         setRole(r);
       setMessages(stored);
       messagesRef.current = stored;
-      pendingRowRef.current = null; // a pending speech row must not outlive the resume
-      pendingUserRef.current = "";
+      pendingUserRef.current = ""; // a pending utterance must not outlive the resume
       pushSessionRoute(meta.id); // the URL now names this chat — reload reopens it
       await connect({ role: r, sessionId: meta.id, force: true });
     },

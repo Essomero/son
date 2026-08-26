@@ -6,7 +6,7 @@ A personal real-time voice agent. Pick a role (instruction file), talk to it in 
 
 | Piece | Tool (default) | Where it runs |
 |---|---|---|
-| Speech-to-text | Groq · whisper-large-v3-turbo (or **Parakeet TDT** / **whisper-small-son** local) | Cloud (free tier) / Local |
+| Speech-to-text | **Parakeet TDT** local (or Groq · whisper-large-v3-turbo / whisper-small-son) | Local / Cloud (free tier) |
 | Brain | Groq · openai/gpt-oss-120b | Cloud (free tier) |
 | Text-to-speech | Kokoro-82M | **Local** (ONNX on CPU) |
 | Voice pipeline | Pipecat 1.7 (BSD-2) | Local |
@@ -51,7 +51,7 @@ During client development, `cd client && npm run dev` serves the page with hot r
 
 ## Ubuntu
 
-Son runs on Ubuntu out of the box — no GPU, no audio drivers. The `uv sync` above resolves on Linux (manylinux wheels for both x86_64 and aarch64, Python 3.11–3.14), and both local models run on CPU: Parakeet STT idles around 480 MB RAM with short CPU bursts during a turn, Kokoro TTS the same. The server does no local audio I/O — the browser handles mic and speakers over WebRTC — so nothing ALSA/PulseAudio-related needs installing.
+Son runs on Ubuntu out of the box — no GPU, no audio drivers. The `uv sync` above resolves on Linux (manylinux wheels for both x86_64 and aarch64, Python 3.11–3.14), and both local models run on CPU: Parakeet STT idles around 480 MB RAM with short CPU bursts during a turn; Piper TTS (the default voice) is a 61 MB ONNX model that streams its first audio in ~50 ms, with the bigger Kokoro available alongside. The server does no local audio I/O — the browser handles mic and speakers over WebRTC — so nothing ALSA/PulseAudio-related needs installing.
 
 Run it the same way: `uv run python son.py` (wrap it in systemd or tmux if you want it daemonized; `scripts/make_son_app.sh` is macOS-only). Two footguns worth knowing:
 
@@ -97,7 +97,7 @@ uv run scripts/gen_roles.py && cd client && npm run build && cd ..
 | `LMSTUDIO_API_KEY` | — | Optional. Enables local brains served by [LM Studio](https://lmstudio.ai) — any value if server auth is disabled |
 | `LMSTUDIO_BASE_URL` | `http://127.0.0.1:1234/v1` | OpenAI-compatible root of the LM Studio server (use a tailnet IP to reach a remote machine) |
 | `LMSTUDIO_MODEL` | `ornith-1.5-9b-mlx` | Default local LLM model |
-| `STT_CLEANUP_MODEL` | — | Optional. Rewrite each final STT utterance through a local text-normalizer model (e.g. `s1-mini`) before the brain sees it — cleans Parakeet's raw transcript (punctuation, fillers, repeats). Empty = off |
+| `STT_CLEANUP_MODEL` | — | Optional. Rewrite each final STT utterance through a local text-normalizer model (e.g. `s1-mini`) before the brain sees it. Server-side STT cleans in-pipeline (punctuation, fillers, repeats); browser Web Speech finals go through the same model via `POST /cleanup` but format-only — punctuation and casing, no rewording or restructuring. Empty = off |
 | `STT_CLEANUP_BASE_URL` | `LMSTUDIO_BASE_URL` | OpenAI-compatible root for the cleanup model; auth reuses `LMSTUDIO_API_KEY` |
 | `GROQ_MODEL` | `openai/gpt-oss-120b` | Default Groq LLM model |
 | `GROQ_REASONING_EFFORT` | `medium` | gpt-oss reasoning effort: `low` (fastest, ~0.45s first content) / `medium` / `high` (smartest, slower) |
@@ -125,8 +125,8 @@ A provider is enabled only when its API key is present. The settings panel (⚙ 
 Click ⚙ to pick, per session:
 
 - **Brain** — the reasoning/chat model (Groq, Cerebras, DeepSeek, Gemini, OpenRouter, or a local LM Studio server).
-- **Speech-to-text** — how your voice becomes text (Groq Whisper, Google, OpenRouter, **NVIDIA Parakeet TDT** — a fully local ONNX model, no API key; the ~660 MB model downloads once on first use into `~/.cache/son/parakeet` — or **whisper-small-son**, a whisper fine-tuned on the author's voice and served locally by whisper.cpp; the current soup generation is a weight average of a real-quiet retrain and an augmented soft-speech retrain, best of both registers on held-out audio). Set `STT_CLEANUP_MODEL` (e.g. `s1-mini` on LM Studio) and every final utterance is run through a local text normalizer before the brain sees it — Parakeet's raw transcript (no punctuation, "um"/"uh", repeats) arrives as clean prose. Before any provider sees it, mic audio goes through a clean-and-magnify stage: RNNoise denoise plus a per-band quiet-speech AGC (90 Hz high-pass, then 0–1 / 1–3.5 / 3.5–8 kHz bands normalized to −25 / −18 / −20 dBFS) that lifts the speech band even when low-frequency energy dominates — without amplifying silence.
-- **Voice** — the voice that reads replies (local Kokoro, or Groq/Gemini cloud TTS).
+- **Speech-to-text** — how your voice becomes text (Groq Whisper, Google, OpenRouter, **NVIDIA Parakeet TDT** — a fully local ONNX model, no API key; the ~660 MB model downloads once on first use into `~/.cache/son/parakeet` — or **whisper-small-son**, a whisper fine-tuned on the author's voice and served locally by whisper.cpp; the current soup generation is a weight average of a real-quiet retrain and an augmented soft-speech retrain, best of both registers on held-out audio). Set `STT_CLEANUP_MODEL` (e.g. `s1-mini` on LM Studio) and every final utterance is run through a local text normalizer before the brain sees it — Parakeet's raw transcript (no punctuation, "um"/"uh", repeats) arrives as clean prose. The browser's Web Speech STT bypasses the server pipeline (its finals ride send-text), so in that mode the client runs each final through the same model via `POST /cleanup` before the brain sees it — format-only (punctuation, casing, spacing; no filler/word removal or restructuring), since the browser transcript is already faithful. Before any provider sees it, mic audio goes through a clean-and-magnify stage: RNNoise denoise plus a per-band quiet-speech AGC (90 Hz high-pass, then 0–1 / 1–3.5 / 3.5–8 kHz bands normalized to −25 / −18 / −20 dBFS) that lifts the speech band even when low-frequency energy dominates — without amplifying silence.
+- **Voice** — the voice that reads replies (local Piper — the fast default — or Kokoro, Groq/Gemini cloud TTS, browser speechSynthesis).
 
 Choices are saved in the browser and sent with each connection; the server falls back to the defaults if a provider's key is missing. Kokoro voices are synthesized on your machine; the others stream from their provider.
 

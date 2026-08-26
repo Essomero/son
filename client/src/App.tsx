@@ -37,6 +37,7 @@ export default function App() {
     micTrack: s.micTrack,
     botAudio: s.botAudioRef,
     active: s.phase === "connected",
+    micPulse: s.micPulse,
   });
 
   const models = s.models ?? FALLBACK_MODELS;

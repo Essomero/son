@@ -27,6 +27,7 @@ import time
 import wave
 from functools import lru_cache
 from pathlib import Path
+from typing import Callable
 
 import httpx
 from dotenv import load_dotenv
@@ -37,7 +38,11 @@ from pipecat.audio.vad.vad_analyzer import VADParams
 from pipecat.frames.frames import (
     AudioRawFrame,
     InputAudioRawFrame,
+    InterruptionFrame,
+    LLMFullResponseEndFrame,
+    LLMFullResponseStartFrame,
     LLMRunFrame,
+    LLMTextFrame,
     TranscriptionFrame,
 )
 from pipecat.pipeline.pipeline import Pipeline
@@ -68,6 +73,7 @@ from pipecat.transports.smallwebrtc.connection import SmallWebRTCConnection
 from pipecat.transports.smallwebrtc.transport import SmallWebRTCTransport
 from pipecat.workers.runner import WorkerRunner
 
+import echo_guard
 import parakeet_stt
 import sessions_store as sessions
 
@@ -119,13 +125,102 @@ STT_CLEANUP_SYSTEM_PROMPT = (
     "input is a single word or fragment, output it as-is."
 )
 
+# Web-speech finals need FORMATTING only: the browser path's transcript is
+# already faithful (no repeats, few fillers), so the web pass adds
+# punctuation/casing/spacing and touches nothing else — no filler removal,
+# no dedup, no restructuring (the 0.6B normalizer happily rewrites "and
+# milk eggs and bread" into a bulleted list; it must not here). The pipeline
+# keeps the full normalizer prompt above.
+STT_CLEANUP_WEB_PROMPT = (
+    "You are a text formatter for speech-to-text transcripts. Add missing "
+    "punctuation and fix casing and spacing only — for lists of items that "
+    "means commas between them ('milk eggs and bread' -> 'milk, eggs, and "
+    "bread'), never bullets or newlines. Do not remove, add, reword, "
+    "reorder, or restructure anything the speaker said — keep fillers "
+    "('um', 'uh'), repeats, and the original word order exactly as they "
+    "are. Output ONLY the formatted text as one continuous line. If the "
+    "input is a single word or fragment, output it as-is."
+)
+
 # Words the cleanup stage may drop without losing meaning; every other
-# raw word must survive cleaning verbatim (see the guard in _clean).
-CLEANUP_FILLERS = {"um", "uh", "hmm", "hm", "ah", "er", "eh"}
+# raw word must survive cleaning verbatim (see the guard in _clean). The
+# fillers, plus the leading discourse markers the normalizer also drops
+# (live: "um so i need to..." -> "I need to...") — a discarded "so" is
+# worth more than losing the whole cleaned sentence to the guard.
+CLEANUP_FILLERS = {"um", "uh", "hmm", "hm", "ah", "er", "eh", "so", "well", "like", "oh", "yeah", "okay"}
 
 
 def _norm_words(s: str) -> set[str]:
-    return {w for w in re.findall(r"[a-z']+", s.lower())} - CLEANUP_FILLERS
+    # Apostrophe-stripped so contractions match their un-contracted form
+    # ("Let's" == "lets") — an apostrophe is punctuation, not a new word;
+    # without this the guard rejects a perfect "lets" -> "Let's".
+    return {w.replace("'", "") for w in re.findall(r"[a-z']+", s.lower())} - CLEANUP_FILLERS
+
+
+async def _clean_transcript_text(
+    text: str,
+    model: str,
+    client: httpx.AsyncClient,
+    prompt: str,
+    on_guard: Callable[[str], None] | None = None,
+) -> str:
+    """One normalizer pass (model on `client`) with the word-survival guard.
+    Shared by the pipeline stage (TranscriptCleanupProcessor, full cleanup
+    prompt) and the /cleanup route (web-speech finals, format-only prompt).
+    Returns "" on any failure — callers fall back to the raw text."""
+
+    async def once() -> str:
+        r = await client.post(
+            "/chat/completions",
+            json={
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": prompt},
+                    {"role": "user", "content": text},
+                ],
+                "temperature": 0,
+                "max_tokens": 1024,
+            },
+        )
+        r.raise_for_status()
+        msg = r.json()["choices"][0]["message"]
+        # s1-mini writes its answer in the reasoning channel — LM Studio
+        # returns it as reasoning_content and leaves content empty.
+        return (msg.get("content") or msg.get("reasoning_content") or "").strip()
+
+    try:
+        cleaned = await once()
+        if not cleaned:
+            # s1-mini occasionally emits nothing at all (empty reasoning
+            # channel); one retry before falling back to the raw text.
+            cleaned = await once()
+        # The formatter sometimes answers as a bulleted list no matter what
+        # the prompt says ("...bought:\n- Milk\n- Eggs\n- Bread"). Flatten
+        # deterministically so a list never reaches the transcript.
+        cleaned = re.sub(r"(?m)^\s*[•*\-]\s*", "", cleaned)
+        cleaned = re.sub(r"\s*\n\s*", " ", cleaned).strip()
+        missing = _norm_words(text) - _norm_words(cleaned)
+        if cleaned and missing:
+            # The normalizer sometimes "normalizes" by deleting or rewriting
+            # words the speaker actually said (live: 'I love spreadsheets,
+            # what's exciting about yours?' -> 'What's exciting about yours?',
+            # and 'The last purchase was exciting about yours' -> a
+            # same-length rewrite). A word-count ratio can't catch same-length
+            # rewrites, so require every raw word (minus fillers) to survive.
+            # Losing the user's words is worse than the raw text — fall back
+            # to it.
+            logger.warning(
+                f"cleanup dropped words {sorted(missing)!r} "
+                f"({text!r} -> {cleaned!r}); keeping raw"
+            )
+            if on_guard:
+                on_guard(f"GUARD keep raw (missing {sorted(missing)!r}): {text!r} -> {cleaned!r}")
+            return ""
+        return cleaned
+    except Exception as e:
+        logger.warning(f"Transcript cleanup failed, passing raw text through: {e}")
+        return ""
+
 
 # --- Model providers ----------------------------------------------------------
 # A provider is enabled only when its API key is present in .env (same pattern
@@ -149,7 +244,40 @@ STT_PROVIDER_ENV_KEYS = {
     "google": None,         # google: see google_stt_available()
     "whisper-local": None,  # local: see whisper_local_available()
 }
-TTS_PROVIDER_ENV_KEYS = {"kokoro": None, "groq": "GROQ_API_KEY", "gemini": "GEMINI_API_KEY"}
+TTS_PROVIDER_ENV_KEYS = {
+    "kokoro": None,
+    "browser": None,  # Chrome speechSynthesis: the client speaks the text itself
+    "piper": None,  # local piper1-gpl (piper-tts): in-process ONNX, no key
+    "groq": "GROQ_API_KEY",
+    "gemini": "GEMINI_API_KEY",
+}
+
+# Browser-native TTS voice roster (Chrome speechSynthesis, Google voices).
+# id → the voice name Chrome reports; the client falls back to any Google
+# English voice when the exact one is missing.
+BROWSER_TTS_VOICES = {
+    "google-us-english": "Google US English",
+    "google-uk-english-female": "Google UK English Female",
+    "google-uk-english-male": "Google UK English Male",
+}
+
+# Groq's Orpheus TTS accepts exactly these voice ids (API-enforced).
+ORPHEUS_VOICES = ("autumn", "diana", "hannah", "austin", "daniel", "troy")
+ORPHEUS_DEFAULT_VOICE = "hannah"
+
+# Piper (piper1-gpl) — a tiny ONNX engine that runs in-process on CPU and
+# streams its first audio in ~50 ms (kokoro's TTFB on a laptop is ~1.5 s for
+# comparison; piper is also ~real-time for full sentences). id → display
+# name; the roster is also the allowlist (the service would happily download
+# ANY voice name — we only offer these).
+PIPER_VOICES = {
+    "en_US-amy-medium": "Amy (medium)",
+    "en_US-lessac-medium": "Lessac (medium)",
+    "en_US-ryan-high": "Ryan (high)",
+    "en_US-hfc_male-medium": "HFC Male (medium)",
+}
+PIPER_DEFAULT_VOICE = "en_US-amy-medium"
+PIPER_MODEL_DIR = Path(os.getenv("PIPER_MODEL_DIR", str(Path.home() / ".cache/son/piper")))
 
 
 def google_stt_available() -> bool:
@@ -273,7 +401,7 @@ def build_llm_service(provider: str, model: str, instruction: str):
     raise ValueError(f"Unknown LLM provider: {provider}")
 
 
-def build_stt_service(provider: str, model: str):
+def build_stt_service(provider: str, model: str, echo_roll=None):
     if provider == "groq":
         return GroqSTTService(
             api_key=require_env("GROQ_API_KEY"),
@@ -295,7 +423,7 @@ def build_stt_service(provider: str, model: str):
     if provider == "parakeet":
         # Local NVIDIA Parakeet TDT via sherpa-onnx (ONNX on CPU). The model
         # (~660 MB) downloads once into ~/.cache/son/parakeet on first use.
-        return parakeet_stt.ParakeetSTTService(model=model)
+        return parakeet_stt.ParakeetSTTService(model=model, echo_roll=echo_roll)
     if provider == "whisper-local":
         # Fine-tuned whisper via whisper.cpp. whisper.cpp's /inference isn't
         # OpenAI-shaped, so the whisper_local.py shim bridges the multipart
@@ -314,6 +442,10 @@ def build_tts_service(provider: str, model: str | None, voice: str | None):
     # MarkdownToSpeechFilter: strip markdown markers from what the TTS
     # synthesizes, per sentence, without touching the transcript stream.
     filters = [MarkdownToSpeechFilter()]
+    if provider == "browser":
+        # Browser-native TTS (Chrome speechSynthesis): no server synthesis —
+        # the client speaks the streamed LLM text itself.
+        return None
     if provider == "kokoro":
         return KokoroTTSService(
             settings=KokoroTTSService.Settings(voice=voice or KOKORO_VOICE),
@@ -329,6 +461,22 @@ def build_tts_service(provider: str, model: str | None, voice: str | None):
         return GeminiTTSService(
             api_key=os.getenv("GEMINI_API_KEY"),
             settings=GeminiTTSService.Settings(model=model, voice=voice),
+            text_filters=filters,
+        )
+    if provider == "piper":
+        # piper-tts is GPL-3 — import lazily so plain son.py runs don't pay
+        # the import cost, and a missing package only fails this branch.
+        # Full module path: the package __init__ doesn't re-export the service.
+        from pipecat.services.piper.tts import PiperTTSService
+
+        # The client sends the piper voice id as `id` → model (display names
+        # arrive in `voice` and are not model names): accept roster ids only.
+        vid = model if model in PIPER_VOICES else None
+        if vid is None and voice in PIPER_VOICES:
+            vid = voice
+        return PiperTTSService(
+            settings=PiperTTSService.Settings(voice=vid or PIPER_DEFAULT_VOICE),
+            download_dir=PIPER_MODEL_DIR,
             text_filters=filters,
         )
     raise ValueError(f"Unknown TTS provider: {provider}")
@@ -426,10 +574,19 @@ def resolve_speak_voice(payload: dict) -> tuple[str, str | None, str | None]:
     ):
         logger.warning(f"TTS provider '{provider}' unavailable; using kokoro")
         provider = "kokoro"
+    if provider == "browser":
+        # Browser speechSynthesis can't return a WAV — the read page needs
+        # server-side synthesis, so fall back to the local voice (and drop
+        # the browser voice id, which kokoro would reject).
+        logger.warning("TTS provider 'browser' not usable for /speak; using kokoro")
+        provider, choice = "kokoro", {"provider": "kokoro", "id": None}
     if provider == "kokoro":
         model, voice = None, choice.get("id")
     else:
-        model, voice = choice.get("id"), None
+        model, voice = choice.get("id"), choice.get("voice")
+    if provider == "groq" and voice not in ORPHEUS_VOICES:
+        logger.warning(f"Groq TTS voice '{voice}' invalid; using '{ORPHEUS_DEFAULT_VOICE}'")
+        voice = ORPHEUS_DEFAULT_VOICE
     return provider, model, voice
 
 
@@ -716,59 +873,51 @@ class TranscriptCleanupProcessor(FrameProcessor):
         await self.push_frame(frame, direction)
 
     async def _clean(self, text: str) -> str:
-        async def once() -> str:
-            r = await self._client.post(
-                "/chat/completions",
-                json={
-                    "model": self._model,
-                    "messages": [
-                        {"role": "system", "content": STT_CLEANUP_SYSTEM_PROMPT},
-                        {"role": "user", "content": text},
-                    ],
-                    "temperature": 0,
-                    "max_tokens": 1024,
-                },
-            )
-            r.raise_for_status()
-            msg = r.json()["choices"][0]["message"]
-            # s1-mini writes its answer in the reasoning channel — LM Studio
-            # returns it as reasoning_content and leaves content empty.
-            return (msg.get("content") or msg.get("reasoning_content") or "").strip()
-
-        try:
-            cleaned = await once()
-            if not cleaned:
-                # s1-mini occasionally emits nothing at all (empty reasoning
-                # channel); one retry before falling back to the raw text.
-                cleaned = await once()
-            missing = _norm_words(text) - _norm_words(cleaned)
-            if cleaned and missing:
-                # s1-mini sometimes "normalizes" by deleting or rewriting
-                # words the speaker actually said (live: 'I love
-                # spreadsheets, what's exciting about yours?' -> 'What's
-                # exciting about yours?', and 'The last purchase was
-                # exciting about yours' -> a same-length rewrite). A
-                # word-count ratio can't catch same-length rewrites, so
-                # require every raw word (minus fillers) to survive.
-                # Losing the user's words is worse than the raw text —
-                # fall back to it.
-                logger.warning(
-                    f"cleanup dropped words {sorted(missing)!r} "
-                    f"({text!r} -> {cleaned!r}); keeping raw"
-                )
-                self._debug_log(
-                    f"GUARD keep raw (missing {sorted(missing)!r}): "
-                    f"{text!r} -> {cleaned!r}"
-                )
-                return ""
-            return cleaned
-        except Exception as e:
-            logger.warning(f"Transcript cleanup failed, passing raw text through: {e}")
-            return ""
+        return await _clean_transcript_text(
+            text, self._model, self._client, STT_CLEANUP_SYSTEM_PROMPT, self._debug_log
+        )
 
     async def cleanup(self):
         await self._client.aclose()
         await super().cleanup()
+
+
+class EmptyTurnRetryProcessor(FrameProcessor):
+    """Retry an LLM run that produced no speech text.
+
+    Some model/provider hiccups answer a request with an empty completion
+    (Gemini's MALFORMED_RESPONSE finish reason, a locally reloaded model
+    returning nothing): the turn opens and closes with zero LLMTextFrame, so
+    the user hears nothing and the bot never answers. Retry once — a second
+    run of the same context usually succeeds (the observed recovery: the
+    following utterance produced the full reply). Skips the retry when the
+    run was interrupted by the user (a barge-in legitimately aborts it)."""
+
+    def __init__(self):
+        super().__init__()
+        self._text_seen = False
+        self._retried = False
+
+    async def process_frame(self, frame, direction):
+        await super().process_frame(frame, direction)
+        if isinstance(frame, LLMFullResponseStartFrame):
+            self._text_seen = False
+            self._retried = False
+        elif isinstance(frame, LLMTextFrame):
+            self._text_seen = True
+        elif isinstance(frame, InterruptionFrame):
+            # A barge-in legitimately aborts the run — don't re-answer a
+            # question the user already overrode.
+            self._retried = True
+        elif (
+            isinstance(frame, LLMFullResponseEndFrame)
+            and not self._text_seen
+            and not self._retried
+        ):
+            self._retried = True
+            logger.warning("LLM turn produced no text — retrying once")
+            await self.push_frame(LLMRunFrame(), FrameDirection.UPSTREAM)
+        await self.push_frame(frame, direction)
 
 
 async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> None:
@@ -787,8 +936,8 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> Non
     # absent, unknown, or gated by a missing key falls back to the default.
     defaults = {
         "llm": {"provider": "groq", "model": GROQ_MODEL},
-        "stt": {"provider": "groq", "model": GROQ_STT_MODEL},
-        "tts": {"provider": "kokoro", "model": None, "voice": KOKORO_VOICE},
+        "stt": {"provider": "parakeet", "model": "csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8"},
+        "tts": {"provider": "piper", "model": PIPER_DEFAULT_VOICE, "voice": None},
     }
 
     llm_choice = {**defaults["llm"], **(custom_data.get("llm") or {})}
@@ -800,7 +949,9 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> Non
 
     stt_choice = {**defaults["stt"], **(custom_data.get("stt") or {})}
     stt_provider = stt_choice.get("provider")
-    stt_available = (
+    # "web-speech" is a browser-side STT (Chrome's SpeechRecognition): no
+    # server service, text arrives via RTVI send-text. Keyless, always on.
+    stt_available = stt_provider == "web-speech" or (
         google_stt_available()
         if stt_provider == "google"
         else whisper_local_available()
@@ -831,6 +982,13 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> Non
             tts_choice["voice"] = tts_choice["id"]
     elif tts_choice.get("id"):
         tts_choice["model"] = tts_choice["id"]
+    # Groq's Orpheus TTS enforces its voice roster server-side; a kokoro
+    # voice id (the merged default) would 400 the whole turn.
+    if tts_choice.get("provider") == "groq" and tts_choice.get("voice") not in ORPHEUS_VOICES:
+        logger.warning(
+            f"Groq TTS voice '{tts_choice.get('voice')}' invalid; using '{ORPHEUS_DEFAULT_VOICE}'"
+        )
+        tts_choice["voice"] = ORPHEUS_DEFAULT_VOICE
 
     logger.info(
         f"Session: role={role_file} "
@@ -840,9 +998,20 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> Non
         + (f" cleanup={STT_CLEANUP_MODEL}" if STT_CLEANUP_MODEL else "")
     )
 
-    stt = build_stt_service(stt_choice["provider"], stt_choice.get("model"))
+    # The echo guard's bot-audio roll: filled by the capture processor on the
+    # TTS branch, queried by the local STT services (see echo_guard.py).
+    echo_roll = echo_guard.BotAudioRoll()
+    stt = (
+        None
+        if stt_choice["provider"] == "web-speech"  # text arrives via RTVI send-text
+        else build_stt_service(stt_choice["provider"], stt_choice.get("model"), echo_roll)
+    )
     llm = build_llm_service(llm_choice["provider"], llm_choice.get("model"), instruction)
-    tts = build_tts_service(tts_choice["provider"], tts_choice.get("model"), tts_choice.get("voice"))
+    tts = (
+        None
+        if tts_choice["provider"] == "browser"  # client speaks the text itself
+        else build_tts_service(tts_choice["provider"], tts_choice.get("model"), tts_choice.get("voice"))
+    )
 
     # Session persistence: the client owns the session id (a uuid sent in
     # custom_data), so a session survives reconnects and bot restarts. A
@@ -902,15 +1071,28 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> Non
     stages = [
         transport.input(),
         SegmentCaptureProcessor(),  # repeat-capture roll (debug instrument)
-        stt,
     ]  # user audio -> speech -> text
+    if stt is not None:
+        stages.append(stt)  # absent for web-speech: text comes from the browser
     if cleanup:
         stages.append(cleanup)  # ... -> clean the raw transcript
+    empty_retry = EmptyTurnRetryProcessor()
     stages.extend(
         [
             user_aggregator,    # user turns into conversation context
             llm,                # next assistant reply
-            tts,                # Kokoro local: text -> speech (markdown stripped in-service)
+            empty_retry,  # one retry if the reply comes back empty (see class)
+        ]
+    )
+    if tts is not None:
+        # Kokoro local: text -> speech (markdown stripped in-service). Absent
+        # for browser TTS: the client speaks the LLM text itself.
+        stages.append(tts)
+        # Tee the bot's audio into the echo guard roll (the STT tests its
+        # candidate turns against this to drop the bot's own voice).
+        stages.append(echo_guard.BotAudioCaptureProcessor(echo_roll))
+    stages.extend(
+        [
             transport.output(), # audio back to the browser
             assistant_aggregator,  # assistant turns into conversation context
         ]
@@ -1058,8 +1240,14 @@ def _fetch_models() -> dict:
                 stt.append({"provider": "groq", "id": mid, "label": mid})
             elif low.startswith(("playai", "cartesia", "eleven")) or "tts" in low or "orpheus" in low:
                 # canopylabs/orpheus-* is Groq's TTS model (guard/safety ids
-                # hide mid-string, so match substrings, not prefixes)
-                tts.append({"provider": "groq", "id": mid, "label": mid})
+                # hide mid-string, so match substrings, not prefixes). The
+                # API enforces its voice roster, so offer one entry per voice.
+                # Only the English model is offered — the Arabic variant's
+                # voices don't fit the roster.
+                if "arabic" in low:
+                    continue
+                for voice in ORPHEUS_VOICES:
+                    tts.append({"provider": "groq", "id": mid, "voice": voice, "label": f"Orpheus · {voice}"})
             elif "prompt-guard" not in low and "safeguard" not in low:
                 llm.append({"provider": "groq", "id": mid, "label": mid})
 
@@ -1163,6 +1351,9 @@ def _fetch_models() -> dict:
     if parakeet_stt.parakeet_stt_available():
         for mid, label in parakeet_stt.PARAKEET_MODELS.items():
             stt.append({"provider": "parakeet", "id": mid, "label": label})
+    # Browser-side STT (Chrome's SpeechRecognition): no server audio path,
+    # text lands via RTVI send-text. Chrome-only by nature.
+    stt.append({"provider": "web-speech", "id": "browser", "label": "Browser · Web Speech"})
 
     # Fine-tuned voice-model whisper: listed when the whisper.cpp server is up.
     if whisper_local_available():
@@ -1176,6 +1367,14 @@ def _fetch_models() -> dict:
 
     for voice in KOKORO_VOICES:
         tts.append({"provider": "kokoro", "id": voice, "label": voice})
+    # Piper local voices — in-process ONNX, no API key, first audio in ~50 ms.
+    for vid, vname in PIPER_VOICES.items():
+        tts.append({"provider": "piper", "id": vid, "voice": vname, "label": f"Piper · {vname}"})
+    # Browser-native TTS (Chrome speechSynthesis, Google neural voices): no
+    # server audio path — the client speaks the streamed text. Voice names
+    # vary per browser/OS; the client resolves and falls back.
+    for vid, vname in BROWSER_TTS_VOICES.items():
+        tts.append({"provider": "browser", "id": vid, "label": f"Browser · {vname}"})
 
     return {"llm": llm, "stt": stt, "tts": tts}
 
@@ -1193,7 +1392,9 @@ if __name__ == "__main__":
         if _MODELS_CACHE is None or now - _MODELS_CACHE_AT > _MODELS_TTL:
             _MODELS_CACHE = _fetch_models()
             _MODELS_CACHE_AT = now
-        return _MODELS_CACHE
+        # Whether the transcript cleanup stage is on: the client hides the
+        # raw web-speech text behind a loading bubble when it's available.
+        return {**_MODELS_CACHE, "cleanup": bool(STT_CLEANUP_MODEL)}
 
     @app.get("/sessions")
     def sessions_list() -> list[dict]:
@@ -1238,6 +1439,49 @@ if __name__ == "__main__":
             logger.warning(f"/speak failed ({provider}): {e}")
             raise HTTPException(status_code=502, detail=f"Speech failed: {e}")
         return Response(content=wav, media_type="audio/wav")
+
+    @app.post("/cleanup", include_in_schema=False)
+    def cleanup(payload: dict = Body(...)) -> dict:
+        """Punctuation/formatting pass for browser-side STT. Web-speech finals
+        arrive via RTVI send-text and never enter TranscriptCleanupProcessor,
+        so the client normalizes them here with the same model/prompt/guard
+        before the brain sees the turn. Server-side STT (parakeet/groq/…)
+        cleans in-pipeline and never calls this route. Failures return the
+        original text — cleanup must never stall a turn."""
+        text = (payload.get("text") or "").strip()
+        if not text:
+            raise HTTPException(status_code=400, detail="Nothing to clean.")
+        if not STT_CLEANUP_MODEL:
+            raise HTTPException(
+                status_code=503,
+                detail="Cleanup disabled: set STT_CLEANUP_MODEL (a local model, e.g. on LM Studio).",
+            )
+
+        async def run() -> str:
+            # A fresh client per call: httpx pools are bound to the event
+            # loop the client was created in, and each asyncio.run spins a
+            # new loop — a reused client dies with "Event loop is closed".
+            # (The pipeline's processor keeps one client for its lifetime:
+            # the pipecat loop never changes.)
+            client = httpx.AsyncClient(
+                base_url=STT_CLEANUP_BASE_URL,
+                headers=(
+                    {"Authorization": f"Bearer {os.getenv('LMSTUDIO_API_KEY')}"}
+                    if os.getenv("LMSTUDIO_API_KEY")
+                    else {}
+                ),
+                timeout=20.0,
+            )
+            try:
+                # Web-speech finals are format-only: punctuation, casing,
+                # spacing — nothing else (see STT_CLEANUP_WEB_PROMPT).
+                return await _clean_transcript_text(
+                    text, STT_CLEANUP_MODEL, client, STT_CLEANUP_WEB_PROMPT
+                )
+            finally:
+                await client.aclose()
+
+        return {"text": asyncio.run(run()) or text}
 
     def unique_path(dst: Path) -> Path:
         """If dst exists, pick the next Finder-style name — "read (2).mp3",

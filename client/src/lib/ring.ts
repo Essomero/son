@@ -28,7 +28,16 @@ export function drawRing(
   muted = false,
 ) {
   const dpr = window.devicePixelRatio || 1;
-  const css = spec.size;
+  // Track the canvas's ACTUAL css size (it stretches with .mic-wrap in
+  // narrow layouts) — drawing at the constant spec.size would leave the
+  // ring centered on the wrong point and clip at the edges. Trust
+  // clientWidth only up to 2x the spec: an unsized canvas reports its own
+  // attribute-driven size back as clientWidth, which would feedback-loop
+  // into a tens-of-millions-pixel buffer (Chrome paints that as failed
+  // white tiles — the giant white box).
+  const raw = canvas.clientWidth || spec.size;
+  const css = Math.min(raw, spec.size * 2);
+  const scale = css / spec.size;
   if (canvas.width !== Math.round(css * dpr) || canvas.height !== Math.round(css * dpr)) {
     canvas.width = Math.round(css * dpr);
     canvas.height = Math.round(css * dpr);
@@ -47,17 +56,21 @@ export function drawRing(
   const cx = css / 2;
   const cy = css / 2;
   const rot = -Math.PI / 2;
+  const radius = spec.radius * scale;
+  const thickness = spec.thickness * scale;
+  const minBar = spec.minBar * scale;
+  const maxBar = spec.maxBar * scale;
 
   for (let i = 0; i < n; i++) {
     const v = bars[i] ?? 0;
     const ang = (i / n) * Math.PI * 2 + rot;
-    const len = spec.minBar + v * (spec.maxBar - spec.minBar);
-    const r0 = spec.radius;
-    const r1 = spec.radius + len;
+    const len = minBar + v * (maxBar - minBar);
+    const r0 = radius;
+    const r1 = radius + len;
     // Quiet at silence (a faint breathing ring), loud when you talk.
     ctx.globalAlpha = spec.alpha * (0.2 + 0.8 * v);
     ctx.strokeStyle = spec.color;
-    ctx.lineWidth = spec.thickness;
+    ctx.lineWidth = thickness;
     ctx.beginPath();
     ctx.moveTo(cx + Math.cos(ang) * r0, cy + Math.sin(ang) * r0);
     ctx.lineTo(cx + Math.cos(ang) * r1, cy + Math.sin(ang) * r1);

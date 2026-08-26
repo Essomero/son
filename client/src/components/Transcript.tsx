@@ -63,7 +63,25 @@ export function Transcript({
               <div className="row-body">
                 <span className="row-name">You</span>
                 <div className="bubble">
-                  <Markdown>{m.text}</Markdown>
+                  {m.pending && !m.final ? (
+                    <span className="bubble-loading" aria-label="Normalizing your speech…">
+                      {/* The raw final is invisible but sizes the bubble to
+                          exactly that utterance's footprint (same wrap
+                          points) — the cleaned text differs by a few chars,
+                          so the swap lands in place, not on a generic
+                          average bubble. */}
+                      <span className="bubble-loading-sizer" aria-hidden>
+                        {m.text}
+                      </span>
+                      <span className="bubble-loading-dots" aria-hidden>
+                        <span className="dot" />
+                        <span className="dot" />
+                        <span className="dot" />
+                      </span>
+                    </span>
+                  ) : (
+                    <Markdown>{m.text}</Markdown>
+                  )}
                 </div>
               </div>
             </div>

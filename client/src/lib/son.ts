@@ -14,6 +14,7 @@ export const SESSIONS_URL = BOT_BASE + "/sessions";
 export const SPEAK_URL = BOT_BASE + "/speak";
 export const EXPORT_URL = BOT_BASE + "/export";
 export const EXPORT_DEFAULTS_URL = BOT_BASE + "/export/defaults";
+export const CLEANUP_URL = BOT_BASE + "/cleanup";
 // Root-absolute like the others: the chat route /s/<id> puts the page at a
 // different depth, so a relative "roles.json" would resolve under /s/... and
 // 404. Every fetch must use these, not a bare relative path.
@@ -24,6 +25,38 @@ let uidCounter = 0;
 export function uid(): string {
   uidCounter += 1;
   return `m${Date.now().toString(36)}-${uidCounter}`;
+}
+
+/**
+ * Punctuation/formatting pass for web-speech finals. Browser finals arrive
+ * via RTVI send-text and never enter the server's cleanup pipeline, so the
+ * client asks the server to normalize them with the same model/prompt/guard.
+ * Returns "" on any failure (server down, cleanup disabled, timeout) — the
+ * caller falls back to the raw text: a turn must never stall on cleanup.
+ */
+export async function cleanTranscript(text: string): Promise<string> {
+  try {
+    const ctl = new AbortController();
+    // 10 s, not 4: the loading bubble hides the wait, and a cold-loaded
+    // local model (LM Studio unloads after idle) needs ~9 s on CPU — a 4 s
+    // cap silently degraded every first turn to raw text.
+    const timer = window.setTimeout(() => ctl.abort(), 10000);
+    try {
+      const r = await fetch(CLEANUP_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text }),
+        signal: ctl.signal,
+      });
+      if (!r.ok) return "";
+      const d = (await r.json()) as { text?: unknown };
+      return typeof d.text === "string" ? d.text.trim() : "";
+    } finally {
+      window.clearTimeout(timer);
+    }
+  } catch {
+    return "";
+  }
 }
 
 /**
@@ -62,6 +95,23 @@ export function mergeUserText(msgs: Msg[], text: string, final: boolean, ts?: st
   if (!text) return msgs;
   const last = msgs[msgs.length - 1];
   if (last?.role === "user") {
+    // Web-speech path: finals arrive WITHOUT a ts while the last row holds
+    // the interim preview (no spans yet). Appending would duplicate the
+    // text — finalize in place instead (a corrected final replaces the
+    // preview).
+    if (final && !ts && !last.final && !last.spans?.length) {
+      return [
+        ...msgs.slice(0, -1),
+        {
+          ...last,
+          text,
+          final: true,
+          base: text,
+          spans: [{ ts: undefined, text }],
+          pending: false, // a finalized row never shows the loading bubble
+        },
+      ];
+    }
     const spans = last.spans ?? [];
     if (final && ts) {
       const i = spans.findIndex((s) => s.ts === ts);
@@ -69,7 +119,10 @@ export function mergeUserText(msgs: Msg[], text: string, final: boolean, ts?: st
         const next = [...spans];
         next[i] = { ...next[i], text };
         const base = next.map((s) => s.text).join(" ");
-        return [...msgs.slice(0, -1), { ...last, spans: next, base, text: base, final: true }];
+        return [
+          ...msgs.slice(0, -1),
+          { ...last, spans: next, base, text: base, final: true, pending: false },
+        ];
       }
     }
     const nextSpans = final ? [...spans, { ts, text }] : spans;
@@ -77,7 +130,14 @@ export function mergeUserText(msgs: Msg[], text: string, final: boolean, ts?: st
     const nextText = base ? `${base} ${text}` : text;
     return [
       ...msgs.slice(0, -1),
-      { ...last, spans: nextSpans, text: nextText, final: final || last.final, base },
+      {
+        ...last,
+        spans: nextSpans,
+        text: nextText,
+        final: final || last.final,
+        base,
+        pending: final ? false : last.pending,
+      },
     ];
   }
   const spans = final ? [{ ts, text }] : [];

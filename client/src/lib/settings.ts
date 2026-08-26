@@ -10,8 +10,8 @@ const SETTINGS_KEY = "son.settings";
 
 export const DEFAULT_CHOICES: Record<Capability, Choice> = {
   llm: { provider: "groq", id: "openai/gpt-oss-120b" },
-  stt: { provider: "groq", id: "whisper-large-v3-turbo" },
-  tts: { provider: "kokoro", id: "af_heart" },
+  stt: { provider: "parakeet", id: "csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8" },
+  tts: { provider: "piper", id: "en_US-amy-medium" },
 };
 
 // If the bot isn't running the picker still needs a usable roster.
@@ -20,8 +20,25 @@ export const FALLBACK_MODELS: Models = {
     { provider: "groq", id: "openai/gpt-oss-120b", label: "openai/gpt-oss-120b" },
     { provider: "lmstudio", id: "ornith-1.5-9b-mlx", label: "ornith-1.5-9b-mlx" },
   ],
-  stt: [{ provider: "groq", id: "whisper-large-v3-turbo", label: "whisper-large-v3-turbo" }],
+  stt: [
+    { provider: "parakeet", id: "csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8", label: "parakeet-tdt-0.6b-v3 · local" },
+    { provider: "groq", id: "whisper-large-v3-turbo", label: "whisper-large-v3-turbo" },
+    { provider: "web-speech", id: "browser", label: "Browser · Web Speech" },
+  ],
   tts: [
+    { provider: "piper", id: "en_US-amy-medium", voice: "Amy (medium)", label: "Piper · Amy (medium)" },
+    { provider: "piper", id: "en_US-lessac-medium", voice: "Lessac (medium)", label: "Piper · Lessac (medium)" },
+    { provider: "piper", id: "en_US-ryan-high", voice: "Ryan (high)", label: "Piper · Ryan (high)" },
+    { provider: "piper", id: "en_US-hfc_male-medium", voice: "HFC Male (medium)", label: "Piper · HFC Male (medium)" },
+    ...["autumn", "diana", "hannah", "austin", "daniel", "troy"].map((v) => ({
+      provider: "groq",
+      id: "canopylabs/orpheus-v1-english",
+      voice: v,
+      label: `Orpheus · ${v}`,
+    })),
+    { provider: "browser", id: "google-us-english", label: "Browser · Google US English" },
+    { provider: "browser", id: "google-uk-english-female", label: "Browser · Google UK English Female" },
+    { provider: "browser", id: "google-uk-english-male", label: "Browser · Google UK English Male" },
     { provider: "kokoro", id: "af_heart", label: "af_heart" },
     { provider: "kokoro", id: "af_bella", label: "af_bella" },
     { provider: "kokoro", id: "am_adam", label: "am_adam" },
@@ -49,8 +66,19 @@ export function resolveChoice(
   saved?: Settings,
 ): Choice | null {
   const wanted = saved?.[cap] ?? DEFAULT_CHOICES[cap];
-  if (wanted && options.some((o) => o.provider === wanted.provider && o.id === wanted.id)) {
-    return wanted;
+  const match = wanted
+    ? options.find(
+        (o) =>
+          o.provider === wanted.provider &&
+          o.id === wanted.id &&
+          (!wanted.voice || o.voice === wanted.voice),
+      )
+    : undefined;
+  if (match) {
+    // Old saved choices predate the voice field (cloud TTS entries all
+    // share one model id) — adopt the roster's voice so exactly one card
+    // matches instead of all of them.
+    return !wanted.voice && match.voice ? { ...wanted, voice: match.voice } : wanted;
   }
   const first = options[0];
   return first ? { provider: first.provider, id: first.id } : null;

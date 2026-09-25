@@ -16,6 +16,7 @@ import { Transcript, ComposerBar } from "./components/Transcript";
 import { SettingsModal } from "./components/SettingsModal";
 import { PersonaModal } from "./components/PersonaModal";
 import { Reader } from "./components/Reader";
+import { Dictate } from "./components/Dictate";
 import type { Role } from "./lib/types";
 import { FALLBACK_MODELS, resolveChoice } from "./lib/settings";
 import { sessionIdFromPath } from "./lib/chatRoute";
@@ -28,6 +29,8 @@ export default function App() {
   const [personaOpen, setPersonaOpen] = useState(false);
   const [panelOpen, setPanelOpen] = useState(() => localStorage.getItem(PANEL_KEY) !== "0");
   const [view, setView] = useState<"chat" | "reader">("chat");
+  /** Which side of the reader page: text → speech, or speech → text. */
+  const [readerMode, setReaderMode] = useState<"read" | "speak">("read");
 
   useEffect(() => {
     localStorage.setItem(PANEL_KEY, panelOpen ? "1" : "0");
@@ -109,10 +112,15 @@ export default function App() {
         roles={s.roles}
         panelOpen={panelOpen}
         view={view}
+        readerMode={readerMode}
         onSelectRole={s.selectRole}
         onNewSession={() => void s.newSession()}
         onTogglePanel={() => setPanelOpen((v) => !v)}
         onToggleView={() => setView((v) => (v === "chat" ? "reader" : "chat"))}
+        onReaderMode={(mode) => {
+          setReaderMode(mode);
+          setView("reader");
+        }}
         onEndSession={() => void s.disconnect()}
         onOpenSettings={() => setSettingsOpen(true)}
       />
@@ -127,56 +135,65 @@ export default function App() {
           onDelete={(id) => void sessions.remove(id)}
         />
 
-        <main className="stage">
-          {view === "reader" ? (
-            <Reader
-              models={models}
-              settings={s.settings}
-              onChangeVoice={(c) => s.updateSettings({ ...s.settings, tts: c })}
-              onChangeSettings={(patch) => s.updateSettings({ ...s.settings, ...patch })}
-            />
-          ) : inChat ? (
-            <>
-              <Transcript
-                messages={s.messages}
-                role={s.role}
-                voiceChoice={voiceChoice}
-                activeBotId={s.activeBotId}
-                subscribe={subscribe}
-                phase={s.phase}
-                status={s.status}
-              />
-              {s.phase === "connected" ? (
-                <ComposerBar
-                  phase={s.phase}
-                  muted={s.muted}
-                  micDisabled={false}
-                  onToggleMute={() => void s.toggleMute()}
-                  subscribe={subscribe}
-                  onSend={s.sendText}
-                />
+        {/* The main area is the scroller — not the document (which took the
+            header and the rail away with it) and not the inner column (which
+            left the gutters dead to the wheel). The rail keeps its own scroll. */}
+        <div className="main">
+          <main className="stage">
+            {view === "reader" ? (
+              readerMode === "speak" ? (
+                <Dictate />
               ) : (
-                <div className="ended-bar">
-                  <span className="ended-text">Session ended — the conversation stays here.</span>
-                  <button type="button" className="btn ghost" onClick={() => void s.connect()}>
-                    Talk again
-                  </button>
-                </div>
-              )}
-            </>
-          ) : (
-            <Hero
-              roles={s.roles}
-              customRoles={s.customRoles}
-              selected={s.role}
-              phase={s.phase}
-              onSelect={s.selectRole}
-              onConnect={() => void s.connect()}
-              onAddCustom={() => setPersonaOpen(true)}
-              onRemoveCustom={s.removeCustomRole}
-            />
-          )}
-        </main>
+                <Reader
+                  models={models}
+                  settings={s.settings}
+                  onChangeVoice={(c) => s.updateSettings({ ...s.settings, tts: c })}
+                  onChangeSettings={(patch) => s.updateSettings({ ...s.settings, ...patch })}
+                />
+              )
+            ) : inChat ? (
+              <>
+                <Transcript
+                  messages={s.messages}
+                  role={s.role}
+                  voiceChoice={voiceChoice}
+                  activeBotId={s.activeBotId}
+                  subscribe={subscribe}
+                  phase={s.phase}
+                  status={s.status}
+                />
+                {s.phase === "connected" ? (
+                  <ComposerBar
+                    phase={s.phase}
+                    muted={s.muted}
+                    micDisabled={false}
+                    onToggleMute={() => void s.toggleMute()}
+                    subscribe={subscribe}
+                    onSend={s.sendText}
+                  />
+                ) : (
+                  <div className="ended-bar">
+                    <span className="ended-text">Session ended — the conversation stays here.</span>
+                    <button type="button" className="btn ghost" onClick={() => void s.connect()}>
+                      Talk again
+                    </button>
+                  </div>
+                )}
+              </>
+            ) : (
+              <Hero
+                roles={s.roles}
+                customRoles={s.customRoles}
+                selected={s.role}
+                phase={s.phase}
+                onSelect={s.selectRole}
+                onConnect={() => void s.connect()}
+                onAddCustom={() => setPersonaOpen(true)}
+                onRemoveCustom={s.removeCustomRole}
+              />
+            )}
+          </main>
+        </div>
       </div>
 
       {personaOpen && (

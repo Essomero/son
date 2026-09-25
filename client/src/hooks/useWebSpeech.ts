@@ -15,15 +15,25 @@ function speechRecognitionCtor(): any | null {
   return w.SpeechRecognition || w.webkitSpeechRecognition || null;
 }
 
+/** Is there a recognizer in this browser at all? Chrome and Edge only. */
+export function webSpeechAvailable(): boolean {
+  return speechRecognitionCtor() !== null;
+}
+
 export function useWebSpeech(
   onResult: ResultHandler,
   enabled: boolean,
   onSound?: (active: boolean) => void,
+  /** Every recognition error, by the API's own code. This hook only decides
+   *  when to stop restarting; what a reason *means* is the caller's business. */
+  onError?: (reason: string) => void,
 ) {
   const handlerRef = useRef(onResult);
   handlerRef.current = onResult;
   const soundRef = useRef(onSound);
   soundRef.current = onSound;
+  const errorRef = useRef(onError);
+  errorRef.current = onError;
 
   useEffect(() => {
     if (!enabled) return;
@@ -71,16 +81,18 @@ export function useWebSpeech(
     rec.onsoundstart = () => soundRef.current?.(true);
     rec.onsoundend = () => soundRef.current?.(false);
     rec.onerror = (e: any) => {
+      const reason: string = e?.error ?? "unknown";
+      errorRef.current?.(reason);
       // "not-allowed"/"service-not-allowed" is permanent — stop restarting.
-      if (e.error === "not-allowed" || e.error === "service-not-allowed") {
-        console.warn("[Son] Web Speech permission denied:", e.error);
+      if (reason === "not-allowed" || reason === "service-not-allowed") {
+        console.warn("[Son] Web Speech permission denied:", reason);
         rec.stop();
         return;
       }
       // A dying session's errors come in bursts (no-speech storms after
       // barge-ins) as the engine restarts; log the first of a burst only.
-      if (e.error !== "no-speech" || quickEnds === 0) {
-        console.warn("[Son] Web Speech error:", e.error);
+      if (reason !== "no-speech" || quickEnds === 0) {
+        console.warn("[Son] Web Speech error:", reason);
       }
     };
     // The API ends on silence; restart to keep listening (onend fires after

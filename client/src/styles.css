@@ -49,8 +49,13 @@ body {
   margin: 0;
   color: var(--ink);
   font: 15px/1.55 var(--font-ui);
+  /* One glow, once. `background-repeat` defaults to repeat, so any document
+     taller than the viewport shows a second copy of the gradient — a lighter
+     band rising out of the frame's bottom edge whenever something overflows
+     (the reader's long content did exactly that). */
   background:
-    radial-gradient(1100px 460px at 50% -12%, rgba(239, 159, 67, 0.07), transparent 65%),
+    radial-gradient(1100px 460px at 50% -12%, rgba(239, 159, 67, 0.07), transparent 65%)
+      no-repeat,
     var(--bg);
   -webkit-font-smoothing: antialiased;
 }
@@ -122,6 +127,19 @@ code {
   flex: 1;
   min-height: 0;
   display: flex;
+}
+
+/* The main area — everything right of the rail — is what scrolls: on the
+   Read | Speak pages the whole area responds to the wheel, so a tall page never
+   leaves dead gutters and the document itself never scrolls (which would carry
+   the header and the rail off with it). The rail scrolls on its own, and the
+   chat's transcript keeps its own scrollbar inside this one. */
+.main {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
 }
 
 .stage {
@@ -1626,6 +1644,95 @@ code {
   display: flex;
   flex-direction: column;
   gap: 14px;
+  /* Grows to fill a short stage, and past it when the content is tall — the
+     overflow belongs to `.main`, so scrolling works anywhere in the main area
+     rather than only over this column. `min-height: auto` (the default) is what
+     lets it grow past the stage instead of being pinned to it. */
+  flex: 1;
+}
+
+/* --- Read | Speak: the header mode slider --------------------------------- */
+
+/* Two segments in one pill, with a highlight that slides between them — the
+   same construction as the Write/Preview tabs inside the Read page. The
+   segments are equal width (`flex: 1 1 0` + `min-width: 0`), which is what lets
+   the thumb be exactly half the track. */
+.mode-slider {
+  position: relative;
+  display: flex;
+  flex: none;
+  gap: 3px;
+  padding: 3px;
+  width: 168px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+}
+
+.mode-slider-thumb {
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  left: 3px;
+  width: calc(50% - 4.5px); /* half the track, less padding, border and the gap */
+  background: var(--raised);
+  border: 1px solid var(--amber);
+  border-radius: 6px;
+  transition: transform 0.18s ease;
+}
+
+.mode-slider[data-mode="speak"] .mode-slider-thumb {
+  transform: translateX(calc(100% + 3px));
+}
+
+.mode-btn {
+  position: relative;
+  z-index: 1;
+  flex: 1 1 0;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  border-radius: 6px;
+  padding: 4px 0;
+  font: 500 13px var(--font-ui);
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  transition: color 0.15s;
+}
+
+.mode-btn:hover {
+  color: var(--ink-dim);
+}
+
+.mode-btn[aria-checked="true"] {
+  color: var(--amber-hi);
+}
+
+.mode-slider:focus-within {
+  outline: 2px solid var(--amber-hi);
+  outline-offset: 2px;
+}
+
+.dictate-interim {
+  margin: -6px 2px 0;
+  min-height: 19px;
+  color: var(--muted);
+  font-style: italic;
+}
+
+.reader-meta .dictate-copied {
+  color: var(--amber-hi);
+}
+
+.dictate-live {
+  animation: dictate-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes dictate-pulse {
+  50% {
+    box-shadow: 0 0 0 6px rgba(239, 159, 67, 0.12);
+  }
 }
 
 .reader .field {
@@ -1662,6 +1769,7 @@ code {
 .reader-actions {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 12px;
 }
 

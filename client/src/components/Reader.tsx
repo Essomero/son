@@ -8,7 +8,7 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Check, Copy, Download, ImagePlus, Loader2, Pause, Play, RotateCcw, RotateCw, Volume2, Wand2, X } from "lucide-react";
+import { Check, ClipboardPaste, Copy, Download, ImagePlus, Loader2, Pause, Play, RotateCcw, RotateCw, Sparkles, Undo2, Volume2, Wand2, X } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
@@ -17,8 +17,9 @@ import "katex/dist/katex.min.css";
 
 import type { Choice, ExportFormat, Models, Settings } from "../lib/types";
 import { resolveChoice } from "../lib/settings";
-import { EXPORT_DEFAULTS_URL, EXPORT_URL, SPEAK_URL } from "../lib/son";
+import { EXPORT_DEFAULTS_URL, EXPORT_URL, REWRITE_URL, SPEAK_URL } from "../lib/son";
 import { cleanText } from "../lib/clean";
+import { copyText, readClipboard } from "../lib/clipboard";
 import { AUDIO_PROMPT } from "../lib/audioPrompt";
 import { OptionPicker } from "./OptionPicker";
 import { Picker } from "./Picker";
@@ -147,6 +148,11 @@ export function Reader({
   const [mode, setMode] = useState<"write" | "preview">("write");
   const [clean, setClean] = useState(true); // strip markdown noise before speaking
   const [promptCopied, setPromptCopied] = useState(false);
+  /** "Clean with AI": the brain rewriting the box with the audio prompt, and
+   *  the text it replaced — a model edits sentences, so the local Clean toggle
+   *  can't bring the original back. */
+  const [aiBusy, setAiBusy] = useState(false);
+  const [undoText, setUndoText] = useState<string | null>(null);
 
   // --- Export panel (server-side save + compress) --------------------------
   const [name, setName] = useState(""); // "" → default stem from the text
@@ -249,24 +255,6 @@ export function Reader({
     [],
   );
 
-  /** Copy any text. The app is served over plain http on a LAN, where
-   *  navigator.clipboard doesn't exist (non-secure context) — fall back to a
-   *  textarea + execCommand. */
-  const copyText = async (text: string) => {
-    try {
-      await navigator.clipboard.writeText(text);
-    } catch {
-      const ta = document.createElement("textarea");
-      ta.value = text;
-      ta.style.position = "fixed";
-      ta.style.opacity = "0";
-      document.body.appendChild(ta);
-      ta.select();
-      document.execCommand("copy");
-      ta.remove();
-    }
-  };
-
   /** Flash a button to its "copied" state for ~1.5 s. */
   const flash = (setter: (v: boolean) => void) => {
     setter(true);
@@ -276,8 +264,12 @@ export function Reader({
   const copyPrompt = () => void copyText(AUDIO_PROMPT).then(() => flash(setPromptCopied));
   const copyCommand = () => void copyText(preview).then(() => flash(setCmdCopied));
 
-  const speak = async () => {
-    const t = clean ? cleaned : text.trim();
+  /** Synthesize and play. `override` is the paste-and-read path: React hasn't
+   *  re-rendered the textarea with the pasted text yet, so the caller hands the
+   *  text over directly and cleaning applies to *that*, not to the memo. */
+  const speak = async (override?: string) => {
+    const source = (override ?? text).trim();
+    const t = clean ? cleanText(source) : source;
     if (!t || busy) return;
     setBusy(true);
     setError(null);
@@ -314,6 +306,69 @@ export function Reader({
     } finally {
       setBusy(false);
     }
+  };
+
+  /** Paste and read in one click. The click is also the user gesture
+   *  `clipboard.readText` needs — which is exactly why this is a button and
+   *  not an automatic paste when the page opens. */
+  const pasteAndRead = async () => {
+    setError(null);
+    const clip = await readClipboard();
+    if (clip === null) {
+      setError("Clipboard blocked — press ⌘V in the box, or allow clipboard access for this site.");
+      return;
+    }
+    const pasted = clip.trim().slice(0, MAX_CHARS);
+    if (!pasted) {
+      setError("The clipboard is empty.");
+      return;
+    }
+    setText(pasted);
+    await speak(pasted);
+  };
+
+  /** Rewrite the box for the ear with the configured brain, using the very
+   *  prompt the Audio prompt button hands out — this is that workflow, minus the
+   *  copy-into-an-LLM-and-paste-back round trip. */
+  const cleanWithAi = async () => {
+    const raw = text.trim();
+    if (!raw || aiBusy) return;
+    setAiBusy(true);
+    setError(null);
+    try {
+      const res = await fetch(REWRITE_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          text: raw,
+          instruction: AUDIO_PROMPT,
+          llm: settings.llm ?? undefined,
+        }),
+      });
+      if (!res.ok) {
+        const body = await res.text().catch(() => "");
+        setError(parseError(body) || `Clean failed (HTTP ${res.status}).`);
+        return;
+      }
+      const data = (await res.json()) as { text?: unknown };
+      const next = typeof data.text === "string" ? data.text.trim() : "";
+      if (!next) {
+        setError("Clean returned nothing — try a different brain in settings.");
+        return;
+      }
+      setUndoText(text);
+      setText(next);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Clean failed.");
+    } finally {
+      setAiBusy(false);
+    }
+  };
+
+  const undoAiClean = () => {
+    if (undoText === null) return;
+    setText(undoText);
+    setUndoText(null);
   };
 
   const togglePlay = () => {
@@ -477,6 +532,15 @@ export function Reader({
       <div className="reader-actions">
         <button
           type="button"
+          className="btn ghost"
+          onClick={() => void pasteAndRead()}
+          title="Read the clipboard out loud: pastes it into the box and speaks it"
+        >
+          <ClipboardPaste size={14} aria-hidden />
+          Paste &amp; read
+        </button>
+        <button
+          type="button"
           className={`btn ghost reader-copy${promptCopied ? " copied" : ""}`}
           onClick={() => void copyPrompt()}
           title="Copy the audio-formatting prompt — paste it into any LLM with an article to get text that survives TTS"
@@ -499,6 +563,29 @@ export function Reader({
           <Wand2 size={14} aria-hidden />
           Clean
         </button>
+        <button
+          type="button"
+          className="btn ghost"
+          onClick={() => void cleanWithAi()}
+          disabled={!text.trim() || aiBusy}
+          title={`Rewrite the text for reading aloud with the brain${
+            settings.llm ? ` (${settings.llm.provider} · ${settings.llm.id})` : ""
+          } — the audio prompt, applied for you`}
+        >
+          {aiBusy ? <Loader2 size={14} className="spin" aria-hidden /> : <Sparkles size={14} aria-hidden />}
+          {aiBusy ? "Cleaning…" : "Clean with AI"}
+        </button>
+        {undoText !== null && (
+          <button
+            type="button"
+            className="btn ghost"
+            onClick={undoAiClean}
+            title="Put the text back the way it was before the AI clean"
+          >
+            <Undo2 size={14} aria-hidden />
+            Undo
+          </button>
+        )}
         <button
           type="button"
           className="start-btn"

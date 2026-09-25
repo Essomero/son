@@ -15,6 +15,7 @@ export const SPEAK_URL = BOT_BASE + "/speak";
 export const EXPORT_URL = BOT_BASE + "/export";
 export const EXPORT_DEFAULTS_URL = BOT_BASE + "/export/defaults";
 export const CLEANUP_URL = BOT_BASE + "/cleanup";
+export const REWRITE_URL = BOT_BASE + "/rewrite";
 // Root-absolute like the others: the chat route /s/<id> puts the page at a
 // different depth, so a relative "roles.json" would resolve under /s/... and
 // 404. Every fetch must use these, not a bare relative path.

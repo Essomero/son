@@ -10,6 +10,7 @@ import { Check, Copy, Trash2 } from "lucide-react";
 
 import type { SessionMeta } from "../lib/types";
 import { SESSIONS_URL } from "../lib/son";
+import { copyText } from "../lib/clipboard";
 
 function relativeTime(iso: string): string {
   const d = new Date(iso); // server writes local ISO, no tz — parses as local
@@ -33,8 +34,7 @@ async function copyTranscript(s: SessionMeta): Promise<boolean> {
     const text = detail.messages
       .map((m) => `${m.role === "user" ? "You" : "Son"}: ${m.text}`)
       .join("\n");
-    await navigator.clipboard.writeText(text);
-    return true;
+    return await copyText(text);
   } catch {
     return false;
   }

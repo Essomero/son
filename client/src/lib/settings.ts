@@ -10,7 +10,10 @@ const SETTINGS_KEY = "son.settings";
 
 export const DEFAULT_CHOICES: Record<Capability, Choice> = {
   llm: { provider: "groq", id: "openai/gpt-oss-120b" },
-  stt: { provider: "parakeet", id: "csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8" },
+  // Browser Web Speech: recognition runs in this tab (useWebSpeech), so there is
+  // no server-side STT service and no ~600 MB local model. Matching the server's
+  // default, where Parakeet is the fallback when this fails.
+  stt: { provider: "web-speech", id: "browser" },
   tts: { provider: "piper", id: "en_US-amy-medium" },
 };
 

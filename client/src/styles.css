@@ -482,12 +482,9 @@ code {
 
 /* --- Top bar --------------------------------------------------------------- */
 
-/* Sticky inside the scroller (`.main`): the status line and the session buttons
-   must not ride away with a long Read or Speak page. */
+/* Sticky isn't needed and a background is wrong: the header is a sibling above
+   the scroller, so nothing ever passes under it. */
 .topbar {
-  position: sticky;
-  top: 0;
-  z-index: 20;
   display: flex;
   align-items: center;
   gap: 16px;
@@ -495,7 +492,14 @@ code {
   max-width: 960px;
   width: 100%;
   margin: 0 auto;
-  background: var(--bg);
+}
+
+/* The stage: the header, then the scroller — a column beside the rail. */
+.stage-col {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 .brand {

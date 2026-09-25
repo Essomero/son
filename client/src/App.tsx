@@ -132,10 +132,11 @@ export default function App() {
           onDelete={(id) => void sessions.remove(id)}
         />
 
-        {/* Right of the rail: the stage column. Its header sticks — the status
-            line and the session buttons must not ride away with a long page —
-            and the scroller under it does the scrolling. */}
-        <div className="main">
+        {/* Right of the rail: the stage column — the header, then the scroller.
+            The header is a sibling of the scroller rather than an overlay on
+            it, so it cannot scroll away and needs no background of its own
+            (which is what made it a black band over the page's glow). */}
+        <div className="stage-col">
           <Header
             phase={s.phase}
             status={s.status}
@@ -151,61 +152,63 @@ export default function App() {
           {/* The main area is the scroller — not the document (which took the
               header and the rail away with it) and not the inner column (which
               left the gutters dead to the wheel). The rail keeps its own
-              scroll. */}
-          <main className="stage">
-            {view === "reader" ? (
-              readerMode === "speak" ? (
-                <Dictate />
-              ) : (
-                <Reader
-                  models={models}
-                  settings={s.settings}
-                  onChangeVoice={(c) => s.updateSettings({ ...s.settings, tts: c })}
-                  onChangeSettings={(patch) => s.updateSettings({ ...s.settings, ...patch })}
-                />
-              )
-            ) : inChat ? (
-              <>
-                <Transcript
-                  messages={s.messages}
-                  role={s.role}
-                  voiceChoice={voiceChoice}
-                  activeBotId={s.activeBotId}
-                  subscribe={subscribe}
-                  phase={s.phase}
-                  status={s.status}
-                />
-                {s.phase === "connected" ? (
-                  <ComposerBar
-                    phase={s.phase}
-                    muted={s.muted}
-                    micDisabled={false}
-                    onToggleMute={() => void s.toggleMute()}
-                    subscribe={subscribe}
-                    onSend={s.sendText}
-                  />
+              scroll, and the header sits above this box, not in it. */}
+          <div className="main">
+            <main className="stage">
+              {view === "reader" ? (
+                readerMode === "speak" ? (
+                  <Dictate />
                 ) : (
-                  <div className="ended-bar">
-                    <span className="ended-text">Session ended — the conversation stays here.</span>
-                    <button type="button" className="btn ghost" onClick={() => void s.connect()}>
-                      Talk again
-                    </button>
-                  </div>
-                )}
-              </>
-            ) : (
-              <Hero
-                roles={s.roles}
-                customRoles={s.customRoles}
-                selected={s.role}
-                phase={s.phase}
-                onSelect={s.selectRole}
-                onConnect={() => void s.connect()}
-                onAddCustom={() => setPersonaOpen(true)}
-                onRemoveCustom={s.removeCustomRole}
-              />
-            )}
-          </main>
+                  <Reader
+                    models={models}
+                    settings={s.settings}
+                    onChangeVoice={(c) => s.updateSettings({ ...s.settings, tts: c })}
+                    onChangeSettings={(patch) => s.updateSettings({ ...s.settings, ...patch })}
+                  />
+                )
+              ) : inChat ? (
+                <>
+                  <Transcript
+                    messages={s.messages}
+                    role={s.role}
+                    voiceChoice={voiceChoice}
+                    activeBotId={s.activeBotId}
+                    subscribe={subscribe}
+                    phase={s.phase}
+                    status={s.status}
+                  />
+                  {s.phase === "connected" ? (
+                    <ComposerBar
+                      phase={s.phase}
+                      muted={s.muted}
+                      micDisabled={false}
+                      onToggleMute={() => void s.toggleMute()}
+                      subscribe={subscribe}
+                      onSend={s.sendText}
+                    />
+                  ) : (
+                    <div className="ended-bar">
+                      <span className="ended-text">Session ended — the conversation stays here.</span>
+                      <button type="button" className="btn ghost" onClick={() => void s.connect()}>
+                        Talk again
+                      </button>
+                    </div>
+                  )}
+                </>
+              ) : (
+                <Hero
+                  roles={s.roles}
+                  customRoles={s.customRoles}
+                  selected={s.role}
+                  phase={s.phase}
+                  onSelect={s.selectRole}
+                  onConnect={() => void s.connect()}
+                  onAddCustom={() => setPersonaOpen(true)}
+                  onRemoveCustom={s.removeCustomRole}
+                />
+              )}
+            </main>
+          </div>
         </div>
       </div>
 

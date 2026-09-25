@@ -173,7 +173,8 @@ code {
 
 .sessions-panel.closed .sessions-panel-inner {
   opacity: 0;
-  pointer-events: none;
+  visibility: hidden; /* takes the hidden rows out of the tab order too */
+  transition: opacity 0.22s ease, visibility 0s linear 0.22s; /* hide after the fade */
 }
 
 .sessions-panel-inner {
@@ -183,7 +184,7 @@ code {
   display: flex;
   flex-direction: column;
   gap: 12px;
-  overflow-y: auto; /* own scrollbar, per the themed-scrollbars rule */
+  overflow: hidden; /* the head pins; the list below owns the scrolling */
 }
 
 .sessions-title {
@@ -200,6 +201,7 @@ code {
   align-items: center;
   justify-content: space-between;
   padding-left: 6px;
+  flex-shrink: 0; /* the close chevron must not scroll away with the list */
 }
 
 .sessions-collapse {
@@ -217,27 +219,37 @@ code {
   color: var(--ink-dim);
 }
 
-.sessions-handle {
+/* The collapsed rail's strip: the open panel's own frame, folded to an edge —
+   reopen at the top, settings at the foot, so neither action is stranded. */
+.sessions-strip {
   position: absolute;
-  top: 0;
-  right: 0;
-  bottom: 0;
-  width: 30px;
+  inset: 0;
   display: none;
+  flex-direction: column;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 0;
+}
+
+.sessions-panel.closed .sessions-strip {
+  display: flex;
+}
+
+.sessions-strip-btn {
+  display: flex;
   align-items: center;
   justify-content: center;
+  width: 30px;
+  height: 30px;
   border: none;
   background: none;
+  border-radius: 6px;
   color: var(--faint);
   cursor: pointer;
   transition: color 0.15s;
 }
 
-.sessions-panel.closed .sessions-handle {
-  display: flex;
-}
-
-.sessions-handle:hover {
+.sessions-strip-btn:hover {
   color: var(--amber-hi);
 }
 
@@ -256,6 +268,32 @@ code {
   display: flex;
   flex-direction: column;
   gap: 4px;
+  flex: 1; /* take the height the head leaves... */
+  min-height: 0; /* ...and scroll inside it, per the themed-scrollbars rule */
+  overflow-y: auto;
+}
+
+.sessions-settings {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  /* Pins to the foot whether the list below it overflows or is empty. */
+  margin-top: auto;
+  border: none;
+  background: none;
+  border-radius: 6px;
+  padding: 6px;
+  color: var(--faint);
+  font: 500 12px/1 var(--font-ui);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: color 0.15s;
+}
+
+.sessions-settings:hover {
+  color: var(--ink-dim);
 }
 
 .sess-row {

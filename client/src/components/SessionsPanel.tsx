@@ -6,7 +6,7 @@
  */
 
 import { useState } from "react";
-import { Check, Copy, PanelLeftClose, PanelLeftOpen, Trash2 } from "lucide-react";
+import { Check, Copy, PanelLeftClose, PanelLeftOpen, Settings2, Trash2 } from "lucide-react";
 
 import type { SessionMeta } from "../lib/types";
 import { SESSIONS_URL } from "../lib/son";
@@ -45,6 +45,7 @@ export function SessionsPanel({
   sessions,
   activeId,
   onToggle,
+  onOpenSettings,
   onResume,
   onRename,
   onDelete,
@@ -53,6 +54,7 @@ export function SessionsPanel({
   sessions: SessionMeta[];
   activeId: string | null;
   onToggle: () => void;
+  onOpenSettings: () => void;
   onResume: (s: SessionMeta) => void;
   onRename: (id: string, name: string) => void;
   onDelete: (id: string) => void;
@@ -168,21 +170,42 @@ export function SessionsPanel({
             })}
           </ul>
         )}
+        {/* The rail's own chrome owns the foot of the panel: settings is a place
+            you go to, not a row in the list, so it pins like the head does. */}
+        <button
+          type="button"
+          className="sessions-settings"
+          onClick={onOpenSettings}
+          title="Model settings"
+        >
+          <Settings2 size={15} aria-hidden />
+          <span>Settings</span>
+        </button>
       </div>
-      {/* The way back lives on the panel's own edge, so the control is always
-          where the chat list is — collapsed or open. Hidden while open (the
-          chevron beside the title does the work then) so it never overlays the
-          rows. */}
-      <button
-        type="button"
-        className="sessions-handle"
-        onClick={onToggle}
-        title="Show the chat list"
-        aria-label="Show the chat list"
-        aria-expanded={open}
-      >
-        <PanelLeftOpen size={15} aria-hidden />
-      </button>
+      {/* The collapsed rail is a 30px strip holding the two controls that frame
+          the open panel — reopen at the top, settings at the foot — so neither
+          action gets stranded by collapsing. */}
+      <div className="sessions-strip">
+        <button
+          type="button"
+          className="sessions-strip-btn"
+          onClick={onToggle}
+          title="Show the chat list"
+          aria-label="Show the chat list"
+          aria-expanded={open}
+        >
+          <PanelLeftOpen size={15} aria-hidden />
+        </button>
+        <button
+          type="button"
+          className="sessions-strip-btn"
+          onClick={onOpenSettings}
+          title="Model settings"
+          aria-label="Model settings"
+        >
+          <Settings2 size={15} aria-hidden />
+        </button>
+      </div>
     </aside>
   );
 }

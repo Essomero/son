@@ -155,7 +155,7 @@ uv run scripts/gen_roles.py && cd client && npm run build && cd ..
 | `SON_VAD_STOP_SECS` | `0.7` | Consecutive silence needed to end a turn (higher = pauses don't chop soft speech into fragments) |
 | `SON_VAD_MIN_VOLUME` | `0.35` | Minimum loudness (EBU R128, 0–1) for a frame to count as speech (default `0.6` gates out soft speech) |
 
-A provider is enabled only when its API key is present. The settings panel (⚙ in the header) lists each capability with the models that are actually available — no key, no entry.
+A provider is enabled only when its API key is present. The settings panel (⚙ at the foot of the sessions rail) lists each capability with the models that are actually available — no key, no entry.
 
 ## Model settings
 
@@ -192,7 +192,7 @@ Replies are markdown, and the transcript keeps it that way — the chat bubble r
 
 ## Sessions
 
-Every conversation is a session that lives in `son.db` (SQLite, next to `son.py`) — names, timestamps, and the full transcript, written live as you talk. The left rail lists past sessions: click one to **resume it** (the transcript replays and the brain gets the full history back, so it remembers what you said — try ending, reloading, then asking "what did I just say?"). Double-click a name to rename, hover for delete, and use **New** in the header to start a clean conversation. The rail collapses from the chevron beside the **SESSIONS** title and comes back from the strip on its edge — the choice is remembered.
+Every conversation is a session that lives in `son.db` (SQLite, next to `son.py`) — names, timestamps, and the full transcript, written live as you talk. The left rail lists past sessions: click one to **resume it** (the transcript replays and the brain gets the full history back, so it remembers what you said — try ending, reloading, then asking "what did I just say?"). Double-click a name to rename, hover for delete, and use **New** in the header to start a clean conversation. The rail collapses from the chevron beside the **SESSIONS** title and comes back from the strip on its edge — the strip keeps the ⚙ as well, so settings is reachable either way. The choice is remembered.
 
 The open conversation is named in the URL — `/s/<session_id>` — so a **reload reopens the same chat** instead of landing home, a shared link opens that conversation directly, and browser Back/Forward walk through the chats you've had open. A fresh chat lives at the root path.
 

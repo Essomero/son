@@ -4,7 +4,7 @@
  */
 
 import { useState } from "react";
-import { ChevronDown, MessageSquare, PhoneOff, Plus, Settings2 } from "lucide-react";
+import { ChevronDown, MessageSquare, PhoneOff, Plus } from "lucide-react";
 
 import type { Phase, Role } from "../lib/types";
 import { RoleAvatar } from "./Avatar";
@@ -65,7 +65,6 @@ export function Header({
   onToggleView,
   onReaderMode,
   onEndSession,
-  onOpenSettings,
 }: {
   phase: Phase;
   status: string;
@@ -81,7 +80,6 @@ export function Header({
   /** Open the Read or the Speak page (both set the mode and leave the chat). */
   onReaderMode: (mode: "read" | "speak") => void;
   onEndSession: () => void;
-  onOpenSettings: () => void;
 }) {
   const [roleMenu, setRoleMenu] = useState(false);
   const canPickRole = phase === "ready" || phase === "disconnected";
@@ -166,15 +164,6 @@ export function Header({
           </button>
         )}
         <ModeSlider mode={readerMode} onPick={onReaderMode} />
-        <button
-          type="button"
-          className="icon-btn"
-          onClick={onOpenSettings}
-          title="Model settings"
-          aria-label="Model settings"
-        >
-          <Settings2 size={16} />
-        </button>
       </div>
     </header>
   );

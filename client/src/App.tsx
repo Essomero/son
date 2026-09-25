@@ -120,7 +120,6 @@ export default function App() {
           setView("reader");
         }}
         onEndSession={() => void s.disconnect()}
-        onOpenSettings={() => setSettingsOpen(true)}
       />
 
       <div className="body">
@@ -129,6 +128,7 @@ export default function App() {
           sessions={sessions.list}
           activeId={s.sessionId}
           onToggle={() => setPanelOpen((v) => !v)}
+          onOpenSettings={() => setSettingsOpen(true)}
           onResume={(m) => void s.resumeSession(m)}
           onRename={(id, name) => void sessions.rename(id, name)}
           onDelete={(id) => void sessions.remove(id)}

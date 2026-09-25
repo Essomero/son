@@ -39,6 +39,7 @@ from pipecat.frames.frames import (
     AudioRawFrame,
     InputAudioRawFrame,
     InterruptionFrame,
+    LLMContextFrame,
     LLMFullResponseEndFrame,
     LLMFullResponseStartFrame,
     LLMRunFrame,
@@ -47,6 +48,7 @@ from pipecat.frames.frames import (
 )
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.worker import PipelineParams, PipelineWorker
+from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.aggregators.llm_response_universal import (
     LLMContextAggregatorPair,
     LLMUserAggregatorParams,
@@ -75,6 +77,7 @@ from pipecat.workers.runner import WorkerRunner
 
 import echo_guard
 import parakeet_stt
+import s1_mini
 import sessions_store as sessions
 
 load_dotenv(override=True)
@@ -111,10 +114,17 @@ WHISPER_LOCAL_BASE_URL = os.getenv("WHISPER_LOCAL_BASE_URL", "http://127.0.0.1:8
 WHISPER_LOCAL_MODEL = os.getenv("WHISPER_LOCAL_MODEL", "whisper-small-son")
 
 # Optional STT transcript cleanup: rewrite each final utterance through a local
-# text-normalizer model (s1-mini on LM Studio) before the brain sees it.
-# Empty model = disabled. Auth reuses LMSTUDIO_API_KEY.
-STT_CLEANUP_MODEL = os.getenv("STT_CLEANUP_MODEL", "")
-STT_CLEANUP_BASE_URL = os.getenv("STT_CLEANUP_BASE_URL", LMSTUDIO_BASE_URL)
+# text-normalizer model before the brain sees it.
+#   unset → the local s1-mini server (s1_mini.py, served by `son start cleanup`)
+#   ""    → disabled
+#   else  → that model name at STT_CLEANUP_BASE_URL (e.g. LM Studio over a
+#           tailnet, which is what this used to require)
+STT_CLEANUP_MODEL = (
+    s1_mini.DEFAULT_MODEL
+    if (env := os.environ.get("STT_CLEANUP_MODEL")) is None
+    else env.strip()
+)
+STT_CLEANUP_BASE_URL = os.environ.get("STT_CLEANUP_BASE_URL") or s1_mini.base_url()
 
 STT_CLEANUP_SYSTEM_PROMPT = (
     "You are a text normalizer for speech-to-text transcripts. Fix "
@@ -125,12 +135,17 @@ STT_CLEANUP_SYSTEM_PROMPT = (
     "input is a single word or fragment, output it as-is."
 )
 
-# Web-speech finals need FORMATTING only: the browser path's transcript is
-# already faithful (no repeats, few fillers), so the web pass adds
-# punctuation/casing/spacing and touches nothing else — no filler removal,
-# no dedup, no restructuring (the 0.6B normalizer happily rewrites "and
-# milk eggs and bread" into a bulleted list; it must not here). The pipeline
-# keeps the full normalizer prompt above.
+# Prompts for cleanup models that *are* instruct models (an LM Studio normalizer,
+# say). The default model, s1-mini, is not one of those: it takes its own system
+# prompt plus a control line and ignores these entirely — see s1_mini.py, where
+# that contract lives.
+#
+# Web-speech finals use the format-only prompt below: the browser path's
+# transcript is already faithful (no repeats, few fillers), so this pass adds
+# punctuation/casing/spacing and touches nothing else — no filler removal, no
+# dedup, no restructuring (an instruct normalizer happily rewrites "and milk
+# eggs and bread" into a bulleted list; it must not here). The pipeline keeps
+# the fuller prompt above.
 STT_CLEANUP_WEB_PROMPT = (
     "You are a text formatter for speech-to-text transcripts. Add missing "
     "punctuation and fix casing and spacing only — for lists of items that "
@@ -157,27 +172,68 @@ def _norm_words(s: str) -> set[str]:
     return {w.replace("'", "") for w in re.findall(r"[a-z']+", s.lower())} - CLEANUP_FILLERS
 
 
+# A cleanup endpoint that is down must not tax every turn: the first failure
+# takes the stage out of the way for a while, so following utterances go
+# straight to the raw transcript instead of each waiting out the timeout.
+_CLEANUP_DOWN_UNTIL = 0.0
+CLEANUP_RETRY_AFTER = 60.0
+
+
+def cleanup_hot() -> bool:
+    """Is there a cleanup model, and is the endpoint worth calling right now?"""
+    return bool(STT_CLEANUP_MODEL) and time.monotonic() >= _CLEANUP_DOWN_UNTIL
+
+
+def _mark_cleanup_down() -> None:
+    global _CLEANUP_DOWN_UNTIL
+    _CLEANUP_DOWN_UNTIL = time.monotonic() + CLEANUP_RETRY_AFTER
+    logger.warning(f"cleanup unreachable — skipping cleanup for {int(CLEANUP_RETRY_AFTER)}s")
+
+
+def _mark_cleanup_up() -> None:
+    global _CLEANUP_DOWN_UNTIL
+    _CLEANUP_DOWN_UNTIL = 0.0
+
+
+def cleanup_messages(model: str, prompt: str, text: str) -> list[dict]:
+    """The request's messages, chosen by model.
+
+    s1-mini is *not* an instruct model — its card says it "will not follow
+    general instructions" and that it is steered by a control line — so it needs
+    its own system prompt plus `[Styling: …] [Structure: prose] [Context: …]`
+    and ignores the chat-style prompts the other normalizers take. Keeping the
+    choice here means the pipeline stage and the /cleanup route can't drift apart.
+    """
+    if s1_mini.is_s1_mini(model):
+        return s1_mini.messages(text)
+    return [
+        {"role": "system", "content": prompt},
+        {"role": "user", "content": text},
+    ]
+
+
 async def _clean_transcript_text(
     text: str,
     model: str,
     client: httpx.AsyncClient,
     prompt: str,
     on_guard: Callable[[str], None] | None = None,
-) -> str:
+) -> str | None:
     """One normalizer pass (model on `client`) with the word-survival guard.
     Shared by the pipeline stage (TranscriptCleanupProcessor, full cleanup
     prompt) and the /cleanup route (web-speech finals, format-only prompt).
-    Returns "" on any failure — callers fall back to the raw text."""
+    Returns "" on any failure — callers fall back to the raw text — and, for
+    s1-mini, None when the utterance held nothing but noise (its documented
+    output for filler), which callers should treat as "no utterance at all"."""
+    if not cleanup_hot():
+        return ""
 
     async def once() -> str:
         r = await client.post(
             "/chat/completions",
             json={
                 "model": model,
-                "messages": [
-                    {"role": "system", "content": prompt},
-                    {"role": "user", "content": text},
-                ],
+                "messages": cleanup_messages(model, prompt, text),
                 "temperature": 0,
                 "max_tokens": 1024,
             },
@@ -190,15 +246,35 @@ async def _clean_transcript_text(
 
     try:
         cleaned = await once()
-        if not cleaned:
-            # s1-mini occasionally emits nothing at all (empty reasoning
-            # channel); one retry before falling back to the raw text.
+        _mark_cleanup_up()
+        # A thinking build can answer inside a thinking block (llama.cpp with
+        # reasoning on, or a reasoning model behind LM Studio): that text is not
+        # the answer, so it never survives the first look.
+        cleaned = re.sub(r"(?s)^\s*<think(?:ing)?>.*?</think(?:ing)?>\s*", "", cleaned).strip()
+        if not cleaned and not s1_mini.is_s1_mini(model):
+            # The instruct normalizer occasionally emits nothing at all (empty
+            # reasoning channel); one retry before falling back to the raw text.
+            # s1-mini answering empty is *meaning* — see its branch below.
             cleaned = await once()
         # The formatter sometimes answers as a bulleted list no matter what
         # the prompt says ("...bought:\n- Milk\n- Eggs\n- Bread"). Flatten
         # deterministically so a list never reaches the transcript.
         cleaned = re.sub(r"(?m)^\s*[•*\-]\s*", "", cleaned)
         cleaned = re.sub(r"\s*\n\s*", " ", cleaned).strip()
+        if s1_mini.is_s1_mini(model):
+            # s1-mini's job *is* to drop fillers and resolve false starts
+            # ("...send the report by friday no wait make that thursday" →
+            # "...by Thursday."), so the word-survival guard below — written for
+            # an instruct normalizer that deleted words by accident — would
+            # reject exactly the good edits. Trust it, with two cheap checks: an
+            # empty answer means the utterance was noise (nothing to send), and
+            # an answer that balloons in length is not a cleanup.
+            if not cleaned:
+                return None
+            if len(cleaned) > 2 * len(text) + 80:
+                logger.warning(f"cleanup grew {len(text)} → {len(cleaned)} chars; keeping raw")
+                return ""
+            return cleaned
         missing = _norm_words(text) - _norm_words(cleaned)
         if cleaned and missing:
             # The normalizer sometimes "normalizes" by deleting or rewriting
@@ -219,7 +295,71 @@ async def _clean_transcript_text(
         return cleaned
     except Exception as e:
         logger.warning(f"Transcript cleanup failed, passing raw text through: {e}")
+        _mark_cleanup_down()
         return ""
+
+
+# --- One-shot brain calls: the read page's "Clean with AI" --------------------
+# Every provider is reachable through an OpenAI-compatible chat endpoint, so one
+# code path serves all of them. The roots are the same hosts the /models probes
+# use (they append /models), kept here so there is exactly one place that knows
+# where each provider's API lives.
+LLM_BASE_URLS = {
+    "groq": "https://api.groq.com/openai/v1",
+    "cerebras": "https://api.cerebras.ai/v1",
+    "deepseek": "https://api.deepseek.com/v1",
+    "gemini": "https://generativelanguage.googleapis.com/v1beta/openai",
+    "openrouter": "https://openrouter.ai/api/v1",
+    "lmstudio": LMSTUDIO_BASE_URL,
+}
+
+# What /rewrite sends when the caller brings no instruction. The read page sends
+# the full audio prompt (client/src/lib/audioPrompt.ts, the same text its "Audio
+# prompt" button copies); this is the short version for anything else.
+DEFAULT_REWRITE_INSTRUCTION = (
+    "Rewrite the text so it reads well aloud: plain prose, no markdown or math "
+    "notation (say symbols in words), every sentence and list item preserved, "
+    "no preamble and no closing note."
+)
+
+
+def llm_rewrite(text: str, instruction: str, provider: str, model: str) -> str:
+    """One chat completion over the provider's OpenAI-compatible endpoint.
+
+    Synchronous on purpose: the route that calls it is a plain `def`, which
+    FastAPI runs in its threadpool — a minute-long rewrite must not hold the
+    event loop that the panels, the CLI and the voice pipeline all share.
+    """
+    root = LLM_BASE_URLS.get(provider)
+    if root is None:
+        raise ValueError(f"unknown LLM provider '{provider}'")
+    if provider == "lmstudio":
+        key = os.getenv("LMSTUDIO_API_KEY")  # optional: the local server usually has none
+    else:
+        key = require_env(PROVIDER_ENV_KEYS[provider])
+    headers = {"Authorization": f"Bearer {key}"} if key else {}
+    # Room for a rewrite (an article in, a comparable article out), capped so a
+    # provider with a smaller ceiling still accepts the request.
+    max_tokens = min(8192, max(2048, len(text) // 2))
+    with httpx.Client(base_url=root, timeout=180.0) as client:
+        r = client.post(
+            "/chat/completions",
+            headers=headers,
+            json={
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": instruction},
+                    {"role": "user", "content": text},
+                ],
+                "temperature": 0,
+                "max_tokens": max_tokens,
+            },
+        )
+        r.raise_for_status()
+        message = r.json()["choices"][0]["message"]
+        # A reasoning model may answer in its reasoning channel with `content`
+        # empty (same fallback the transcript normalizer needs).
+        return (message.get("content") or message.get("reasoning_content") or "").strip()
 
 
 # --- Model providers ----------------------------------------------------------
@@ -278,6 +418,202 @@ PIPER_VOICES = {
 }
 PIPER_DEFAULT_VOICE = "en_US-amy-medium"
 PIPER_MODEL_DIR = Path(os.getenv("PIPER_MODEL_DIR", str(Path.home() / ".cache/son/piper")))
+# pipecat's PiperTTSService downloads the voice into this directory but never
+# creates it (download_voices.download_voice opens the file path directly), so
+# a first run on a machine with no ~/.cache/son — or after the cache is
+# cleared — dies with FileNotFoundError while the pipeline is being built, i.e.
+# before the greeting. Creating it here means the download can do its job.
+PIPER_MODEL_DIR.mkdir(parents=True, exist_ok=True)
+
+
+# What the local-model warmup is doing, keyed by a human label:
+# "downloading" → "ready" (or "failed: …"). Served in /models, so both clients
+# can explain a first session that is connected but quiet — the model files have
+# to exist before the pipeline can even be built.
+_MODEL_WARMUP: dict[str, str] = {}
+
+
+def ensure_piper_voice(voice: str) -> None:
+    """Fetch a Piper voice's model now, if it isn't cached. Blocking.
+
+    PiperTTSService downloads inside its constructor (~60 MB, one-time), which
+    runs on the pipeline's task — see prewarm_local_models for why that must not
+    happen there.
+    """
+    from piper.download_voices import download_voice
+
+    if (PIPER_MODEL_DIR / f"{voice}.onnx").is_file():
+        return
+    logger.info(f"Piper: downloading voice '{voice}' (~60 MB, one-time) ...")
+    PIPER_MODEL_DIR.mkdir(parents=True, exist_ok=True)
+    download_voice(voice, PIPER_MODEL_DIR)
+
+
+def ensure_kokoro_files() -> None:
+    """Fetch Kokoro's model + voices now, if they aren't cached. Blocking.
+
+    Uses pipecat's own helper and cache directory, so the paths stay in step with
+    the service that will read them (a service that renamed the helper still does
+    its own download — this is a prewarm, not a requirement).
+    """
+    from pipecat.services.kokoro import tts as kokoro_tts
+
+    ensure = getattr(kokoro_tts, "_ensure_model_files", None)
+    if ensure is None:
+        return
+    ensure(
+        kokoro_tts.KOKORO_CACHE_DIR / "kokoro-v1.0.onnx",
+        kokoro_tts.KOKORO_CACHE_DIR / "voices-v1.0.bin",
+    )
+
+
+def release_unused_models(stt_choice: dict | None) -> None:
+    """Drop the cached local models the current picks don't need.
+
+    The counterpart to prewarm_local_models: a cached Parakeet recognizer is
+    ~600 MB and a cached read-aloud TTS service up to ~350 MB, so the caches
+    follow *use*. A session keeps what its STT pick needs and releases the rest;
+    a session that is over (`None`) releases everything, because then nothing is
+    in use. The cost of a release is the rebuild on next use (~1.5 s Parakeet) —
+    the trade for not holding a default machine's memory for the process's life.
+
+    The pipeline builds its *own* TTS service per session, so only the one-shot
+    read-aloud cache is dropped here.
+    """
+    keep = None
+    if stt_choice and stt_choice.get("provider") == "parakeet":
+        keep = stt_choice.get("model") or next(iter(parakeet_stt.PARAKEET_MODELS))
+    parakeet_stt.release(keep)
+    with _tts_services_guard:
+        released = list(_tts_services)
+        _tts_services.clear()
+    if released:
+        logger.info(f"TTS: released {len(released)} cached read-aloud service(s)")
+
+
+async def prewarm_local_models(stt_choice: dict, tts_choice: dict) -> None:
+    """Fetch/load the chosen local models in a worker thread, before the pipeline
+    is built.
+
+    Every local provider downloads on first use (Parakeet ~660 MB, a Piper voice
+    ~60 MB, Kokoro ~354 MB) and Parakeet additionally builds a ~600 MB recognizer.
+    Those are blocking calls, and this process serves the web page, /models,
+    /roles and the browser extension from the *same event loop* as the pipeline:
+    run there, a first-use download freezes every HTTP route, so the page and the
+    extension look like they can't reach a bot that is in fact running. In a
+    thread it costs the same wall time and blocks nothing.
+    """
+    for label, job in local_model_jobs(stt_choice, tts_choice):
+        await asyncio.to_thread(warm_model, label, job)
+
+
+def warm_default_models() -> None:
+    """Fetch the models an untouched client will ask for — **files, not loads**.
+
+    A Parakeet recognizer is ~600 MB resident once built, and building it at
+    startup would hold that for an idle server's whole life. The build is ~1.5 s
+    (the *download* is the slow part, and the part that froze the HTTP side), so it
+    stays with the session that needs it, off the event loop — see
+    prewarm_local_models.
+    """
+    defaults = default_choices()
+    for label, job in local_model_jobs(defaults["stt"], defaults["tts"], load_recognizer=False):
+        warm_model(label, job)
+    # The default STT (browser Web Speech) has no local files — its fallback
+    # does. Fetching Parakeet's ~643 MB now costs disk, never RAM, and is what
+    # makes "Web Speech failed -> Parakeet" a 1.5 s switch rather than a
+    # download the user waits through mid-sentence.
+    fallback = stt_fallback_choice()
+    if fallback != defaults["stt"]:
+        warm_model(
+            "parakeet model (stt fallback)",
+            lambda: parakeet_stt.ensure_model_files(fallback["model"]),
+        )
+    # The cleanup model is part of the default stack now, so fetch its GGUF too
+    # (files only, like everything here) when cleanup points at the local
+    # server — otherwise the first utterance after a fresh clone pays 462 MB.
+    if s1_mini.is_s1_mini(STT_CLEANUP_MODEL) and "127.0.0.1" in STT_CLEANUP_BASE_URL:
+        warm_model("s1-mini cleanup model", s1_mini.ensure_gguf)
+
+
+def warm_model(label: str, job: Callable[[], None]) -> None:
+    """Run one blocking prewarm job, recording what it is doing for /models.
+
+    The state is what lets both clients say *why* a first session is quiet:
+    the files have to exist before the pipeline can be built, so an empty cache
+    means a connected-but-silent bot for as long as the download takes.
+    """
+    _MODEL_WARMUP[label] = "downloading"
+    started = time.monotonic()
+    try:
+        job()
+    except Exception as e:
+        _MODEL_WARMUP[label] = f"failed: {e}"
+        logger.warning(f"Could not pre-fetch the {label}: {e}")
+    else:
+        _MODEL_WARMUP[label] = "ready"
+        logger.info(f"{label}: ready ({time.monotonic() - started:.1f}s)")
+
+
+def local_model_jobs(
+    stt_choice: dict, tts_choice: dict, *, load_recognizer: bool = True
+) -> list[tuple[str, Callable[[], None]]]:
+    """The blocking prewarm jobs for these picks — the same resolution the
+    service builders use, so the files fetched are the files they look for.
+
+    `load_recognizer=False` fetches Parakeet's files without building the ~600 MB
+    recognizer: what the startup thread wants (and what keeps an idle server
+    small), versus what a session wants before its first turn.
+    """
+    jobs: list[tuple[str, Callable[[], None]]] = []
+    if stt_choice.get("provider") == "parakeet":
+        model = stt_choice.get("model") or next(iter(parakeet_stt.PARAKEET_MODELS))
+        jobs.append(
+            (
+                "parakeet model",
+                (lambda: parakeet_stt.prepare(model))
+                if load_recognizer
+                else (lambda: parakeet_stt.ensure_model_files(model)),
+            )
+        )
+    if tts_choice.get("provider") == "piper":
+        vid = tts_choice.get("model") if tts_choice.get("model") in PIPER_VOICES else None
+        if vid is None and tts_choice.get("voice") in PIPER_VOICES:
+            vid = tts_choice.get("voice")
+        voice = vid or PIPER_DEFAULT_VOICE
+        jobs.append(("piper voice", lambda: ensure_piper_voice(voice)))
+    elif tts_choice.get("provider") == "kokoro":
+        jobs.append(("kokoro model", ensure_kokoro_files))
+    return jobs
+
+
+def default_choices() -> dict:
+    """The picks run_bot falls back to when a client sends none.
+
+    Module level rather than inline in run_bot so the startup warmup prepares
+    exactly what an untouched client will ask for.
+    """
+    return {
+        "llm": {"provider": "groq", "model": GROQ_MODEL},
+        # Browser Web Speech by default: recognition runs in the client, so a
+        # server-side STT service is `None` and nothing is downloaded or held
+        # resident for it. Parakeet is the *fallback* (see stt_fallback_choice),
+        # not the default. A client that picks web-speech must run recognition
+        # itself — one that sends no stt pick gets a bot that hears nothing, so
+        # both shipped clients always send an explicit pick.
+        "stt": {"provider": "web-speech", "model": "browser"},
+        "tts": {"provider": "piper", "model": PIPER_DEFAULT_VOICE, "voice": None},
+    }
+
+
+def stt_fallback_choice() -> dict:
+    """What a client switches to when browser Web Speech fails.
+
+    The startup warmup pre-fetches these files (disk only, never loaded) so the
+    switch is a ~1.5 s recognizer build instead of a 643 MB download in the
+    middle of a conversation.
+    """
+    return {"provider": "parakeet", "model": next(iter(parakeet_stt.PARAKEET_MODELS))}
 
 
 def google_stt_available() -> bool:
@@ -498,9 +834,20 @@ _SPEAK_MAX_CHARS = 8000  # a paragraph at a time; kokoro is ~real-time on CPU
 _tts_services: dict = {}
 _tts_services_guard = threading.Lock()
 
+# Read-aloud is one-shot, so ONE service stays resident: the voice just used.
+# Anything else was "used once, kept for the process's life" — a Kokoro entry is
+# ~350 MB, and reading aloud with three voices held all three. Switching back
+# rebuilds (piper <1 s, kokoro a few seconds), which is the trade for not
+# pinning a voice the user has moved on from. See also release_unused_models.
+_TTS_CACHE_MAX = 1
+
 
 def _get_tts_service(provider: str, model: str | None, voice: str | None):
-    key = (provider, voice)
+    # The model belongs in the key: Piper carries its voice in `model` (the
+    # roster `id`) and leaves `voice` empty, so (provider, voice) collapsed every
+    # Piper voice onto one entry — read-aloud with a switched voice answered in
+    # the first voice's audio.
+    key = (provider, model, voice)
     with _tts_services_guard:
         entry = _tts_services.get(key)
         if entry is None:
@@ -515,6 +862,13 @@ def _get_tts_service(provider: str, model: str | None, voice: str | None):
                 svc._sample_rate = 24000
             entry = (svc, threading.Lock())
             _tts_services[key] = entry
+            # Age out the rest (insertion order is use order here: a hit keeps
+            # its place, and only a miss builds).
+            for stale in [k for k in _tts_services if k != key][
+                : max(0, len(_tts_services) - _TTS_CACHE_MAX)
+            ]:
+                _tts_services.pop(stale, None)
+                logger.info(f"TTS: released cached read-aloud service {stale}")
         return entry
 
 
@@ -676,6 +1030,29 @@ def load_instruction(name: str | None) -> str:
     return path.read_text()
 
 
+def instruction_roles() -> list[dict]:
+    """The instructions/ roster — the same entries scripts/gen_roles.py writes
+    into the web client's roles.json, served from the source of truth instead.
+
+    The browser extension connects to the server without ever loading the web
+    bundle, so the roster can't come from client/dist/roles.json (which only
+    exists once that bundle is built).
+    """
+    roles = []
+    for path in sorted(INSTRUCTIONS_DIR.glob("*.md")):
+        fields = sessions.parse_frontmatter_fields(
+            path.read_text(encoding="utf-8", errors="replace")
+        )
+        roles.append(
+            {
+                "file": path.name,
+                "name": fields.get("name") or path.stem,
+                "description": fields.get("description") or "",
+            }
+        )
+    return roles
+
+
 def require_env(key: str) -> str:
     value = os.getenv(key)
     if not value:
@@ -766,9 +1143,12 @@ class TranscriptCleanupProcessor(FrameProcessor):
     """Rewrite each final STT utterance through a local text-normalizer LLM.
 
     Parakeet is fast but its raw transcript is messy — no punctuation, filler
-    ("um", "uh"), word repeats. This stage sends every finalized utterance to
-    a small local model (s1-mini on LM Studio) that returns clean prose, so
-    the brain reads text that matches what was actually said.
+    ("um", "uh"), word repeats. This stage sends every finalized utterance to a
+    small local model (s1-mini, served on loopback by `son start cleanup`; see
+    s1_mini.py) that returns clean prose, so the brain reads text that matches
+    what was actually said. A model that answers with nothing — s1-mini's
+    documented output for filler-only input — ends the turn here: there is no
+    utterance to send.
 
     Each cleaned utterance is pushed as a NEW TranscriptionFrame carrying the
     raw frame's timestamp, so the RTVI observer emits a second user-
@@ -838,6 +1218,13 @@ class TranscriptCleanupProcessor(FrameProcessor):
             capture.pre_turn_max = -1.0
             capture.agc_turn_max = 1.0
             cleaned = await self._clean(frame.text)
+            if cleaned is None:
+                # s1-mini answered with nothing: the utterance was filler and
+                # noise only, which its card documents as the correct output for
+                # that input. There is no utterance to hand the brain, so the
+                # turn ends here instead of sending noise for it to answer.
+                logger.info(f"cleanup: {frame.text!r} -> (nothing said)")
+                return
             # Debug instrument for repeated-phrase transcriptions: log the
             # raw/cleaned pair every turn, and when either side contains a
             # verbatim repeated n-gram dump the last ~25 s of mic audio
@@ -920,6 +1307,233 @@ class EmptyTurnRetryProcessor(FrameProcessor):
         await self.push_frame(frame, direction)
 
 
+# --- page context (browser extension) -----------------------------------------
+# The Chrome extension is a second client of this bot: a side panel that hears a
+# spoken question about the page the user is reading. RTVI client messages would
+# be the obvious transport for "here is my page", but they race the turn they
+# describe — the context frame for a turn is built the instant the user stops
+# speaking — so the extension POSTs what changed to /page-context and
+# PageContextInjector attaches it to the conversation.
+#
+# The model is commit-once, replace-on-change — not inject-per-request:
+#   - the page text enters the conversation when the panel first reports it and
+#     *is history* from then on. Later turns send it as an ordinary stable
+#     prefix (providers with prefix caching, Groq included, bill that at the
+#     cached rate) instead of carrying a fresh copy at the end of every request;
+#   - a new selection replaces the previous selection block and a new page
+#     replaces the previous page block, so the context holds at most one of each
+#     and the newest is what "this" / "this page" means;
+#   - the panel sends a part only when it changed, so an unchanged page costs
+#     nothing at all — not even a request — and a long conversation doesn't
+#     re-pay for it turn after turn.
+# That is why the registry holds *pending updates* rather than a current state:
+# a push is an event ("this changed"), not a snapshot to re-assert.
+#
+# Process-local on purpose: the runner starts bot() with
+# background_tasks.add_task on this same event loop (pipecat/runner/run.py), so
+# the route and the pipeline share the dict. The HTTP thread never touches the
+# context itself — the injector applies updates from the pipeline task, where
+# mutating it is safe.
+
+PAGE_CONTEXT_PAGE_MARKER = "[Page context — the page the user is reading"
+PAGE_CONTEXT_SELECTION_MARKER = "[Page context — text the user selected"
+PAGE_CONTEXT_MARKERS = (PAGE_CONTEXT_PAGE_MARKER, PAGE_CONTEXT_SELECTION_MARKER)
+PAGE_CONTEXT_PAGE_MAX_CHARS = 40000  # ~10k tokens, paid once per page
+PAGE_CONTEXT_SELECTION_MAX_CHARS = 6000
+PAGE_CONTEXT_TTL_SECS = 6 * 60 * 60
+# session_id -> [(kind, block, monotonic), ...] not yet attached to a request
+_PAGE_CONTEXT_PENDING: dict[str, list[tuple[str, str, float]]] = {}
+_PAGE_CONTEXT_LOCK = threading.Lock()
+
+
+def queue_page_context(session_id: str, updates: list[tuple[str, str]]) -> None:
+    """Queue blocks for a session, dropping sessions nobody touched within TTL.
+
+    The prune rides on the write: only a live panel creates entries.
+    """
+    now = time.monotonic()
+    with _PAGE_CONTEXT_LOCK:
+        pending = _PAGE_CONTEXT_PENDING.setdefault(session_id, [])
+        for kind, block in updates:
+            # The same text twice in a row (a re-push after a reconnect, the
+            # panel and a tab agreeing on one page): one block is enough.
+            if pending and pending[-1][0] == kind and pending[-1][1] == block:
+                continue
+            pending.append((kind, block, now))
+        for stale, entries in list(_PAGE_CONTEXT_PENDING.items()):
+            if stale != session_id and (not entries or now - entries[-1][2] > PAGE_CONTEXT_TTL_SECS):
+                del _PAGE_CONTEXT_PENDING[stale]
+
+
+def take_page_context(session_id: str) -> list[tuple[str, str]]:
+    """Drain the session's queued blocks (called from the pipeline task)."""
+    with _PAGE_CONTEXT_LOCK:
+        pending = _PAGE_CONTEXT_PENDING.pop(session_id, [])
+    return [(kind, block) for kind, block, _ in pending]
+
+
+def drop_page_context(session_id: str) -> None:
+    with _PAGE_CONTEXT_LOCK:
+        _PAGE_CONTEXT_PENDING.pop(session_id, None)
+
+
+def build_page_context_updates(payload: dict) -> list[tuple[str, str]]:
+    """Blocks to attach (or detach), one per part the panel actually sent.
+
+    A field arrives only when that part changed (or when the user re-attached
+    it), so an empty field means "nothing to say about it" rather than "forget
+    it": the page the user has moved on from stays in the conversation as
+    material they may still ask about, and the newest block is what "this page"
+    refers to. `detach: ["page"]` is the explicit removal — the panel's chip is
+    the control, and a detached part stops being sent with requests.
+    """
+    def text_field(key: str, cap: int) -> str:
+        value = payload.get(key)
+        if not isinstance(value, str):
+            return ""
+        value = value.strip()
+        return value if len(value) <= cap else value[:cap].rstrip() + " …[truncated]"
+
+    url = text_field("url", 400)
+    title = text_field("title", 300)
+    selection = text_field("selection", PAGE_CONTEXT_SELECTION_MAX_CHARS)
+    page = text_field("page", PAGE_CONTEXT_PAGE_MAX_CHARS)
+    updates: list[tuple[str, str]] = []
+    requested_detach = payload.get("detach")
+    if isinstance(requested_detach, list):
+        for kind in ("page", "selection"):
+            # An empty block IS the removal instruction — a block always carries
+            # its marker header, so "" can't be mistaken for content.
+            if kind in requested_detach:
+                updates.append((kind, ""))
+    if page:
+        where = "\n".join(
+            part for part in (f"URL: {url}" if url else "", f"Title: {title}" if title else "") if part
+        )
+        updates.append(
+            (
+                "page",
+                "\n\n".join(
+                    [f"{PAGE_CONTEXT_PAGE_MARKER} — not something the user said.]"]
+                    + ([where] if where else [])
+                    + ["Page text:\n" + page, 'Ground answers about "this page" in this text.']
+                ),
+            )
+        )
+    if selection:
+        updates.append(
+            (
+                "selection",
+                "\n\n".join(
+                    [
+                        f"{PAGE_CONTEXT_SELECTION_MARKER} — not something the user said.]",
+                        selection,
+                        'When the user says "this", "that" or "the snippet", they mean this text.',
+                    ]
+                ),
+            )
+        )
+    return updates
+
+
+def _message_content(message) -> str | None:
+    content = message.get("content") if isinstance(message, dict) else getattr(message, "content", None)
+    return content if isinstance(content, str) else None
+
+
+def _page_context_marker(message) -> str | None:
+    """Which kind of page-context block this message is, if it is one."""
+    content = _message_content(message)
+    if content is None:
+        return None
+    for marker in PAGE_CONTEXT_MARKERS:
+        if content.startswith(marker):
+            return marker
+    return None
+
+
+def _message_role(message) -> str | None:
+    role = message.get("role") if isinstance(message, dict) else getattr(message, "role", None)
+    return role if isinstance(role, str) else None
+
+
+class PageContextInjector(FrameProcessor):
+    """Attach queued page/selection blocks to the conversation, once each.
+
+    Sits between the user aggregator and the LLM, so it sees every
+    LLMContextFrame: a spoken turn, a typed one, or the aggregator-built frame
+    for an LLMRunFrame. Each frame drains the session's queued updates and
+    rewrites the shared context — set_messages, the documented "replace
+    wholesale, don't persist" path, so the page never lands in son.db and a
+    resumed session never replays a stale page.
+
+    A block is placed immediately before the last user turn (the question it
+    arrived with) and then left alone. It is history from that point on: later
+    turns send it as part of the conversation rather than re-inserting it, which
+    is what keeps an unchanged page from costing anything per turn. An update
+    identical to the block already in the context is skipped, so a duplicate
+    push or a reconnect that re-reports the same page changes nothing.
+    """
+
+    def __init__(self, session_id: str | None):
+        super().__init__()
+        self._session_id = session_id
+
+    async def process_frame(self, frame, direction):
+        # super() first: the base owns StartFrame handling — without it this
+        # processor never marks itself started and push_frame drops every
+        # frame (see TranscriptCleanupProcessor).
+        await super().process_frame(frame, direction)
+        if (
+            direction == FrameDirection.DOWNSTREAM
+            and self._session_id
+            and isinstance(frame, LLMContextFrame)
+        ):
+            self._apply(frame.context)
+        await self.push_frame(frame, direction)
+
+    def _apply(self, context: LLMContext) -> None:
+        updates = take_page_context(self._session_id)
+        if not updates:
+            return
+        messages = list(context.messages)
+        changes: list[str] = []
+        for kind, block in updates:
+            marker = PAGE_CONTEXT_PAGE_MARKER if kind == "page" else PAGE_CONTEXT_SELECTION_MARKER
+            existing = [m for m in messages if _page_context_marker(m) == marker]
+            if not block:
+                # Explicit detach (the panel's chip): the block leaves the
+                # conversation, so later requests stop carrying it.
+                if existing:
+                    messages = [m for m in messages if _page_context_marker(m) != marker]
+                    changes.append(f"{kind}=-")
+                continue
+            if len(existing) == 1 and _message_content(existing[0]) == block:
+                continue  # already in the conversation, byte for byte
+            # Replace, never stack: the newest page/selection is the one "this"
+            # and "this page" refer to.
+            messages = [m for m in messages if _page_context_marker(m) != marker]
+            # Before the question it arrived with, not after it — and where the
+            # user's turn is, not simply last: the assistant may already have
+            # replied (a barge-in), and a greeting's synthetic prompt sits where
+            # a user turn would.
+            index = next(
+                (i for i in range(len(messages) - 1, -1, -1) if _message_role(messages[i]) == "user"),
+                None,
+            )
+            if index is None:
+                messages.append({"role": "user", "content": block})
+            else:
+                messages.insert(index, {"role": "user", "content": block})
+            changes.append(f"{kind}={len(block)}c")
+        if not changes:
+            return
+        context.set_messages(messages)
+        logger.debug(
+            f"page context: {' '.join(changes)} (session {self._session_id})"
+        )
+
+
 async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> None:
     body = runner_args.body or {}
     custom_data = body.get("custom_data") or {}
@@ -934,11 +1548,7 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> Non
 
     # Per-capability choices come from the client's settings panel. Anything
     # absent, unknown, or gated by a missing key falls back to the default.
-    defaults = {
-        "llm": {"provider": "groq", "model": GROQ_MODEL},
-        "stt": {"provider": "parakeet", "model": "csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8"},
-        "tts": {"provider": "piper", "model": PIPER_DEFAULT_VOICE, "voice": None},
-    }
+    defaults = default_choices()
 
     llm_choice = {**defaults["llm"], **(custom_data.get("llm") or {})}
     if llm_choice.get("provider") not in available_providers():
@@ -997,6 +1607,17 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> Non
         f"tts={tts_choice['provider']}/{tts_choice.get('voice') or tts_choice.get('model')}"
         + (f" cleanup={STT_CLEANUP_MODEL}" if STT_CLEANUP_MODEL else "")
     )
+
+    # This session's picks decide what stays resident: a switch from Parakeet to
+    # Web Speech (or the other way) must not leave the other provider's ~600 MB
+    # cached (see release_unused_models).
+    release_unused_models(stt_choice)
+
+    # Local models download/load on first use (Parakeet ~660 MB, then a ~600 MB
+    # recognizer). Do it in a worker thread *before* the pipeline exists, or it
+    # stalls the HTTP side of this process — the page, /models, the extension —
+    # for as long as the download takes.
+    await prewarm_local_models(stt_choice, tts_choice)
 
     # The echo guard's bot-audio roll: filled by the capture processor on the
     # TTS branch, queried by the local STT services (see echo_guard.py).
@@ -1080,6 +1701,9 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> Non
     stages.extend(
         [
             user_aggregator,    # user turns into conversation context
+            # Extension page state -> the request the brain reads. Inert until
+            # a panel pushes for this session.
+            PageContextInjector(session_id),
             llm,                # next assistant reply
             empty_retry,  # one retry if the reply comes back empty (see class)
         ]
@@ -1157,7 +1781,14 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> Non
     @transport.event_handler("on_client_disconnected")
     async def on_client_disconnected(transport, client):
         logger.info("Client disconnected")
+        # The panel re-pushes on its next connect, so dropping the block here
+        # only keeps a dead session's page text out of memory.
+        if session_id:
+            drop_page_context(session_id)
         await runner.cancel()
+        # Same reasoning for the model caches: nothing this session used is in
+        # use once it is gone, and Parakeet is ~600 MB (release_unused_models).
+        release_unused_models(None)
 
     await runner.run()
 
@@ -1394,7 +2025,24 @@ if __name__ == "__main__":
             _MODELS_CACHE_AT = now
         # Whether the transcript cleanup stage is on: the client hides the
         # raw web-speech text behind a loading bubble when it's available.
-        return {**_MODELS_CACHE, "cleanup": bool(STT_CLEANUP_MODEL)}
+        # `cleanup_hot()` also goes false while a failed endpoint is sitting out
+        # its retry window, so the client stops promising a cleanup that isn't
+        # coming and shows the raw text straight away.
+        return {**_MODELS_CACHE, "cleanup": cleanup_hot()}
+
+    @app.get("/warming", include_in_schema=False)
+    def warming_state() -> dict:
+        """Local-model warmup state — deliberately its own route, not a field on
+        /models: that one probes every configured provider and can take minutes
+        on a cold cache, which is exactly when you want to know why a session is
+        quiet (see _MODEL_WARMUP)."""
+        return {"warming": dict(_MODEL_WARMUP)}
+
+    @app.get("/roles", include_in_schema=False)
+    def roles_roster() -> list[dict]:
+        """Role roster for clients that don't load the web bundle (the browser
+        extension): same shape as roles.json, straight from instructions/."""
+        return instruction_roles()
 
     @app.get("/sessions")
     def sessions_list() -> list[dict]:
@@ -1440,6 +2088,32 @@ if __name__ == "__main__":
             raise HTTPException(status_code=502, detail=f"Speech failed: {e}")
         return Response(content=wav, media_type="audio/wav")
 
+    @app.post("/rewrite", include_in_schema=False)
+    def rewrite(payload: dict = Body(...)) -> dict:
+        """Rewrite text for reading aloud with the configured *brain*.
+
+        This is the read page's "Clean with AI": the audio prompt goes in as the
+        system message, the article as the user message, and the reply replaces
+        the box. Unlike /cleanup — a format-only pass on a small local normalizer
+        — a real model may restructure sentences, which is why the client keeps
+        an undo for it. Runs in the threadpool (a plain `def`), so a long rewrite
+        never blocks the shared event loop."""
+        text = require_speak_text(payload.get("text"))
+        instruction = (payload.get("instruction") or DEFAULT_REWRITE_INSTRUCTION).strip()
+        choice = payload.get("llm") or {}
+        fallback = default_choices()["llm"]
+        provider = str(choice.get("provider") or fallback["provider"]).strip()
+        model = str(choice.get("id") or choice.get("model") or fallback["model"]).strip()
+        try:
+            rewritten = llm_rewrite(text, instruction, provider, model)
+        except Exception as e:
+            logger.warning(f"/rewrite failed ({provider}/{model}): {e}")
+            raise HTTPException(status_code=502, detail=f"Clean failed: {e}")
+        if not rewritten:
+            raise HTTPException(status_code=502, detail="Clean returned nothing.")
+        logger.info(f"/rewrite: {len(text)} chars in, {len(rewritten)} out ({provider}/{model})")
+        return {"text": rewritten, "provider": provider, "model": model}
+
     @app.post("/cleanup", include_in_schema=False)
     def cleanup(payload: dict = Body(...)) -> dict:
         """Punctuation/formatting pass for browser-side STT. Web-speech finals
@@ -1481,7 +2155,13 @@ if __name__ == "__main__":
             finally:
                 await client.aclose()
 
-        return {"text": asyncio.run(run()) or text}
+        cleaned = asyncio.run(run())
+        if cleaned is None:
+            # Noise only — the model is explicit that filler alone cleans to
+            # nothing. Say so in a field, but still hand back the raw text so a
+            # client that doesn't know about it behaves exactly as before.
+            return {"text": text, "dropped": True}
+        return {"text": cleaned or text}
 
     def unique_path(dst: Path) -> Path:
         """If dst exists, pick the next Finder-style name — "read (2).mp3",
@@ -1494,6 +2174,29 @@ if __name__ == "__main__":
             if not candidate.exists():
                 return candidate
         return dst  # unreachable in practice — 998 names already taken
+
+    @app.post("/page-context", include_in_schema=False)
+    def page_context_push(payload: dict = Body(...)) -> dict:
+        """Attach the extension's page state to a live session.
+
+        {session_id, url, title, selection, page, detach} — the panel sends a
+        part only when it changed, and an empty part means "nothing to say about
+        it", not "forget it" (the page the user moved on from stays in the
+        conversation). `detach: ["page"]` removes an attached block, which is the
+        chip's × — after that, requests stop carrying it.
+        Returns the sizes actually queued so the panel can show what went in.
+        Never 404s: the panel pushes the moment it connects, and a push for a
+        session that already ended is harmless (the TTL reaps it).
+        """
+        session_id = (payload.get("session_id") or "").strip()
+        if not session_id:
+            raise HTTPException(status_code=400, detail="session_id is required")
+        updates = build_page_context_updates(payload)
+        if not updates:
+            return {"page": 0, "selection": 0}
+        queue_page_context(session_id, updates)
+        sizes = {kind: len(block) for kind, block in updates}
+        return {"page": sizes.get("page", 0), "selection": sizes.get("selection", 0)}
 
     @app.get("/export/defaults", include_in_schema=False)
     def export_defaults() -> dict:
@@ -1655,5 +2358,12 @@ if __name__ == "__main__":
             "client/dist not found — the UI won't be served here "
             "(run `cd client && npm run build` first)"
         )
+
+    # Warm the default local models while the server is otherwise idle. The
+    # pipeline cannot be built until its STT/TTS files exist, so on an empty cache
+    # a first session would otherwise sit connected-but-silent for the length of a
+    # ~660 MB download. A daemon thread keeps every HTTP route answering
+    # throughout, and /models reports the state as `warming` for the clients.
+    threading.Thread(target=warm_default_models, name="model-warmup", daemon=True).start()
 
     main()

@@ -74,14 +74,15 @@ export function Dictate() {
 
   /** Copy the transcript and flash the button. The clipboard is this page's
    *  output, so a refused write has to be visible rather than silent. */
-  const copy = useCallback(async (value: string): Promise<void> => {
-    if (!value.trim()) return;
+  const copy = useCallback(async (value: string): Promise<boolean> => {
+    if (!value.trim()) return false;
     const ok = await copyText(value);
     setCopied(ok);
     if (ok) setError(null);
     else setError("Couldn't reach the clipboard — press Copy, or select and ⌘C.");
     if (copyTimer.current !== null) window.clearTimeout(copyTimer.current);
     copyTimer.current = window.setTimeout(() => setCopied(false), 1800);
+    return ok;
   }, []);
 
   const onResult = useCallback(
@@ -172,7 +173,13 @@ export function Dictate() {
           return;
         }
         setTextNow(answer);
-        void copy(answer);
+        // The copy is deliberate — the clipboard is the record, so it has to
+        // match the tidied text — but silence made Tidy look like it had only
+        // copied, with the Copy button's flash as the whole story. Say it, and
+        // only when the write actually landed (a refusal raises its own error).
+        void copy(answer).then((ok) => {
+          if (ok && !silent) setNote("Tidied — and copied, so a paste gets this version.");
+        });
       } finally {
         tidyingRef.current = false;
         setTidyBusy(false);

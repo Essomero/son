@@ -471,6 +471,9 @@ rail is already the frame.
   recognizer's sound events remain the fallback pulse (`useAudioAnalyzer`'s `micPulse`), which is
   also why that hook's `botAudio` is optional: the Speak page has no bot to analyse.
   Muting pauses recognition and leaves the text; unmuting appends to it; **Clear** starts fresh.
+  A manual Tidy reports its outcome in a callout (`role="status"`): tidied-and-copied, nothing to
+  fix, or cleanup not answering — the automatic pass stays silent, and the copy only claims
+  success when `copyText` resolved.
   Interims render as a separate italic line, never in the editable box; a fatal
   reason (`not-allowed`, `audio-capture`, …) stops listening and prints the fix.
 - **Clipboard helpers** (`client/src/lib/clipboard.ts`, now shared with `Reader` and

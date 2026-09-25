@@ -127,7 +127,10 @@ export default function App() {
           }}
           onToggle={() => setPanelOpen((v) => !v)}
           onOpenSettings={() => setSettingsOpen(true)}
-          onResume={(m) => void s.resumeSession(m)}
+          onResume={(m) => {
+            setView("chat"); // picking a conversation means looking at it, not the reader
+            void s.resumeSession(m);
+          }}
           onRename={(id, name) => void sessions.rename(id, name)}
           onDelete={(id) => void sessions.remove(id)}
         />

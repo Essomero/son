@@ -112,6 +112,284 @@ Loose ends:
 - **Record sessions**: done — every turn lands in `son.db` live (see Sessions above).
 - **Tool use**: `GroqLLMService` supports pipecat tool calling (function schemas) — e.g., a "fetch the news" tool later.
 
+## Browser extension (page context) — 2026-09-25
+
+`extension/` is a Manifest V3 Chrome panel that talks to the same bot over the
+same `/start` + small-webrtc path (its own README has install/usage). What it adds
+to the server:
+
+- **`POST /page-context`** — `{session_id, url, title, selection, page, detach}`.
+  The panel sends **deltas**: a field arrives only when that part changed, and
+  `detach: ["page"]` is the chip's × (an empty block in the queue *is* the removal
+  instruction). `build_page_context_updates` caps each part (page 40k chars,
+  selection 6k) and queues `(kind, block)` per session — process-local, 6 h TTL,
+  pruned on write, drained by the pipeline.
+- **`PageContextInjector`** — a `FrameProcessor` between `user_aggregator` and the
+  LLM in `run_bot`. On each `LLMContextFrame` it drains the queue and rewrites the
+  context with `set_messages` (the documented "replace wholesale, don't persist"
+  path): one block per source, placed before the last user turn, replacing any
+  earlier block of the same kind. **It does not inject per request** — the block is
+  history once attached, which is what stops a long chat from re-paying for the
+  page every turn; an identical block is skipped byte-for-byte, so a re-push or a
+  reconnect that re-reports the same page changes nothing. Verified: 0 rows in
+  `son.db` contain the marker (so resume can't replay a stale page, and a detach
+  really removes it).
+- **`GET /roles`** — the `instructions/*.md` roster from source (`instruction_roles`,
+  sharing `sessions.parse_frontmatter_fields`). The extension never loads
+  `client/dist`, so `roles.json` alone isn't enough for it.
+- **Fixes found on the way** (both pre-existing, both fatal on a fresh machine):
+  `pipecat-ai[piper]` was missing from `pyproject.toml` — the *default* voice
+  crashed every session with `Missing module: No module named 'piper'`; and
+  pipecat's `PiperTTSService` downloads into `PIPER_MODEL_DIR` without creating it,
+  so `son.py` now mkdirs it at import (`FileNotFoundError` otherwise, on a cache
+  that doesn't exist yet).
+
+Extension-side facts worth keeping:
+
+- **MV3's CSP kills client-js's default media manager.** `SmallWebRTCTransport`
+  defaults to Daily's manager, which fetches `c.daily.co/.../call-machine-object-bundle.js`
+  and evaluates it: `Failed to load call object bundle ... 'unsafe-eval' is not an
+  allowed source of script` — and MV3 forbids relaxing that. `extension/src/lib/mediaManager.ts`
+  injects a getUserMedia-based `MediaManager` instead (the transport takes one as an
+  option). Mute then goes through `mediaManager.enableMic`, and the local track no
+  longer arrives via `onTrackStarted(participant)`.
+- **Which tab to read is the subtle part.** The panel is usually a side panel (never
+  a tab), but the pop-out is a real *window* and the panel can be opened as a tab —
+  in both, focusing Son makes *it* the active tab, and a naive
+  `tabs.query({active:true,currentWindow:true})` silently swaps the context for
+  "can't read this page". `pickTargetTab()` falls back to the most recently used
+  http(s) tab, then to any window. Filter tabs in **JS**, not with `tabs.query`'s
+  `url` patterns.
+- **A service worker is killed when idle** — keep no state between calls
+  (`pickTargetTab` is stateless for exactly this reason; an earlier
+  remembered-tab-id version "worked" until the worker was reaped).
+- **Rebuilding an unpacked extension does NOT swap a running service worker.**
+  Chrome keeps executing the already-loaded script until that worker is terminated,
+  so a rebuild can leave you verifying the *previous* build — which cost an hour of
+  ghost-hunting here (a fix that "didn't work" was in fact never loaded, while
+  `fetch(chrome.runtime.getURL("background.js"))` from the worker showed... the same
+  stale script). Reload the extension (`Extensions.loadUnpacked` again, which also
+  closes extension tabs) or restart the browser after every rebuild, and check the
+  worker's own diagnostics when a fix seems to have no effect.
+- **Capture functions are cold-serialized** by `chrome.scripting` (source only):
+  `capture.ts` keeps them import-free and closure-free, and trims in the page so a
+  400 KB article never crosses the IPC boundary.
+- **Failed captures must not clear what the conversation carries.** The panel keeps
+  its last good payload and only its chips change (they say why), so glancing at the
+  pop-out or landing on an unreadable page doesn't leave the next question asking
+  "which page?".
+- **The TTS-side copy of a bot segment arrives markdown-stripped** (`stopped_at` →
+  `stoppedat`), which the literal prefix/suffix merge rule can't see — it appends it
+  and the row says everything twice. `mergeBotText` compares normalized text
+  (letters/digits only, Unicode-aware).
+- **Settings travel as `custom_data`** exactly like the web client (`llm`/`stt`/`tts`,
+  absent capabilities as `null`, picks as `{provider, id}` + `voice` for Orpheus).
+  `/models` probes providers, so one unreachable local server can exceed the panel's
+  timeout: it retries at 10 s / 30 s / 90 s (the server caches its roster for 60 s).
+- **Automation gotcha (Chrome 155):** `--load-extension` is ignored; load an
+  unpacked build with `--enable-unsafe-extension-debugging` + CDP
+  `Extensions.loadUnpacked`. A page's *main* world under CDP is not the extension's
+  API world — for `chrome.*` calls, attach to the service-worker target instead. The
+  panel's composer stays open between questions, so an automated "click the type
+  toggle" helper silently closes it and the next question never sends.
+
+Verified 2026-09-25 (CDP-driven Chrome, fake mic fed a silent WAV, real Groq LLM/STT
+picks, local Piper). The request dumps are the proof of the context model — with
+`PAGE(n)`/`SEL(n)` marking the blocks, in order:
+
+```
+PAGE | SEL | Q1                       ← attach, before the question they came with
+PAGE | Q1 | A1 | SEL' | Q2            ← selection changed: replaced; page untouched
+PAGE | Q1 | A1 | SEL' | Q2 | A2 | Q3  ← nothing changed: no push, no re-insertion
+SEL' | Q2 | A2 | Q3 | A3 | Q4         ← page chip × : block removed entirely
+… | A4 | PAGE | Q5                    ← page chip + : re-attached at the end
+```
+
+Also verified: `/start` custom_data, a grounded answer naming content that exists
+only on the test page, `POST /speak` 200 for read-aloud, mute status, the right-click
+intent, pop-out ownership handoff + transcript seeding on a second instance, and
+`son.db` free of page blocks. Real-mic STT remains the one thing a fake device can't
+exercise.
+
+## CLI — `scripts/son`, 2026-09-25
+
+`scripts/son` is the one entry point for running the stack: `build [all|roles|client|extension]`,
+`start [all|server|voice]`, `stop [all|server|voice]`, `restart`, `status`, `logs`, `open
+[page|extensions]`, `install`, `doctor`. `son` with no command = `start --open` (what Son.app does).
+It was added because the pieces were only reachable by remembering that the bot wants `uv run python
+son.py`, the whisper stack wants two more processes, and Son.app can only launch all of it.
+
+- **Stdlib only, deliberately.** `status`/`doctor`/`stop` have to work when the venv is gone,
+  half-synced or was never built — that is exactly when you reach for them. Only the commands that
+  run project code shell out to `.venv/bin/python` (or `uv run python` when there is no venv), which
+  is also why `doctor` globs `lib/python*/site-packages` instead of deriving the path from the
+  running interpreter: this CLI runs on the system python (3.14 here) while the venv is 3.13.
+- **Liveness is `/roles`, never `/models`.** `/models` probes every configured provider (8s each,
+  120s for Google's token) and takes minutes on a bad network. Probing it as a health check reported
+  a healthy bot as down — which made `son start` refuse to start and `son status` lie. `/roles` reads
+  `instructions/` and answers instantly; the roster is fetched separately, with a "still probing"
+  message when it isn't ready.
+- **`son stop` is not limited to what `son start` started.** It takes the pidfile first, then falls
+  back to whoever holds :7860/:8081/:8083 *when the process looks like ours* (`son.py`,
+  `whisper_local.py`, `whisper-server`) — the stack is just as often started by Son.app or by hand.
+  `--force` drops that safety. `alive()` treats a zombie pid as gone: it made `stop` claim it had
+  failed to stop something that was already dead.
+- **Install is a symlink**, so `git pull` updates the command and `son install` is really a wiring
+  check (it also reports a shell alias that would shadow it). `~/.zshrc`'s old
+  `alias son="open ~/Applications/Son.app"` was renamed to `son-app` for exactly that reason.
+- **`son status` ends with a "where things are" block** (web page URL, `/models`, the unpacked
+  extension path, the log command): the question after "what's running" is always "where do I go".
+
+Verified: `build roles|extension|client` (the client build also fixed the repo's missing
+`client/dist`, so `:7860` serves the page again), `start server` / `start` with the voice stack
+absent, `stop` for both a CLI-started and a hand-started server, `status`/`doctor` with nothing
+running, `logs`, `open page`/`open extensions`, and `status | head` (SIGPIPE behaves like a Unix
+tool instead of tracebacking).
+
+## Model warmup, and why the server froze — 2026-09-25
+
+The report: *"both the page and the extension cannot reach the bot yet the server is
+running."* It was true in both halves. `lsof` showed a healthy listener on
+`127.0.0.1:7860` **and** `[::1]:7860`, `ps` showed `.venv/bin/python son.py` — and
+every HTTP probe (curl, the panel, the page, the CLI) returned nothing at all for
+minutes.
+
+**Cause.** The local providers fetch their models *on the pipeline*, and the
+pipeline shares the event loop with the HTTP side of the process (the page,
+`/models`, `/roles`, `/sessions`, the WebRTC `/start`):
+
+- Parakeet (`parakeet_stt._ensure_model_files` → `OfflineRecognizer`) downloaded on
+  the **first turn**, ~660 MB, plus ~600 MB into RAM;
+- Piper and Kokoro download inside their **constructors**, i.e. in `build_tts_service`
+  during `run_bot`;
+- all of it is blocking (`requests.get(stream=True)`, `onnxruntime` init), so
+  uvicorn's loop was parked for the whole ~108 s. The page and the extension weren't
+  wrong: nothing was being served.
+
+**Fix.** `prewarm_local_models()` runs the chosen local models' fetch+load in a worker
+thread *before* the pipeline is built, and `warm_default_models()` does the same for
+the defaults from a daemon thread at startup — so a first session never waits for a
+download that a fresh server could have done while it was idle. `parakeet_stt.prepare()`
+is the public entry point (fetch + load, cached in `_recognizers`); `ensure_piper_voice`
+and `ensure_kokoro_files` cover the TTS side.
+
+**State, so it can't be invisible again.** `_MODEL_WARMUP` (label → `downloading` /
+`ready` / `failed: …`) is served by its own `GET /warming` — deliberately *not* a field
+on `/models`, which probes every provider and can take minutes exactly when this
+matters. Consumers:
+
+- the browser panel's `models` dot: amber `models…` with a tooltip naming the file
+  ("the server is fetching piper voice — a first-use download; a session started now
+  waits for it"), red `no roster yet — click to retry`, green when the roster is in;
+- `son status`: a `warming  ! fetching piper voice — a first session waits for it` line;
+- `son status` also prints a **processes** block — pid, command, uptime, log path,
+  whether the port answers, and `not started by son` for strangers — because "running"
+  has to be visible, not inferred, and this whole confusion came from a pid holding a
+  port that answered nothing.
+
+**Verified.** With the Parakeet cache moved aside, 150 one-second probes of `/roles`
+covering the entire **108.3 s** download: every one `200`, max **2.3 ms** (the same
+operation previously returned `000` for its whole duration). The log shows the fetch
+beginning at server start — `15:45:36 downloading …`, `15:47:24 parakeet model: ready
+(108.3s)` — with **no session connected**, and `/warming` reporting `downloading`
+from the first probe and `ready` when it finished. Panel states checked live: green,
+amber `models…` (moving from "parakeet model" to "piper voice" as the startup warmup
+walked its jobs), and red when the panel's own `/models` call timed out. Kokoro's real
+cache is `~/.cache/pipecat/kokoro-onnx` (pipecat's, not this repo's) — the CLI's cache
+line was wrong before this and now reports it correctly.
+
+## `son status` waited ~12 s on the cold roster — 2026-09-25
+
+**Reported as "hangs until Ctrl-C, then eventually completes."** That is what it did:
+`cmd_status` called `roster()` *before* printing anything, and a fresh server's `/models`
+sweeps every provider (8 s each; Google's token refresh can take ~120 s), so the CLI sat
+in `urllib … _read_status` with an empty screen until it answered — the user's own
+traceback showed the wait, and a status report that shows nothing for 12 s is
+indistinguishable from a hang.
+
+**Now.** The header prints before any probe; the live roster is opt-in
+(`son status --roster`, still honest when the cache is cold); Ctrl-C prints
+`son: interrupted` (exit 130) instead of a traceback; `son --help`'s examples list it.
+
+**Verified.** Default `status` **0.41 s** with **zero** `/models` requests (server-log
+delta across the run) — the blocking call is gone, not merely shortened; `--roster`
+**12.4 s** on a cold server (`roster  ! still probing — …`) and **0.43 s** warm
+(`llm 24  stt 29  tts 46`); `main(["status", "--roster"])` with `roster()` raising
+`KeyboardInterrupt` → `son: interrupted`, exit 130.
+
+**Refuted on the way.** The suspicion that a cold sweep blocks the server's event loop
+(which would also explain the panel's "offline" look) is wrong: `/roles` answered in
+**2 ms** throughout a 12 s sweep. The sweep is slow, not blocking — so this belonged in
+the client, and nothing server-side changed.
+
+## Browser Web Speech by default, and model residency — 2026-09-25
+
+**Shipped.** The STT default is the browser's Web Speech, with local Parakeet as an
+automatic fallback, and the local model caches now follow *use* instead of living for
+the process's life. README + extension README document the default and its trade.
+
+**Server.** `default_choices()["stt"]` = `{web-speech, browser}`. The startup warmup
+still pre-fetches Parakeet's files (`parakeet model (stt fallback)`, disk only, never
+loaded) so a fallback is a ~1.5 s recognizer build and not a 643 MB download
+mid-conversation. `release_unused_models(stt_choice)` runs at session start (keep this
+session's recognizer, drop the rest) and on `on_client_disconnected` (drop everything —
+nothing is in use then); `parakeet_stt.release()` only drops our reference, so a decode
+in flight keeps its object and the next session rebuilds. The one-shot read-aloud cache
+(`_tts_services`) is capped at one service.
+
+**Clients.** Both send an explicit STT pick, because the half that has to run
+recognition is the client: the web client's `DEFAULT_CHOICES.stt` and the extension's
+`DEFAULT_SETTINGS.choices.stt` are `web-speech/browser` (the extension's `loadSettings`
+merges per capability, so a settings blob saved before this still gets it — otherwise a
+session would hear nothing). The extension gained a real browser-speech path
+(`extension/src/lib/webSpeech.ts`): recognition in the panel, `enableMic: false` plus
+`MicMediaManager({ capture: false })` so no mic track exists at all, finals accumulated
+over a 900 ms silence window, `POST /cleanup` (10 s cap, raw text on failure), then
+`sendText(run_immediately: true)`. A fatal error (`not-allowed`,
+`service-not-allowed`, `audio-capture`, `network`, `unavailable`) reconnects the same
+conversation on Parakeet and shows a notice; a new chat retries Web Speech.
+
+**Verified** (server on the new code, Chrome with the built extension):
+- default session: `Session: … stt=web-speech/browser`, no `ParakeetSTTService` in the
+  pipeline, `getUserMedia` calls during connect: **0**, recognizer started: 1;
+- an utterance flows end to end: browser final → live user row → flush → bot answer;
+- fallback: with `SpeechRecognition` removed, the panel shows "Web Speech unavailable
+  (unavailable) — this conversation is using the local Parakeet model", the server opens
+  `stt=parakeet/…` and builds the recognizer 2.3 s later from cached files, mic track
+  back;
+- residency: 726 MB with a Parakeet session → **169 MB** after ending it
+  (`Parakeet: released … — keeping nothing`); a following Web Speech session sits at
+  326 MB and never builds the recognizer;
+- read-aloud cache: three `/speak` calls across two voices → one resident, the other
+  released (`TTS: released cached read-aloud service ('piper', 'en_US-amy-medium', None)`),
+  rebuilt on switch.
+
+**Found while verifying.**
+- `_tts_services` was keyed `(provider, voice)`, while Piper carries its voice in
+  `model` and leaves `voice` empty — every Piper voice collapsed onto `("piper", None)`,
+  so read-aloud with a switched voice answered in the *first* voice's audio (and any
+  cap was inert). Key is now `(provider, model, voice)`.
+- The cleanup endpoint is slow here: `STT_CLEANUP_BASE_URL` points at LM Studio over the
+  tailnet and exceeded the client's 10 s cap, so browser-STT finals went out raw. The
+  cap is the web client's own and the fallback is deliberate (a turn must never wait on
+  formatting), but punctuation depends on that endpoint answering.
+
+**Still open.** `network`-class failures retry Web Speech on every new chat (a
+session-level retry might be friendlier on a flaky link), and the audio only stays on
+the machine when Chrome has the on-device pack — `processLocally` is attempted
+best-effort.
+
+**Web Speech in an extension page — verified, not assumed.** Both constructors are
+present in the side panel document (`chrome-extension://…/sidepanel.html`), checked as
+a tab *and* as a real `chrome.sidePanel.open` panel: `isSecureContext: true`,
+microphone permission `granted` (the manifest already declares `audioCapture`, so there
+is no prompt to miss), and `recognition.start()` fires `start`. So the constraint is
+not policy: it is Chromium-only (a browser without the API gets the `unavailable`
+fallback), a service worker cannot host it at all (no DOM — which is why the panel, not
+`background.js`, runs recognition), and Chrome's engine is server-side unless the
+on-device pack installs. Failure notices now name the cause and the fix
+(`SPEECH_FAILURE_HINT` in `useSon.ts`) instead of printing a bare error code.
+
 ## Share-later roadmap (v2, not started)
 
 1. **Ephemeral tokens** — replace the client hitting `:7860/start` directly with a token endpoint so others don't need the runner exposed.
@@ -147,9 +425,144 @@ The built client is served by son.py itself — no second server:
   still crosses origins and relies on the runner's CORS middleware.
 - After UI changes: `cd client && npm run build`. Vite's dist layout is
   fixed (index.html + assets/ + roles.json), which is exactly what the three
-  registrations serve. The chat URL depth is why **every fetch must be
-  root-absolute** (`ROLES_URL`, `MODELS_URL`, … from `lib/son.ts`) — a
-  relative `roles.json` would resolve under `/s/...` and 404.
+  registrations serve. **Then reload with the cache bypassed** — the browser can
+  keep serving the previous stylesheet/bundle from cache after a rebuild, which
+  looks exactly like a CSS edit that didn't apply. The chat URL depth is why
+  **every fetch must be root-absolute** (`ROLES_URL`, `MODELS_URL`, … from
+  `lib/son.ts`) — a relative `roles.json` would resolve under `/s/...` and 404.
+
+## The Read | Speak page (POST /speak, browser Web Speech) — 2026-09-25
+
+The header's slider opens one of two pages: **Read** (text → speech, the original
+read-out page) and **Speak** (speech → text, new). They are separate actions, so each
+renders alone and switching unmounts the other — the clipboard is Speak's record, and
+Read's box is one **Paste & read** click away from refilling itself.
+
+- **Header control**: a two-segment pill — `Read | Speak` — with the highlight sliding
+  between the labels (the Write/Preview construction, reused), wired as a `radiogroup`
+  with arrow-key support and exactly-aligned thumb (measured 0 px drift in both
+  positions). Picking a segment *opens* that page; a `Chat` button appears beside it to
+  leave. `App` owns `view` + `readerMode`; `Header` takes `onReaderMode` and sets both.
+- **Read**: `Paste & read` reads the clipboard, fills the box and synthesizes in one
+  click — a click is also the user gesture `clipboard.readText` needs, which is why it
+  is a button and not an automatic paste. `speak(override)` exists because React hasn't
+  re-rendered the textarea with the pasted text yet, so cleaning applies to the override.
+- **Clean with AI** (`POST /rewrite`): the read page's own audio-prompt cleaning, with no
+  trip out to another LLM. The client sends the *same* `AUDIO_PROMPT` the copy button
+  hands out as the system message plus the box's text, and the brain's reply replaces it;
+  **Undo** restores the original, because a real model rewrites sentences (unlike
+  `/cleanup`, which is a format-only pass on a small local normalizer and keeps the raw
+  text on any doubt). Server side: `LLM_BASE_URLS` reuses the hosts the `/models` probes
+  already use, every provider is reached through its OpenAI-compatible chat endpoint
+  (Gemini included, via `/v1beta/openai`), keys come from `PROVIDER_ENV_KEYS`, and the
+  route is a plain `def` so FastAPI runs it in the threadpool — a minute-long rewrite
+  must not hold the event loop the panels, the CLI and the pipeline share. The Audio
+  prompt button stays: that is the do-it-outside workflow, unchanged.
+- **Speak** (`client/src/components/Dictate.tsx`): `useWebSpeech` + `/cleanup` on demand
+  (`Tidy`) + `copyText` on every final, so the clipboard tracks the transcript as you
+  talk. Interims render as a separate italic line, never in the editable box; a fatal
+  reason (`not-allowed`, `audio-capture`, …) stops listening and prints the fix.
+- **Clipboard helpers** (`client/src/lib/clipboard.ts`, now shared with `Reader` and
+  `SessionsPanel`): writes fall back from the async API to a textarea +
+  `execCommand("copy")` for the plain-http LAN case; reads have no fallback, so `null`
+  (refused/unavailable) is distinct from `""` (empty).
+
+**Verified** (Chrome, `http://localhost:7860`, real gestures via CDP `clickxy`):
+- slider: click opens the page, real `ArrowLeft` (CDP input) moves back, and the stage
+  holds exactly one page each time (`stageChildren: ["reader"]`, hero only in chat);
+- Read: `Paste & read` → box filled from the system clipboard → the player appears →
+  `POST /speak` +1 (log delta); the export panel's file name derives from that text;
+- Speak: stubbed recognizer → `Start listening` → `Start → Stop`, `start()` called →
+  a final lands in the box, a second appends with one space (`79 chars`), and the
+  transcript appears on the system clipboard (`pbpaste`);
+- clipboard failures are bounded: a window that can't reach the clipboard now shows
+  `Couldn't reach the clipboard — press Copy, or select ⌘C.` after 2.5 s instead of a
+  button that never reacts (`navigator.clipboard.writeText` can stay pending forever
+  when the document isn't focused or a permission prompt goes unanswered).
+- Clean with AI, end to end: a box holding `## Complexity` / `**binary search**` /
+  `O(log n)` / `n^2` / `Θ(n²)` / a markdown link came back as `"Complexity. We saw that
+  binary search runs in big O of log n time, while n squared sorting is worse. First,
+  big theta of n squared is quadratic. Second, see the docs for more."` — no markdown
+  left, math spoken, bullets turned into sentences (`/rewrite: 170 chars in, 177 out
+  (groq/openai/gpt-oss-120b)`); **Undo** restored the raw 170-char original and removed
+  itself; the Audio prompt button still put the prompt on the clipboard.
+
+**Also fixed here — the lighter band under the reader page, and where scrolling lives.**
+`.reader` had no scroll container, so its content (a dragged-taller textarea, the player,
+the export panel) overflowed the `.app` frame — which is exactly `100dvh` — and the
+*page* became the scroller, exposing the body's background below the frame (and its
+repeating amber gradient, which tiles: `background-repeat` defaults to `repeat`). The
+glow is now `no-repeat`, and the scroller is **`.main`** — the whole area right of the
+rail — rather than the document (which carries the header and rail off with it) or the
+inner column (which leaves the gutters dead to the wheel: "read is the main page, so I
+should be able to scroll anywhere except the sidebar"). Measured at a 1500 × 520 viewport
+with a 900 px textarea: `.main` spans 260→1500 and scrolls (1290 in 456); the wheel's
+target is `.main` both in the gutter (x = 1400) and over the column (x = 700), and
+`sessions-panel-inner` over the rail; `scrollBy(340)` moves the main area only —
+`window.scrollY` stays 0, the header stays pinned, the rail's scroll untouched, and the
+document is never a scroller. In the chat view `.main` does not scroll at all (the
+transcript keeps its own scrollbar), so the wrapper costs nothing. (Synthetic wheel
+events can't be delivered in the automation window — `Input.dispatchMouseEvent` and
+`synthesizeScrollGesture` both time out there — so this is verified as the scroll
+container under each region, which is what a wheel resolves against.)
+
+## Transcript cleanup runs locally: s1-mini under llama.cpp — 2026-09-25
+
+**Why.** Cleanup pointed at LM Studio over the tailnet
+(`STT_CLEANUP_BASE_URL=http://100.123.237.67:1234/v1`) and that box stopped answering: TCP connect
+timed out, 100% packet loss, and a completion request never returned in 75 s. Every call therefore
+waited out its timeout and passed raw text through — the log's
+`Transcript cleanup failed, passing raw text through: ` with an **empty** message is how httpx
+timeouts stringify. There was no local fallback either: LM Studio.app installed, no models
+downloaded, nothing listening on `:1234`.
+
+**What s1-mini actually is.** `superwhisper/s1-mini` — a 0.6B Qwen3 fine-tune that does one job.
+Two things follow from its card:
+
+- it is **not an instruct model** ("will not follow general instructions"); it is steered by a
+  *control line* (`[Styling: …] [Structure: prose] [Context: …]`) after its own exact system
+  prompt. The previous setup sent the chat-style cleanup prompt, which it ignores — the LM Studio
+  path was running off-distribution.
+- its job *is* to drop fillers and resolve false starts, which the word-survival guard (written for
+  an instruct normalizer that deleted words by accident) rejected. Agreed policy: **trust s1-mini**,
+  keep two cheap checks — an empty answer means the utterance was noise (nothing to send), and an
+  answer that more than doubles in length is not a cleanup — and keep the full guard for instruct
+  normalizers.
+
+**Hosting, measured here.** `s1-mini-q4_k_m.gguf` (462 MB) under `llama-server` (llama.cpp,
+`brew install llama.cpp`): 462 MB on disk, **980 MB resident**, **126-314 ms** per utterance.
+Alternatives measured and rejected: the same model in fp16 through transformers (1.2 GB weights,
+~2 GB resident); a generic 0.5B instruct LLM (dropped words the speaker said — failed the guard on
+every input); a 210 MB punctuation+truecase encoder (35 ms, but no inverse text normalization and
+no false-start resolution — its files are still in `~/.cache/son/cleanup` if that tier is wanted).
+
+**Wired in.** `s1_mini.py` (stdlib-only, so `scripts/son` can use it without the venv) owns the
+URL, path, download and contract. `STT_CLEANUP_MODEL`/`STT_CLEANUP_BASE_URL` default to the local
+model/server. `son start cleanup` fetches the GGUF once and serves it on `:8090` with
+`--reasoning off`; `son start` includes it; `son status` lists the port, `son doctor` the binary and
+the model; the startup warmup fetches the GGUF (files only); and both cleanup call sites handle
+"s1-mini says nothing" — the pipeline ends the turn instead of waking the brain for noise, the route
+answers `{"text": <raw>, "dropped": true}` so older clients behave exactly as before. A 60 s
+failure cooldown means a dead endpoint costs one slow turn rather than every turn, and `/models`'s
+`cleanup` flag tracks it so the client stops promising a cleanup that isn't coming.
+
+**Verified.**
+
+- `POST /cleanup` "so um i need to like send the the report by uh friday no wait make that
+  thursday" → `So I need to send the report by Thursday.` — the exact edit the guard used to discard;
+- "the meeting is on january fifth at three thirty pm and costs twenty five dollars" → `The meeting
+  is on January 5 at 3:30pm, and it costs $25.`;
+- "um uh hmm er" → `{"text": "um uh hmm er", "dropped": true}`;
+- `/models` → `cleanup: True`; `son doctor` → `cleanup ok llama-server …` and `s1-mini ok …gguf`;
+  `son status` → `cleanup :8090 pid … llama-server -m … up … log .runtime/cleanup.log`;
+- cooldown: with the server stopped, call 1 returned raw and logged one
+  `cleanup unreachable — skipping cleanup for 60s`, call 2 was instant with no further attempt,
+  `/models` reported `cleanup: False`; after `son start cleanup` and the window elapsed, cleanup
+  worked again.
+
+**Known sharp edge.** Spelled-out codes stay imperfect: "z q f four two one seven" → `ZQ4217` (the
+real code is ZQF-4217). The punctuation encoder made the same class of mistake, so it is the input,
+not the host.
 
 ## The read-out page (POST /speak)
 

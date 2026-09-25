@@ -24,8 +24,9 @@ interface AnalyzerOpts {
   /** The user's live mic track (null when not connected). */
   micTrack: MediaStreamTrack | null;
   /** Ref to the hidden <audio> element playing the bot's WebRTC track
-   *  (resolved inside the effect, after the element has mounted). */
-  botAudio: { current: HTMLAudioElement | null };
+   *  (resolved inside the effect, after the element has mounted). Omitted by
+   *  pages with no session at all — the Speak page's ring pulses instead. */
+  botAudio?: { current: HTMLAudioElement | null };
   /** Whether the session is live (the loop runs only while connected). */
   active: boolean;
   /** Web-speech mode: no mic track exists, so this pulse (driven by the
@@ -80,7 +81,7 @@ export function useAudioAnalyzer({ micTrack, botAudio: botAudioRef, active, micP
     if (ctx.state === "suspended") void ctx.resume().catch(() => {});
 
     // Bot chain — built once, persists for the element's lifetime.
-    const botAudio = botAudioRef.current;
+    const botAudio = botAudioRef?.current ?? null;
     if (botAudio && !botSourceRef.current) {
       try {
         const source = ctx.createMediaElementSource(botAudio);

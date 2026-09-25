@@ -7,9 +7,11 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Check, ClipboardCopy, Eraser, Loader2, Mic, Square, Wand2 } from "lucide-react";
+import { Check, ClipboardCopy, Eraser, Loader2, Wand2 } from "lucide-react";
 
 import { useWebSpeech, webSpeechAvailable } from "../hooks/useWebSpeech";
+import { useAudioAnalyzer } from "../hooks/useAudioAnalyzer";
+import { MicButton } from "./MicButton";
 import { copyText } from "../lib/clipboard";
 import { cleanTranscript } from "../lib/son";
 
@@ -51,6 +53,8 @@ export function Dictate() {
   const [text, setText] = useState("");
   const [interim, setInterim] = useState("");
   const [listening, setListening] = useState(false);
+  /** True between the recognizer's soundstart and soundend — what lights the ring. */
+  const [soundActive, setSoundActive] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [tidyBusy, setTidyBusy] = useState(false);
@@ -98,8 +102,16 @@ export function Dictate() {
 
   // This panel *is* the page while it is mounted, so the mic follows the
   // listening flag alone; leaving for the Read page unmounts it, which stops the
-  // recognizer in the hook's cleanup.
-  useWebSpeech(onResult, listening && supported, undefined, onError);
+  // recognizer in the hook's cleanup. The ring is the chat's mic visual: there
+  // is no session and so no analyser here, which is exactly the web-speech case
+  // that pulse exists for — it swells with the recognition's sound events and
+  // decays on silence.
+  useWebSpeech(onResult, listening && supported, setSoundActive, onError);
+  const { subscribe } = useAudioAnalyzer({
+    micTrack: null,
+    active: supported,
+    micPulse: soundActive,
+  });
 
   useEffect(
     () => () => {
@@ -111,6 +123,7 @@ export function Dictate() {
   const toggle = (): void => {
     setError(null);
     setListening((on) => !on);
+    setSoundActive(false); // a lit ring must not outlive the listening
   };
 
   /** The server's STT normalizer (/cleanup) over what's in the box: punctuation,
@@ -175,6 +188,24 @@ export function Dictate() {
       <p className="dictate-interim" aria-live="polite">
         {interim}
       </p>
+
+      {/* The chat's mic ring, which is also the page's start/pause: there is no
+          session to mute here, so the same control does the whole job — muting
+          pauses the recognition, unmuting carries on appending to the same
+          text, and Clear is what starts a fresh one. */}
+      <div className="dictate-mic">
+        <MicButton
+          subscribe={subscribe}
+          muted={!listening}
+          disabled={!supported}
+          onToggle={toggle}
+        />
+        <p className="dictate-state" aria-live="polite">
+          {live
+            ? "Listening — click the mic to pause; your text stays."
+            : "Paused — click the mic to carry on dictating."}
+        </p>
+      </div>
       <div className="reader-meta">
         <span>{text.trim() ? `${text.trim().length.toLocaleString()} chars` : "Empty"}</span>
         <span className={copied ? "dictate-copied" : ""}>
@@ -208,15 +239,6 @@ export function Dictate() {
         >
           <Eraser size={14} aria-hidden />
           Clear
-        </button>
-        <button
-          type="button"
-          className={`start-btn${live ? " dictate-live" : ""}`}
-          onClick={toggle}
-          disabled={!supported}
-        >
-          {live ? <Square size={17} aria-hidden /> : <Mic size={17} aria-hidden />}
-          {live ? "Stop" : "Start listening"}
         </button>
       </div>
 

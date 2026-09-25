@@ -220,6 +220,22 @@ code {
   color: var(--amber-hi);
 }
 
+/* The Speak page's own mic ring: the chat's visual, its pulse driven by the
+   recognizer's sound events rather than a session's track. */
+.dictate-mic {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  margin: 2px 0;
+}
+
+.dictate-state {
+  margin: 0;
+  color: var(--faint);
+  font-size: 12.5px;
+}
+
 /* Chat | Read | Speak — the destinations, in the panel that frames the app. */
 .sessions-nav {
   display: flex;

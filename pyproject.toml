@@ -6,9 +6,12 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.141.1",
-    # Extras = the providers son.py imports: kokoro/webrtc (core), google
-    # (LLM+STT+TTS), groq (LLM+STT+TTS), openrouter+cerebras+deepseek (LLM).
-    "pipecat-ai[cerebras,deepseek,google,groq,kokoro,openrouter,rnnoise,webrtc]>=1.7.0",
+    # Extras = the providers son.py imports: kokoro/webrtc (core), piper (the
+    # default voice — without the extra, PiperTTSService's `from piper import
+    # PiperVoice` raises and every fresh session dies at pipeline build),
+    # google (LLM+STT+TTS), groq (LLM+STT+TTS), openrouter+cerebras+deepseek
+    # (LLM) — listed here (not only in son.py) because uv resolves the extras.
+    "pipecat-ai[cerebras,deepseek,google,groq,kokoro,openrouter,piper,rnnoise,webrtc]>=1.7.0",
     "sherpa-onnx>=1.13.5",
     # The C++ core ships as a separate wheel (dynamic Requires-Dist — uv skips
     # it), and the macOS sherpa-onnx wheel can't dlopen without it.

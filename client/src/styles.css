@@ -156,6 +156,7 @@ code {
 /* --- Sessions panel (left rail) ------------------------------------------- */
 
 .sessions-panel {
+  position: relative; /* the reopen handle anchors to this edge */
   width: 260px;
   flex-shrink: 0;
   border-right: 1px solid var(--line);
@@ -164,9 +165,15 @@ code {
   display: flex;
 }
 
+/* Collapsed, the rail is a strip that keeps the handle: the way back has to
+   stay where the chat list was, or a collapsed panel is a dead end. */
 .sessions-panel.closed {
-  width: 0;
-  border-right-color: transparent;
+  width: 30px;
+}
+
+.sessions-panel.closed .sessions-panel-inner {
+  opacity: 0;
+  pointer-events: none;
 }
 
 .sessions-panel-inner {
@@ -186,6 +193,52 @@ code {
   letter-spacing: 0.16em;
   text-transform: uppercase;
   color: var(--faint);
+}
+
+.sessions-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-left: 6px;
+}
+
+.sessions-collapse {
+  display: flex;
+  border: none;
+  background: none;
+  border-radius: 5px;
+  padding: 2px;
+  color: var(--faint);
+  cursor: pointer;
+  transition: color 0.15s;
+}
+
+.sessions-collapse:hover {
+  color: var(--ink-dim);
+}
+
+.sessions-handle {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 30px;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: none;
+  color: var(--faint);
+  cursor: pointer;
+  transition: color 0.15s;
+}
+
+.sessions-panel.closed .sessions-handle {
+  display: flex;
+}
+
+.sessions-handle:hover {
+  color: var(--amber-hi);
 }
 
 .sessions-empty {

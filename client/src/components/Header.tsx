@@ -4,7 +4,7 @@
  */
 
 import { useState } from "react";
-import { ChevronDown, MessageSquare, PanelLeft, PhoneOff, Plus, Settings2 } from "lucide-react";
+import { ChevronDown, MessageSquare, PhoneOff, Plus, Settings2 } from "lucide-react";
 
 import type { Phase, Role } from "../lib/types";
 import { RoleAvatar } from "./Avatar";
@@ -58,12 +58,10 @@ export function Header({
   speaking,
   role,
   roles,
-  panelOpen,
   view,
   readerMode,
   onSelectRole,
   onNewSession,
-  onTogglePanel,
   onToggleView,
   onReaderMode,
   onEndSession,
@@ -74,13 +72,11 @@ export function Header({
   speaking: boolean;
   role: Role | null;
   roles: Role[];
-  panelOpen: boolean;
   view: "chat" | "reader";
   /** Which reader page the slider is pointed at. */
   readerMode: "read" | "speak";
   onSelectRole: (r: Role) => void;
   onNewSession: () => void;
-  onTogglePanel: () => void;
   onToggleView: () => void;
   /** Open the Read or the Speak page (both set the mode and leave the chat). */
   onReaderMode: (mode: "read" | "speak") => void;
@@ -170,16 +166,6 @@ export function Header({
           </button>
         )}
         <ModeSlider mode={readerMode} onPick={onReaderMode} />
-        <button
-          type="button"
-          className={`icon-btn${panelOpen ? " active" : ""}`}
-          onClick={onTogglePanel}
-          title={panelOpen ? "Hide sessions" : "Show sessions"}
-          aria-label={panelOpen ? "Hide sessions" : "Show sessions"}
-          aria-pressed={panelOpen}
-        >
-          <PanelLeft size={16} />
-        </button>
         <button
           type="button"
           className="icon-btn"

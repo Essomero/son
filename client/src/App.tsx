@@ -110,12 +110,10 @@ export default function App() {
         speaking={s.speaking}
         role={s.role}
         roles={s.roles}
-        panelOpen={panelOpen}
         view={view}
         readerMode={readerMode}
         onSelectRole={s.selectRole}
         onNewSession={() => void s.newSession()}
-        onTogglePanel={() => setPanelOpen((v) => !v)}
         onToggleView={() => setView((v) => (v === "chat" ? "reader" : "chat"))}
         onReaderMode={(mode) => {
           setReaderMode(mode);
@@ -130,6 +128,7 @@ export default function App() {
           open={panelOpen}
           sessions={sessions.list}
           activeId={s.sessionId}
+          onToggle={() => setPanelOpen((v) => !v)}
           onResume={(m) => void s.resumeSession(m)}
           onRename={(id, name) => void sessions.rename(id, name)}
           onDelete={(id) => void sessions.remove(id)}

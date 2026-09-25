@@ -100,6 +100,15 @@ export default function App() {
 
   const inChat = s.phase === "connected" || s.phase === "disconnected";
 
+  /** Home: a fresh conversation, whichever page is showing. The rail's Chat
+   *  entry and its wordmark both land here — inside a live chat, "Chat" has to
+   *  mean a *new* one, or the click does nothing at all. The finished
+   *  conversation keeps its row in the rail (sqlite), so nothing is lost. */
+  const goHome = (): void => {
+    setView("chat");
+    void s.newSession();
+  };
+
   return (
     <div className="app">
       <audio ref={s.botAudioRef} hidden onPlay={s.handleAudioPlay} onPause={s.handleAudioPause} />
@@ -111,7 +120,7 @@ export default function App() {
           activeId={s.sessionId}
           view={view}
           readerMode={readerMode}
-          onGoChat={() => setView("chat")}
+          onNewChat={goHome}
           onReaderMode={(mode) => {
             setReaderMode(mode);
             setView("reader");
@@ -134,7 +143,7 @@ export default function App() {
             role={s.role}
             roles={s.roles}
             onSelectRole={s.selectRole}
-            onNewSession={() => void s.newSession()}
+            onNewSession={goHome}
             onEndSession={() => void s.disconnect()}
           />
 

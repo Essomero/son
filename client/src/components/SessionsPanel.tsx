@@ -47,9 +47,9 @@ export function SessionsPanel({
   activeId,
   onToggle,
   onOpenSettings,
+  onNewChat,
   view,
   readerMode,
-  onGoChat,
   onReaderMode,
   onResume,
   onRename,
@@ -60,11 +60,12 @@ export function SessionsPanel({
   activeId: string | null;
   onToggle: () => void;
   onOpenSettings: () => void;
+  /** A fresh conversation: the wordmark and the Chat entry both land there. */
+  onNewChat: () => void;
   /** Which destination is on screen. */
   view: "chat" | "reader";
   /** Which reader page, when the destination is the reader. */
   readerMode: "read" | "speak";
-  onGoChat: () => void;
   /** Open the Read or the Speak page (both set the mode and leave the chat). */
   onReaderMode: (mode: "read" | "speak") => void;
   onResume: (s: SessionMeta) => void;
@@ -104,9 +105,20 @@ export function SessionsPanel({
   return (
     <aside className={`sessions-panel${open ? "" : " closed"}`} aria-label="Sessions">
       <div className="sessions-panel-inner">
-        <h1 className="brand sessions-brand">
-          Son<span className="brand-dot">·</span>
-        </h1>
+        <a
+          className="sessions-brand"
+          href="/"
+          title="Home"
+          aria-label="Son — home"
+          onClick={(event) => {
+            event.preventDefault(); // the app owns navigation; this is not a page load
+            onNewChat();
+          }}
+        >
+          <h1 className="brand">
+            Son<span className="brand-dot">·</span>
+          </h1>
+        </a>
 
         {/* Chat is always there — it is the way home, and the way to a new one —
             with Read | Speak at the foot, above settings. The collapsed strip
@@ -115,9 +127,9 @@ export function SessionsPanel({
           <button
             type="button"
             className={`icon-btn${onChat ? " active" : ""}`}
-            onClick={onGoChat}
-            title="Chat"
-            aria-label="Chat"
+            onClick={onNewChat}
+            title="New chat"
+            aria-label="New chat"
             aria-current={onChat ? "page" : undefined}
           >
             <MessageSquare size={16} />
@@ -240,9 +252,9 @@ export function SessionsPanel({
           <button
             type="button"
             className={`sessions-strip-btn${onChat ? " active" : ""}`}
-            onClick={onGoChat}
-            title="Chat"
-            aria-label="Chat"
+            onClick={onNewChat}
+            title="New chat"
+            aria-label="New chat"
             aria-current={onChat ? "page" : undefined}
           >
             <MessageSquare size={16} aria-hidden />

@@ -8,8 +8,9 @@ import type { Msg } from "./types";
 
 const params = new URLSearchParams(location.search);
 export const BOT_ENDPOINT = params.get("endpoint") || "http://localhost:7860/start";
-const BOT_BASE = BOT_ENDPOINT.replace(/\/start$/, "");
+export const BOT_BASE = BOT_ENDPOINT.replace(/\/start$/, "");
 export const MODELS_URL = BOT_BASE + "/models";
+export const WARMING_URL = BOT_BASE + "/warming";
 export const SESSIONS_URL = BOT_BASE + "/sessions";
 export const SPEAK_URL = BOT_BASE + "/speak";
 export const EXPORT_URL = BOT_BASE + "/export";

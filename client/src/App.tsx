@@ -14,6 +14,7 @@ import { Hero } from "./components/Hero";
 import { SessionsPanel } from "./components/SessionsPanel";
 import { Transcript, ComposerBar } from "./components/Transcript";
 import { SettingsModal } from "./components/SettingsModal";
+import { StatusModal } from "./components/StatusModal";
 import { PersonaModal } from "./components/PersonaModal";
 import { Reader } from "./components/Reader";
 import { Dictate } from "./components/Dictate";
@@ -26,6 +27,7 @@ const PANEL_KEY = "son.panel";
 export default function App() {
   const s = useSonSession();
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [statusOpen, setStatusOpen] = useState(false);
   const [personaOpen, setPersonaOpen] = useState(false);
   const [panelOpen, setPanelOpen] = useState(() => localStorage.getItem(PANEL_KEY) !== "0");
   const [view, setView] = useState<"chat" | "reader">("chat");
@@ -127,6 +129,8 @@ export default function App() {
           }}
           onToggle={() => setPanelOpen((v) => !v)}
           onOpenSettings={() => setSettingsOpen(true)}
+          onOpenStatus={() => setStatusOpen(true)}
+          modelsLive={s.models !== null}
           onResume={(m) => {
             setView("chat"); // picking a conversation means looking at it, not the reader
             void s.resumeSession(m);
@@ -227,6 +231,18 @@ export default function App() {
             setPersonaOpen(false);
           }}
           onClose={() => setPersonaOpen(false)}
+        />
+      )}
+
+      {statusOpen && (
+        <StatusModal
+          models={models}
+          modelsLive={s.models !== null}
+          modelsLoading={s.modelsLoading}
+          cleanup={s.cleanupOn}
+          sessionCount={sessions.list.length}
+          onReloadModels={() => void s.refreshModels()}
+          onClose={() => setStatusOpen(false)}
         />
       )}
 

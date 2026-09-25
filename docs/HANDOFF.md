@@ -476,6 +476,14 @@ rail is already the frame.
   success when `copyText` resolved.
   Interims render as a separate italic line, never in the editable box; a fatal
   reason (`not-allowed`, `audio-capture`, …) stops listening and prints the fix.
+- **Status** (`client/src/components/StatusModal.tsx`, from the rail's foot and its collapsed strip):
+  the endpoint, whether the live roster loaded or the built-in fallback is in use, the cleanup
+  stage, the roster + session counts, then `/warming`'s local-model states. Only routes that cost
+  nothing — `/models` is already fetched for the pickers, `/warming` is an in-memory dict — and
+  deliberately **no polling**: `/models` probes every configured provider, so it can take minutes on
+  a cold cache. That cold-cache timeout is why the pickers sometimes show the fallback list; the
+  panel states that ("no live roster") instead of blaming the server, and the cleanup row says
+  "unknown until the roster loads" when the flag it would report never arrived.
 - **Clipboard helpers** (`client/src/lib/clipboard.ts`, now shared with `Reader` and
   `SessionsPanel`): writes fall back from the async API to a textarea +
   `execCommand("copy")` for the plain-http LAN case; reads have no fallback, so `null`

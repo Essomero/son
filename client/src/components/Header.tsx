@@ -8,6 +8,7 @@ import { useState } from "react";
 import { ChevronDown, PhoneOff, Plus } from "lucide-react";
 
 import type { Phase, Role } from "../lib/types";
+import { sessionStatus } from "../lib/status";
 import { RoleAvatar } from "./Avatar";
 
 export function Header({
@@ -32,9 +33,8 @@ export function Header({
   const [roleMenu, setRoleMenu] = useState(false);
   const canPickRole = phase === "ready" || phase === "disconnected";
   /** The status speaks for a conversation, and this bar only exists on the chat
-   *  page — the Read | Speak pages render no header at all. */
-  const liveStatus =
-    phase === "connected" ? (speaking ? "Son is speaking…" : "Connected — you can talk.") : status;
+   *  page — the Read | Speak pages render no header. ⚙ carries it for them. */
+  const liveStatus = sessionStatus(phase, speaking, status);
 
   return (
     <header className="topbar">

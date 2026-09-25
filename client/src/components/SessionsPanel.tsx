@@ -6,7 +6,7 @@
  */
 
 import { useState } from "react";
-import { Check, Copy, MessageSquare, Mic, PanelLeftClose, PanelLeftOpen, Settings2, Trash2, Volume2 } from "lucide-react";
+import { Check, Copy, MessageSquare, Mic, PanelLeftClose, PanelLeftOpen, Server, Settings2, Trash2, Volume2 } from "lucide-react";
 
 import type { SessionMeta } from "../lib/types";
 import { ModeSlider } from "./ModeSlider";
@@ -47,6 +47,8 @@ export function SessionsPanel({
   activeId,
   onToggle,
   onOpenSettings,
+  onOpenStatus,
+  modelsLive,
   onNewChat,
   view,
   readerMode,
@@ -60,6 +62,10 @@ export function SessionsPanel({
   activeId: string | null;
   onToggle: () => void;
   onOpenSettings: () => void;
+  /** The server-status panel — its own button, not a field in ⚙. */
+  onOpenStatus: () => void;
+  /** Whether the model roster came from the server, for the status dot. */
+  modelsLive: boolean;
   /** A fresh conversation: the wordmark and the Chat entry both land there. */
   onNewChat: () => void;
   /** Which destination is on screen. */
@@ -225,7 +231,17 @@ export function SessionsPanel({
           <ModeSlider mode={readerMode} onPick={onReaderMode} />
           <button
             type="button"
-            className="sessions-settings"
+            className="sessions-foot-btn"
+            onClick={onOpenStatus}
+            title={modelsLive ? "Server status — live roster" : "Server status — no live roster"}
+          >
+            <Server size={15} aria-hidden />
+            <span>Status</span>
+            <span className={`status-dot ${modelsLive ? "ok" : "warn"}`} aria-hidden />
+          </button>
+          <button
+            type="button"
+            className="sessions-foot-btn"
             onClick={onOpenSettings}
             title="Model settings"
           >
@@ -282,6 +298,15 @@ export function SessionsPanel({
             <Mic size={16} aria-hidden />
           </button>
         </div>
+        <button
+          type="button"
+          className="sessions-strip-btn"
+          onClick={onOpenStatus}
+          title="Server status"
+          aria-label="Server status"
+        >
+          <Server size={16} aria-hidden />
+        </button>
         <button
           type="button"
           className="sessions-strip-btn"

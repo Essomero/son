@@ -719,6 +719,7 @@ export function useSonSession() {
     role,
     models,
     modelsLoading,
+    cleanupOn,
     settings,
     messages,
     muted,

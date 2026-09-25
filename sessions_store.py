@@ -131,16 +131,29 @@ def delete_session(session_id: str) -> bool:
     return cur.rowcount > 0
 
 
-def parse_frontmatter_name(text: str) -> str | None:
-    """Role name from an instruction file's YAML frontmatter (gen_roles pattern)."""
+def parse_frontmatter_fields(text: str) -> dict[str, str]:
+    """Flat key/value pairs from a leading YAML frontmatter block.
+
+    The subset every role reader shares (gen_roles.py writes the web client's
+    roles.json from it, son.py serves the roster): one `key: value` per line,
+    strings only. Not a YAML parser — the instruction files are hand-written
+    and this is the whole shape they use.
+    """
     if not text.startswith("---"):
-        return None
+        return {}
+    fields: dict[str, str] = {}
     for line in text.splitlines()[1:]:
         if line.strip() == "---":
             break
-        if line.startswith("name:"):
-            return line.partition(":")[2].strip().strip('"').strip("'")
-    return None
+        key, separator, value = line.partition(":")
+        if separator:
+            fields[key.strip()] = value.strip().strip('"').strip("'")
+    return fields
+
+
+def parse_frontmatter_name(text: str) -> str | None:
+    """Role name from an instruction file's YAML frontmatter."""
+    return parse_frontmatter_fields(text).get("name") or None
 
 
 class PersistedContext(LLMContext):

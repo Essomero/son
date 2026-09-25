@@ -60,7 +60,9 @@ def _download_file(url: str, dest: Path):
             f.write(chunk)
 
 
-def _ensure_model_files(model_id: str) -> Path:
+def ensure_model_files(model_id: str) -> Path:
+    """Fetch any missing model file for this model. Blocking — call it off the
+    event loop (son.py does, via prepare())."""
     d = _model_dir(model_id)
     missing = [f for f in PARAKEET_MODEL_FILES if not (d / f).is_file()]
     if missing:
@@ -71,6 +73,21 @@ def _ensure_model_files(model_id: str) -> Path:
         for f in missing:
             _download_file(f"https://huggingface.co/{model_id}/resolve/main/{f}", d / f)
     return d
+
+
+def prepare(model_id: str) -> None:
+    """Download the model if needed and load the recognizer — now, while the
+    caller can afford to wait *off* the event loop.
+
+    Both halves block: ~660 MB over the network, then ~600 MB into RAM. son.py
+    serves the web page, /models, /roles and the browser extension from the same
+    event loop as the voice pipeline, so running this from the pipeline's own task
+    stalled every HTTP route until it finished — the page and the extension both
+    saw a dead bot for as long as the download took. son.py calls this through
+    asyncio.to_thread; the recognizer cache then makes the service's first turn
+    instant instead of freezing it.
+    """
+    _get_recognizer(model_id)
 
 
 # Loading the recognizer pulls the ONNX model into RAM (~600 MB) and takes
@@ -87,7 +104,7 @@ def _get_recognizer(model_id: str):
         if entry is None:
             import sherpa_onnx  # delayed: the C++ import is heavy
 
-            d = _ensure_model_files(model_id)
+            d = ensure_model_files(model_id)
             recognizer = sherpa_onnx.OfflineRecognizer.from_transducer(
                 encoder=str(d / "encoder.int8.onnx"),
                 decoder=str(d / "decoder.int8.onnx"),
@@ -104,6 +121,26 @@ def _get_recognizer(model_id: str):
             entry = (recognizer, threading.Lock())
             _recognizers[model_id] = entry
         return entry
+
+
+def release(keep: str | None = None) -> list[str]:
+    """Drop cached recognizers, freeing ~600 MB each.
+
+    The cache exists to save a ~1.5 s rebuild *between turns and sessions* — not
+    to pin memory for the life of the process. So a session that doesn't use
+    Parakeet (the default is browser Web Speech) or that is over (nothing is
+    using anything) drops what it doesn't need: `keep=None` releases everything.
+
+    Safe while a decode is in flight: the caller holds the recognizer object, so
+    dropping our reference only means the *next* session rebuilds it.
+    """
+    with _recognizers_guard:
+        dropped = [model for model in _recognizers if model != keep]
+        for model in dropped:
+            _recognizers.pop(model, None)
+    if dropped:
+        logger.info(f"Parakeet: released {', '.join(dropped)} — keeping {keep or 'nothing'}")
+    return dropped
 
 
 class ParakeetSTTService(SegmentedSTTService):

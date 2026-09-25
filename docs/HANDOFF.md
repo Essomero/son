@@ -458,9 +458,12 @@ Read's box is one **Paste & read** click away from refilling itself.
   route is a plain `def` so FastAPI runs it in the threadpool — a minute-long rewrite
   must not hold the event loop the panels, the CLI and the pipeline share. The Audio
   prompt button stays: that is the do-it-outside workflow, unchanged.
-- **Speak** (`client/src/components/Dictate.tsx`): `useWebSpeech` + `/cleanup` on demand
-  (`Tidy`) + `copyText` on every final, so the clipboard tracks the transcript as you
-  talk. Interims render as a separate italic line, never in the editable box; a fatal
+- **Speak** (`client/src/components/Dictate.tsx`): `useWebSpeech` + `/cleanup` — on demand
+  (`Tidy`) *and* automatically the moment listening stops, because the local model made the old
+  "it can take seconds" reasoning obsolete. The automatic pass is silent (a disabled or
+  unreachable normalizer must not complain about a fine dictation) and a guard means typing
+  during the round trip wins rather than being replaced — plus `copyText` on every final, so the
+  clipboard tracks the transcript as you talk. Interims render as a separate italic line, never in the editable box; a fatal
   reason (`not-allowed`, `audio-capture`, …) stops listening and prints the fix.
 - **Clipboard helpers** (`client/src/lib/clipboard.ts`, now shared with `Reader` and
   `SessionsPanel`): writes fall back from the async API to a textarea +

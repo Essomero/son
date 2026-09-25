@@ -57,6 +57,7 @@ export function Dictate() {
   const [supported] = useState(webSpeechAvailable);
   const textRef = useRef("");
   const copyTimer = useRef<number | null>(null);
+  const tidyingRef = useRef(false);
 
   const setTextNow = useCallback((value: string): void => {
     textRef.current = value;
@@ -112,25 +113,52 @@ export function Dictate() {
     setListening((on) => !on);
   };
 
-  /** The same normalizer the server runs on STT output (/cleanup), on demand —
-   *  never automatically: it can take seconds, and dictation must not wait. */
-  const tidy = async (): Promise<void> => {
-    const raw = textRef.current.trim();
-    if (!raw || tidyBusy) return;
-    setTidyBusy(true);
-    setError(null);
-    try {
-      const cleaned = (await cleanTranscript(raw)) || raw;
-      if (cleaned.trim() === raw) {
-        setError("Tidy left it alone — cleanup is off (STT_CLEANUP_MODEL) or found nothing to change.");
-        return;
+  /** The server's STT normalizer (/cleanup) over what's in the box: punctuation,
+   *  casing, fillers dropped, false starts resolved. With the local s1-mini this
+   *  is ~0.2 s, so it also runs by itself the moment listening stops (below).
+   *  `silent` keeps that automatic pass from reporting "nothing to change": a
+   *  disabled or unreachable normalizer must not add noise to a fine dictation,
+   *  while a press of the button is an explicit ask and deserves an answer. */
+  const tidy = useCallback(
+    async ({ silent = false }: { silent?: boolean } = {}): Promise<void> => {
+      const before = textRef.current;
+      const raw = before.trim();
+      if (!raw || tidyingRef.current) return;
+      tidyingRef.current = true;
+      setTidyBusy(true);
+      if (!silent) setError(null);
+      try {
+        const cleaned = (await cleanTranscript(raw)) || raw;
+        // Typing during the round trip wins: never replace newer text.
+        if (textRef.current !== before) return;
+        if (cleaned.trim() === raw) {
+          if (!silent) {
+            setError(
+              "Tidy left it alone — cleanup is off (STT_CLEANUP_MODEL) or found nothing to change.",
+            );
+          }
+          return;
+        }
+        setTextNow(cleaned);
+        void copy(cleaned);
+      } finally {
+        tidyingRef.current = false;
+        setTidyBusy(false);
       }
-      setTextNow(cleaned);
-      void copy(cleaned);
-    } finally {
-      setTidyBusy(false);
+    },
+    [copy, setTextNow],
+  );
+
+  // Tidy the moment listening stops: stopping is exactly when a dictation wants
+  // its punctuation and false starts resolved, and the local model makes that
+  // cheaper than reaching for the button.
+  const wasListening = useRef(false);
+  useEffect(() => {
+    if (wasListening.current && !listening && textRef.current.trim()) {
+      void tidy({ silent: true });
     }
-  };
+    wasListening.current = listening;
+  }, [listening, tidy]);
 
   const live = listening;
 

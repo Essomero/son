@@ -104,29 +104,18 @@ export default function App() {
     <div className="app">
       <audio ref={s.botAudioRef} hidden onPlay={s.handleAudioPlay} onPause={s.handleAudioPause} />
 
-      <Header
-        phase={s.phase}
-        status={s.status}
-        speaking={s.speaking}
-        role={s.role}
-        roles={s.roles}
-        view={view}
-        readerMode={readerMode}
-        onSelectRole={s.selectRole}
-        onNewSession={() => void s.newSession()}
-        onToggleView={() => setView((v) => (v === "chat" ? "reader" : "chat"))}
-        onReaderMode={(mode) => {
-          setReaderMode(mode);
-          setView("reader");
-        }}
-        onEndSession={() => void s.disconnect()}
-      />
-
       <div className="body">
         <SessionsPanel
           open={panelOpen}
           sessions={sessions.list}
           activeId={s.sessionId}
+          view={view}
+          readerMode={readerMode}
+          onGoChat={() => setView("chat")}
+          onReaderMode={(mode) => {
+            setReaderMode(mode);
+            setView("reader");
+          }}
           onToggle={() => setPanelOpen((v) => !v)}
           onOpenSettings={() => setSettingsOpen(true)}
           onResume={(m) => void s.resumeSession(m)}
@@ -134,10 +123,25 @@ export default function App() {
           onDelete={(id) => void sessions.remove(id)}
         />
 
-        {/* The main area is the scroller — not the document (which took the
-            header and the rail away with it) and not the inner column (which
-            left the gutters dead to the wheel). The rail keeps its own scroll. */}
+        {/* Right of the rail: the stage column. Its header sticks — the status
+            line and the session buttons must not ride away with a long page —
+            and the scroller under it does the scrolling. */}
         <div className="main">
+          <Header
+            phase={s.phase}
+            status={s.status}
+            speaking={s.speaking}
+            role={s.role}
+            roles={s.roles}
+            onSelectRole={s.selectRole}
+            onNewSession={() => void s.newSession()}
+            onEndSession={() => void s.disconnect()}
+          />
+
+          {/* The main area is the scroller — not the document (which took the
+              header and the rail away with it) and not the inner column (which
+              left the gutters dead to the wheel). The rail keeps its own
+              scroll. */}
           <main className="stage">
             {view === "reader" ? (
               readerMode === "speak" ? (

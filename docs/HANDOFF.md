@@ -433,7 +433,7 @@ The built client is served by son.py itself — no second server:
 
 ## The Read | Speak page (POST /speak, browser Web Speech) — 2026-09-25
 
-The header's slider opens one of two pages: **Read** (text → speech, the original
+The rail's slider (its foot, above the ⚙) opens one of two pages: **Read** (text → speech, the original
 read-out page) and **Speak** (speech → text, new). They are separate actions, so each
 renders alone and switching unmounts the other — the clipboard is Speak's record, and
 Read's box is one **Paste & read** click away from refilling itself.
@@ -569,7 +569,7 @@ not the host.
 
 ## The read-out page (POST /speak)
 
-The header's **Read** toggle swaps the stage for a text-to-speech page: paste
+The rail's **Read** destination swaps the stage for a text-to-speech page: paste
 text, pick a voice from the same `/models` roster the settings panel uses,
 get a WAV back. No AI, no mic, no session — a pure one-shot synthesis.
 

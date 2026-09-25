@@ -6,9 +6,10 @@
  */
 
 import { useState } from "react";
-import { Check, Copy, PanelLeftClose, PanelLeftOpen, Settings2, Trash2 } from "lucide-react";
+import { Check, Copy, MessageSquare, Mic, PanelLeftClose, PanelLeftOpen, Settings2, Trash2, Volume2 } from "lucide-react";
 
 import type { SessionMeta } from "../lib/types";
+import { ModeSlider } from "./ModeSlider";
 import { SESSIONS_URL } from "../lib/son";
 import { copyText } from "../lib/clipboard";
 
@@ -46,6 +47,10 @@ export function SessionsPanel({
   activeId,
   onToggle,
   onOpenSettings,
+  view,
+  readerMode,
+  onGoChat,
+  onReaderMode,
   onResume,
   onRename,
   onDelete,
@@ -55,6 +60,13 @@ export function SessionsPanel({
   activeId: string | null;
   onToggle: () => void;
   onOpenSettings: () => void;
+  /** Which destination is on screen. */
+  view: "chat" | "reader";
+  /** Which reader page, when the destination is the reader. */
+  readerMode: "read" | "speak";
+  onGoChat: () => void;
+  /** Open the Read or the Speak page (both set the mode and leave the chat). */
+  onReaderMode: (mode: "read" | "speak") => void;
   onResume: (s: SessionMeta) => void;
   onRename: (id: string, name: string) => void;
   onDelete: (id: string) => void;
@@ -85,10 +97,34 @@ export function SessionsPanel({
     }
   };
   const cancelEdit = () => setEditingId(null);
+  const onChat = view === "chat";
+  const onRead = view === "reader" && readerMode === "read";
+  const onSpeak = view === "reader" && readerMode === "speak";
 
   return (
     <aside className={`sessions-panel${open ? "" : " closed"}`} aria-label="Sessions">
       <div className="sessions-panel-inner">
+        <h1 className="brand sessions-brand">
+          Son<span className="brand-dot">·</span>
+        </h1>
+
+        {/* Chat stays at the head of the rail; Read | Speak sit at its foot,
+            above settings. The collapsed strip mirrors both. */}
+        <div className="sessions-nav">
+          {view === "reader" && (
+            <button
+              type="button"
+              className="icon-btn"
+              onClick={onGoChat}
+              title="Back to the chat"
+              aria-label="Back to the chat"
+            >
+              <MessageSquare size={16} />
+              <span className="icon-btn-label">Chat</span>
+            </button>
+          )}
+        </div>
+
         <div className="sessions-head">
           <h2 className="sessions-title">Sessions</h2>
           <button
@@ -170,21 +206,25 @@ export function SessionsPanel({
             })}
           </ul>
         )}
-        {/* The rail's own chrome owns the foot of the panel: settings is a place
-            you go to, not a row in the list, so it pins like the head does. */}
-        <button
-          type="button"
-          className="sessions-settings"
-          onClick={onOpenSettings}
-          title="Model settings"
-        >
-          <Settings2 size={15} aria-hidden />
-          <span>Settings</span>
-        </button>
+
+        {/* The foot of the rail: the destinations you switch between (Read |
+            Speak) above settings. The whole block pins, like the head does. */}
+        <div className="sessions-foot">
+          <ModeSlider mode={readerMode} onPick={onReaderMode} />
+          <button
+            type="button"
+            className="sessions-settings"
+            onClick={onOpenSettings}
+            title="Model settings"
+          >
+            <Settings2 size={15} aria-hidden />
+            <span>Settings</span>
+          </button>
+        </div>
       </div>
-      {/* The collapsed rail is a 30px strip holding the two controls that frame
-          the open panel — reopen at the top, settings at the foot — so neither
-          action gets stranded by collapsing. */}
+      {/* Collapsed, the rail is a 30px strip: the same frame folded to an edge —
+          reopen at the top, the destinations as icon buttons under it, settings
+          at the foot — so no action is stranded by collapsing. */}
       <div className="sessions-strip">
         <button
           type="button"
@@ -194,8 +234,42 @@ export function SessionsPanel({
           aria-label="Show the chat list"
           aria-expanded={open}
         >
-          <PanelLeftOpen size={15} aria-hidden />
+          <PanelLeftOpen size={16} aria-hidden />
         </button>
+        <div className="sessions-strip-nav">
+          <button
+            type="button"
+            className={`sessions-strip-btn${onChat ? " active" : ""}`}
+            onClick={onGoChat}
+            title="Chat"
+            aria-label="Chat"
+            aria-current={onChat ? "page" : undefined}
+          >
+            <MessageSquare size={16} aria-hidden />
+          </button>
+        </div>
+        <div className="sessions-strip-nav sessions-strip-foot">
+          <button
+            type="button"
+            className={`sessions-strip-btn${onRead ? " active" : ""}`}
+            onClick={() => onReaderMode("read")}
+            title="Read: turn text into speech"
+            aria-label="Read: turn text into speech"
+            aria-current={onRead ? "page" : undefined}
+          >
+            <Volume2 size={16} aria-hidden />
+          </button>
+          <button
+            type="button"
+            className={`sessions-strip-btn${onSpeak ? " active" : ""}`}
+            onClick={() => onReaderMode("speak")}
+            title="Speak: dictate, and the text lands on your clipboard"
+            aria-label="Speak: dictate, and the text lands on your clipboard"
+            aria-current={onSpeak ? "page" : undefined}
+          >
+            <Mic size={16} aria-hidden />
+          </button>
+        </div>
         <button
           type="button"
           className="sessions-strip-btn"
@@ -203,7 +277,7 @@ export function SessionsPanel({
           title="Model settings"
           aria-label="Model settings"
         >
-          <Settings2 size={15} aria-hidden />
+          <Settings2 size={16} aria-hidden />
         </button>
       </div>
     </aside>

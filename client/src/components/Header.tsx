@@ -16,6 +16,7 @@ export function Header({
   speaking,
   role,
   roles,
+  view,
   onSelectRole,
   onNewSession,
   onEndSession,
@@ -25,14 +26,27 @@ export function Header({
   speaking: boolean;
   role: Role | null;
   roles: Role[];
+  /** Which destination is on screen — the status only speaks for the chat. */
+  view: "chat" | "reader";
   onSelectRole: (r: Role) => void;
   onNewSession: () => void;
   onEndSession: () => void;
 }) {
   const [roleMenu, setRoleMenu] = useState(false);
   const canPickRole = phase === "ready" || phase === "disconnected";
+  /** The status line speaks for a conversation. Read | Speak take no role and
+   *  open no session, so the hook's "Pick a role to start talking" would be
+   *  advice for some other page there — only a session that is actually
+   *  starting or live is worth reporting from those pages. */
+  const sessionless = phase === "idle" || phase === "ready" || phase === "disconnected";
   const liveStatus =
-    phase === "connected" ? (speaking ? "Son is speaking…" : "Connected — you can talk.") : status;
+    phase === "connected"
+      ? speaking
+        ? "Son is speaking…"
+        : "Connected — you can talk."
+      : view === "reader" && sessionless
+        ? ""
+        : status;
 
   return (
     <header className="topbar">

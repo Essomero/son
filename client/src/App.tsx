@@ -142,6 +142,7 @@ export default function App() {
             speaking={s.speaking}
             role={s.role}
             roles={s.roles}
+            view={view}
             onSelectRole={s.selectRole}
             onNewSession={goHome}
             onEndSession={() => void s.disconnect()}

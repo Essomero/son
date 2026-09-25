@@ -108,21 +108,21 @@ export function SessionsPanel({
           Son<span className="brand-dot">·</span>
         </h1>
 
-        {/* Chat stays at the head of the rail; Read | Speak sit at its foot,
-            above settings. The collapsed strip mirrors both. */}
+        {/* Chat is always there — it is the way home, and the way to a new one —
+            with Read | Speak at the foot, above settings. The collapsed strip
+            mirrors both. */}
         <div className="sessions-nav">
-          {view === "reader" && (
-            <button
-              type="button"
-              className="icon-btn"
-              onClick={onGoChat}
-              title="Back to the chat"
-              aria-label="Back to the chat"
-            >
-              <MessageSquare size={16} />
-              <span className="icon-btn-label">Chat</span>
-            </button>
-          )}
+          <button
+            type="button"
+            className={`icon-btn${onChat ? " active" : ""}`}
+            onClick={onGoChat}
+            title="Chat"
+            aria-label="Chat"
+            aria-current={onChat ? "page" : undefined}
+          >
+            <MessageSquare size={16} />
+            <span className="icon-btn-label">Chat</span>
+          </button>
         </div>
 
         <div className="sessions-head">

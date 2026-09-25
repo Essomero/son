@@ -1,0 +1,993 @@
+#!/usr/bin/env python3
+"""son — one command for the local Son stack.
+
+    son build [all|roles|client|extension]   compile what the UI/extension need
+    son start [all|server|voice]             bring services up, in the background
+    son stop  [all|server|voice]             take them down
+    son restart [all|server|voice]           stop, then start
+    son status                               what is running, keyed, cached
+    son logs <server|whisper|shim>           tail a service log
+    son open                                 open the web page
+    son doctor                               check the environment
+
+`son` with no command is `son start` — the whole stack plus the web page, which
+is what the double-clickable Son.app does. The target that matters most is
+`server`: the bot alone, which is all the browser extension needs (the panel
+talks to it and nothing else has to be running).
+
+Standard library only, on purpose: `son status` and `son doctor` have to work on
+a machine whose venv is gone, half-synced, or was never built — which is exactly
+when you reach for them. Only the commands that actually run project code shell
+out to the venv (or to `uv run`, which syncs it).
+
+See `son <command> --help` for flags.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shutil
+import signal
+import socket
+import sqlite3
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+REPO = Path(os.environ.get("SON_REPO") or Path(__file__).resolve().parent.parent)
+RUNTIME = REPO / ".runtime"
+PIDFILE = RUNTIME / "son.json"
+
+# The cleanup model's module is stdlib-only on purpose, so this script — which
+# runs on a plain system python, not the venv — can fetch the GGUF and start its
+# server without importing the bot.
+sys.path.insert(0, str(REPO))
+import s1_mini  # noqa: E402
+
+BOT_PORT = int(os.environ.get("SON_PORT", "7860"))
+WHISPER_PORT = int(os.environ.get("SON_WHISPER_PORT", "8081"))
+SHIM_PORT = int(os.environ.get("SON_SHIM_PORT", "8083"))
+CLEANUP_PORT = s1_mini.port()
+
+WHISPER_DIR = Path(
+    os.environ.get("WHISPER_CPP") or str(Path.home() / ".cache" / "son" / "whisper.cpp")
+)
+WHISPER_BIN = WHISPER_DIR / "build" / "bin" / "whisper-server"
+WHISPER_MODEL = WHISPER_DIR / "models" / "ggml-whisper-small-son-soup.bin"
+
+# Running services this CLI can start, stop and log. "server" is the bot
+# (son.py) — the web page and the browser extension are both just clients of it.
+SERVICES = ("server", "whisper", "shim", "cleanup")
+TARGETS = ("all", "server", "voice", "cleanup")
+
+# The keys son.py gates its providers on. Values are never printed — only
+# whether they are set.
+PROVIDER_KEYS = [
+    "GROQ_API_KEY",
+    "CEREBRAS_API_KEY",
+    "DEEPSEEK_API_KEY",
+    "GEMINI_API_KEY",
+    "OPENROUTER_API_KEY",
+    "LMSTUDIO_API_KEY",
+]
+
+START_TIMEOUT = 120
+
+
+# --- output -------------------------------------------------------------------
+
+
+def styled() -> bool:
+    return sys.stdout.isatty() and not os.environ.get("NO_COLOR")
+
+
+def mark(ok: bool, warn: bool = False) -> str:
+    if not styled():
+        return "ok" if ok else ("!" if warn else "--")
+    if ok:
+        return "\033[32m✓\033[0m"
+    return "\033[33m!\033[0m" if warn else "\033[31m✗\033[0m"
+
+
+def line(label: str, value: str) -> None:
+    print(f"  {label:<11}{value}")
+
+
+def die(message: str, hint: str = "") -> None:
+    print(f"son: {message}", file=sys.stderr)
+    if hint:
+        print(f"     {hint}", file=sys.stderr)
+    raise SystemExit(1)
+
+
+def repo_check() -> None:
+    if not (REPO / "son.py").is_file():
+        die(
+            f"can't find son.py under {REPO}",
+            "run it from the repo, set SON_REPO, or install it as a symlink to "
+            "scripts/son (a copy of the file would lose its bearings)",
+        )
+
+
+# --- probes -------------------------------------------------------------------
+
+
+def port_open(port: int, timeout: float = 0.6) -> bool:
+    """Plain TCP connect, deliberately not an HTTP probe.
+
+    whisper-server handles one connection at a time, and an empty POST wedges its
+    accept loop until the client hangs up — which would read as "down" and spawn
+    a second server (the same reason scripts/Son.applescript probes with nc -z).
+    """
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+def get_json(path: str, port: int = BOT_PORT, timeout: float = 3.0):
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}{path}", timeout=timeout) as response:
+            if response.status != 200:
+                return None
+            return json.loads(response.read().decode("utf-8"))
+    except (urllib.error.URLError, OSError, ValueError, TimeoutError):
+        return None
+
+
+def server_up() -> bool:
+    """Liveness comes from a cheap route, never /models.
+
+    /models probes every configured provider (8s each, 120s for Google's token),
+    so on a flaky network — or just a cold cache — it can take minutes and time
+    out. Using it as the liveness signal reports a perfectly healthy bot as down,
+    which then makes `son start` refuse to start a second one and `son status` lie.
+    /roles reads instructions/ and answers immediately.
+    """
+    return isinstance(get_json("/roles", timeout=2.5), list)
+
+
+def roster() -> dict | None:
+    """The live model roster — expensive on a cold cache, so only asked for when
+    something is going to display it."""
+    data = get_json("/models", timeout=12.0)
+    return data if isinstance(data, dict) else None
+
+
+def wait_for(predicate, timeout: float, label: str) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.5)
+    print(f"  {mark(False)} {label} didn't come up within {int(timeout)}s")
+    return False
+
+
+def env_values() -> dict[str, str]:
+    """Environment plus .env, with .env winning — the same precedence son.py
+    uses (load_dotenv(override=True))."""
+    values = dict(os.environ)
+    env_file = REPO / ".env"
+    if env_file.is_file():
+        for raw in env_file.read_text().splitlines():
+            entry = raw.strip()
+            if not entry or entry.startswith("#") or "=" not in entry:
+                continue
+            key, _, value = entry.partition("=")
+            values[key.strip()] = value.strip().strip('"').strip("'")
+    return values
+
+
+def python_cmd() -> list[str]:
+    """Prefer the project venv; otherwise uv, which syncs one if needed."""
+    venv = REPO / ".venv" / "bin" / "python"
+    if venv.is_file():
+        return [str(venv)]
+    if shutil.which("uv"):
+        return ["uv", "run", "python"]
+    die("no .venv and no uv on PATH", "install uv (https://docs.astral.sh/uv/) then run `uv sync`")
+
+
+def listeners(port: int) -> list[int]:
+    if not shutil.which("lsof"):
+        return []
+    out = subprocess.run(["lsof", "-t", f"-i:{port}", "-sTCP:LISTEN"], capture_output=True, text=True).stdout
+    return [int(pid) for pid in out.split() if pid.isdigit()]
+
+
+def owner_of(pid: int) -> str:
+    out = subprocess.run(["ps", "-o", "command=", "-p", str(pid)], capture_output=True, text=True).stdout
+    first = out.strip().split(" ")[0] if out.strip() else ""
+    return first.rsplit("/", 1)[-1]
+
+
+def process_summary(pid: int) -> str:
+    """`command · up <time>` for a pid — what you'd get from `ps`, plus the
+    start time, which is what tells you whether this is the run you just made."""
+    out = subprocess.run(
+        ["ps", "-o", "etime=,command=", "-p", str(pid)], capture_output=True, text=True
+    ).stdout.strip()
+    if not out:
+        return "gone"
+    uptime, _, command = out.partition(" ")
+    # The interpreter path is noise; the script it runs is the point.
+    command = command.replace(f"{REPO}/", "").replace(".venv/bin/", "")
+    return f"{command[:44]}  up {uptime}"
+
+
+def log_path(service: str) -> str:
+    return str((RUNTIME / f"{service}.log").relative_to(REPO))
+
+
+def processes_block(*, server_answering: bool) -> None:
+    """One line per port: who holds it, since when, and where its output goes.
+
+    "Running" has to be *visible*, not inferred. These services are deliberately
+    detached, so without this a stuck or foreign process is a mystery — and a
+    model download that freezes the HTTP side looks exactly like "the bot isn't
+    running" while a pid is plainly holding the port.
+    """
+    print("  processes")
+    for name, port in (
+        ("server", BOT_PORT),
+        ("whisper", WHISPER_PORT),
+        ("shim", SHIM_PORT),
+        ("cleanup", CLEANUP_PORT),
+    ):
+        holders = listeners(port)
+        if not holders:
+            print(f"    {name:<8} :{port}  free")
+            continue
+        pid = holders[0]
+        detail = [f"pid {pid}", process_summary(pid)]
+        detail.append(f"log {log_path(name)}" if read_pids().get(name) == pid else "not started by son")
+        if name == "server":
+            detail.append(
+                "answering"
+                if server_answering
+                else f"{mark(False, warn=True)} not answering — fetching a model? `son logs server -f`"
+            )
+        print(f"    {name:<8} :{port}  " + "  ·  ".join(part for part in detail if part))
+    if not whisper_ready() and not listeners(WHISPER_PORT) and not listeners(SHIM_PORT):
+        print(f"    voice    not installed ({WHISPER_DIR}) — optional")
+
+
+# --- background services ------------------------------------------------------
+
+
+def read_pids() -> dict[str, int]:
+    if not PIDFILE.is_file():
+        return {}
+    try:
+        data = json.loads(PIDFILE.read_text())
+        return {name: int(pid) for name, pid in data.items() if name in SERVICES}
+    except (ValueError, OSError, TypeError):
+        return {}
+
+
+def write_pids(pids: dict[str, int]) -> None:
+    RUNTIME.mkdir(parents=True, exist_ok=True)
+    PIDFILE.write_text(json.dumps(pids, indent=2) + "\n")
+
+
+def alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    # A zombie has a pid but no process behind it: the port is already free and
+    # the work is done. Calling that "alive" makes `son stop` claim it failed to
+    # stop something that is gone.
+    state = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True).stdout.strip()
+    return not state.startswith("Z")
+
+
+# Processes that are recognizably part of the stack, so `son stop` can take down
+# what `son start`, Son.app or a hand-run `uv run python son.py` left behind.
+OURS = ("son.py", "whisper_local.py", "whisper-server")
+
+
+def is_ours(pid: int) -> bool:
+    command = subprocess.run(["ps", "-o", "command=", "-p", str(pid)], capture_output=True, text=True).stdout
+    # The cleanup server is llama.cpp's binary with our model on its command
+    # line, so its GGUF filename is what identifies it as ours.
+    return any(name in command for name in OURS) or s1_mini.GGUF_NAME in command
+
+
+def spawn(service: str, command: list[str]) -> int:
+    """Start a service detached, its output in .runtime/<service>.log.
+
+    A log file per service (rather than a Terminal window) is what makes `son
+    logs` and `son status` possible; start_new_session keeps the child alive when
+    the terminal that launched it goes away.
+    """
+    RUNTIME.mkdir(parents=True, exist_ok=True)
+    with (RUNTIME / f"{service}.log").open("a") as log:
+        log.write(f"\n=== son {service}: {' '.join(command)} ({time.strftime('%H:%M:%S')})\n")
+        log.flush()
+        process = subprocess.Popen(
+            command,
+            cwd=REPO,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    pids = read_pids()
+    pids[service] = process.pid
+    write_pids(pids)
+    return process.pid
+
+
+def stop_pid(pid: int, grace: float = 6.0) -> bool:
+    """SIGTERM, then SIGKILL if it's still there. True when it's gone."""
+    if not alive(pid):
+        return True
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except OSError:
+        return True
+    deadline = time.monotonic() + grace
+    while time.monotonic() < deadline:
+        if not alive(pid):
+            return True
+        time.sleep(0.2)
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except OSError:
+        return True
+    return not alive(pid)
+
+
+def run_foreground(command: list[str]) -> int:
+    return subprocess.call(command, cwd=REPO)
+
+
+def show_log_tail(service: str, lines: int = 12) -> None:
+    path = RUNTIME / f"{service}.log"
+    if not path.is_file():
+        return
+    for entry in path.read_text(errors="replace").splitlines()[-lines:]:
+        print(f"    {entry}")
+
+
+# --- services -----------------------------------------------------------------
+
+
+def whisper_ready() -> bool:
+    return WHISPER_BIN.is_file() and WHISPER_MODEL.is_file()
+
+
+def start_server(background: bool) -> None:
+    if server_up():
+        print(f"  {mark(True)} server already up on :{BOT_PORT}")
+        return
+    occupied = listeners(BOT_PORT)
+    if occupied:
+        die(
+            f"port {BOT_PORT} is held by pid {occupied[0]} ({owner_of(occupied[0])}) but /models doesn't answer",
+            "a stale or halfway run: `son stop --force` frees it",
+        )
+    command = python_cmd() + ["son.py"]
+    if background:
+        pid = spawn("server", command)
+        if not wait_for(server_up, START_TIMEOUT, "server"):
+            show_log_tail("server")
+            die("the server never answered on :7860", "see the log above, or `son logs server -f`")
+        print(f"  {mark(True)} server up on :{BOT_PORT} (pid {pid}) — {web_url()}  ·  log {log_path('server')}")
+    else:
+        print(f"  {mark(True)} server on :{BOT_PORT} — Ctrl-C stops it")
+        raise SystemExit(run_foreground(command))
+
+
+def start_voice(foreground: bool) -> None:
+    if not whisper_ready():
+        print(f"  {mark(False, warn=True)} local voice stack not installed — needs {WHISPER_BIN} and {WHISPER_MODEL}")
+        return
+    if port_open(WHISPER_PORT):
+        print(f"  {mark(True)} whisper-server already up on :{WHISPER_PORT}")
+    else:
+        whisper_cmd = [
+            str(WHISPER_BIN),
+            "-m",
+            str(WHISPER_MODEL),
+            "--host",
+            "127.0.0.1",
+            "--port",
+            str(WHISPER_PORT),
+            "--threads",
+            str(os.cpu_count() or 4),
+            "-bs",
+            "5",
+            # Decode fail-safes (docs/RESEARCH-QUIET-SPEECH.md §3B): don't drop
+            # borderline quiet turns as silence, force the temperature fallback
+            # on unsure passes, skip timestamp text (a hallucination surface).
+            "--no-speech-thold",
+            "0.75",
+            "--logprob-thold",
+            "-0.5",
+            "-nt",
+        ]
+        if foreground:
+            print(f"  {mark(True)} whisper-server on :{WHISPER_PORT} — Ctrl-C stops it")
+            return_code = run_foreground(whisper_cmd)
+            raise SystemExit(return_code)
+        pid = spawn("whisper", whisper_cmd)
+        # Metal shader JIT can open the port ~15s late.
+        if wait_for(lambda: port_open(WHISPER_PORT), 45, "whisper-server"):
+            print(f"  {mark(True)} whisper-server up on :{WHISPER_PORT} (pid {pid})  ·  log {log_path('whisper')}")
+        else:
+            show_log_tail("whisper")
+            print(f"  {mark(False)} whisper-server didn't listen — `son logs whisper`")
+            return
+    if port_open(SHIM_PORT):
+        print(f"  {mark(True)} shim already up on :{SHIM_PORT}")
+        return
+    shim_pid = spawn("shim", python_cmd() + ["whisper_local.py"])
+    if wait_for(lambda: port_open(SHIM_PORT), 30, "shim"):
+        print(f"  {mark(True)} shim up on :{SHIM_PORT} (pid {shim_pid})  ·  log {log_path('shim')}")
+    else:
+        show_log_tail("shim")
+        print(f"  {mark(False)} shim didn't listen — `son logs shim`")
+
+
+def web_url() -> str:
+    return f"http://localhost:{BOT_PORT}"
+
+
+def where_block(*, extension: bool = True) -> None:
+    """The destinations, spelled out.
+
+    `son status` answers "what is running"; this answers the next question —
+    "and where do I go" — so nobody has to remember a port or hunt for the
+    unpacked-extension path.
+    """
+    print("  where things are")
+    print(f"    web page    {web_url()}")
+    print(f"    roster      {web_url()}/models   (the live model list the pickers read)")
+    if extension:
+        print(f"    extension   chrome://extensions → Load unpacked → {REPO / 'extension' / 'dist'}")
+    print(f"    logs        son logs server -f")
+
+
+def install_target() -> Path:
+    return Path.home() / ".local" / "bin" / "son"
+
+
+def cmd_install(args: argparse.Namespace) -> int:
+    """Symlink this script onto PATH.
+
+    A symlink, not a copy: the CLI lives in the repo, so `git pull` updates it and
+    nothing has to be reinstalled. `install` is therefore idempotent — it doubles
+    as the "is my command pointing at the right place" check.
+    """
+    repo_check()
+    target = install_target()
+    self_path = Path(__file__).resolve()
+
+    if target.is_symlink() and Path(os.readlink(target)) == self_path:
+        print(f"  {mark(True)} already installed at {target}")
+    elif target.exists() or target.is_symlink():
+        linked = os.readlink(target) if target.is_symlink() else "a regular file"
+        if not args.force:
+            die(
+                f"{target} already exists ({linked})",
+                "it points somewhere else — `son install --force` replaces it",
+            )
+        target.unlink()
+        target.symlink_to(self_path)
+        print(f"  {mark(True)} replaced {target} → {self_path}")
+    else:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.symlink_to(self_path)
+        print(f"  {mark(True)} linked {target} → {self_path}")
+
+    on_path = str(target.parent) in os.environ.get("PATH", "").split(os.pathsep)
+    print(f"  {mark(on_path, warn=True)} {target.parent} is {'on' if on_path else 'NOT on'} PATH"
+          + ("" if on_path else "  — add it to your shell config"))
+
+    shadow = find_son_alias()
+    if shadow:
+        print(
+            f"  {mark(False)} a shell alias still shadows it: {shadow}\n"
+            "     remove or rename that line — aliases win over PATH in an interactive shell"
+        )
+    return 0
+
+
+def find_son_alias() -> str:
+    """The user's own `alias son=…`, if their shell config defines one: it takes
+    precedence over the PATH entry, so `son` would keep running the old thing."""
+    for name in (".zshrc", ".bashrc", ".bash_profile", ".profile"):
+        config = Path.home() / name
+        if not config.is_file():
+            continue
+        for raw in config.read_text(errors="replace").splitlines():
+            stripped = raw.strip()
+            if stripped.startswith("alias son=") and not stripped.startswith("alias son-app="):
+                return f"{config}: {stripped}"
+    return ""
+
+
+# --- commands: start / stop / restart -----------------------------------------
+
+
+def start_cleanup(background: bool) -> None:
+    """The local s1-mini cleanup server (llama.cpp) on loopback.
+
+    Transcript cleanup used to need an LM Studio box — this repo pointed at one
+    over a tailnet, and every utterance paid its latency or its timeout. The
+    model is small enough to serve from here instead: 462 MB of weights, ~1 GB
+    resident, ~0.2 s per utterance (see s1_mini.py).
+
+    Everything degrades: no llama-server, no model, or a port already taken all
+    end with cleanup passing raw text through rather than failing a session.
+    """
+    if port_open(CLEANUP_PORT):
+        print(f"  {mark(True)} cleanup server already up on :{CLEANUP_PORT}")
+        return
+    binary = s1_mini.server_installed()
+    if binary is None:
+        print(
+            f"  {mark(False, warn=True)} llama-server not found — cleanup passes raw text through"
+            " (`brew install llama.cpp`)"
+        )
+        return
+    gguf = s1_mini.ensure_gguf()
+    pid = spawn(
+        "cleanup",
+        [
+            binary,
+            "-m",
+            str(gguf),
+            "--host",
+            "127.0.0.1",
+            "--port",
+            str(CLEANUP_PORT),
+            "-c",
+            "4096",
+            "-t",
+            str(max(2, (os.cpu_count() or 4) - 1)),
+            "--reasoning",
+            "off",  # s1-mini is not a thinking model; its answer must be the whole reply
+        ],
+    )
+    print(f"  {mark(True)} cleanup :{CLEANUP_PORT} (pid {pid}) · {s1_mini.DEFAULT_MODEL} q4_k_m")
+    wait_for(lambda: port_open(CLEANUP_PORT), 90, "cleanup server")
+
+
+def cmd_start(args: argparse.Namespace) -> int:
+    repo_check()
+    targets = ("server", "cleanup", "voice") if args.target == "all" else (args.target,)
+    print(f"Starting {args.target}" + (" (background)" if not args.foreground else " (this terminal)"))
+    if args.foreground:
+        # The service owns the terminal from here, so the map comes first.
+        where_block()
+    if "server" in targets:
+        start_server(background=not args.foreground)
+    if "cleanup" in targets:
+        start_cleanup(background=not args.foreground)
+    if "voice" in targets:
+        start_voice(foreground=args.foreground)
+    if not args.foreground:
+        where_block()
+        if args.open:
+            open_page()
+    return 0
+
+
+def cmd_stop(args: argparse.Namespace) -> int:
+    repo_check()
+    ports = {"server": BOT_PORT, "whisper": WHISPER_PORT, "shim": SHIM_PORT, "cleanup": CLEANUP_PORT}
+    wanted = (
+        SERVICES
+        if args.target == "all"
+        else ("server",)
+        if args.target == "server"
+        else ("cleanup",)
+        if args.target == "cleanup"
+        else ("whisper", "shim")
+    )
+    pids = read_pids()
+    stopped: list[str] = []
+    seen: set[int] = set()
+    skipped: list[str] = []
+
+    for service in wanted:
+        pid = pids.pop(service, None)
+        if pid and alive(pid) and pid not in seen:
+            seen.add(pid)
+            if stop_pid(pid):
+                stopped.append(f"{service} ({pid})")
+        # Fall back to whoever holds the port: the stack can be started by
+        # Son.app or by hand (`uv run python son.py`), and a pidfile that was
+        # never written (or lost) must not make `son stop` useless. Anything
+        # recognizably ours goes; --force takes the rest.
+        for holder in listeners(ports[service]):
+            if holder in seen:
+                continue
+            if is_ours(holder) or args.force:
+                seen.add(holder)
+                # Read the name before stopping it: afterwards there is nothing
+                # left to ask.
+                who = owner_of(holder)
+                if stop_pid(holder):
+                    stopped.append(f"{service} ({holder}{f', {who}' if who else ''})")
+            else:
+                skipped.append(f":{ports[service]} pid {holder} ({owner_of(holder)})")
+    write_pids(pids)
+
+    if stopped:
+        print(f"  {mark(True)} stopped {', '.join(stopped)}")
+    else:
+        print(f"  nothing was running ({args.target})")
+    if skipped:
+        print(f"  {mark(False, warn=True)} left alone (not Son's): {', '.join(skipped)} — `son stop --force` overrides")
+    return 0
+
+
+def cmd_restart(args: argparse.Namespace) -> int:
+    cmd_stop(args)
+    print(f"Restarting {args.target}")
+    args.foreground = False  # a restart is always detached; tail with `son logs`
+    return cmd_start(args)
+
+
+# --- commands: build ----------------------------------------------------------
+
+
+def run_step(label: str, command: list[str], cwd: Path | None = None) -> bool:
+    print(f"  → {label}")
+    code = subprocess.call(command, cwd=cwd or REPO)
+    if code != 0:
+        print(f"  {mark(False)} {label} failed (exit {code})")
+        return False
+    print(f"  {mark(True)} {label}")
+    return True
+
+
+def build_node(target: str, directory: Path) -> bool:
+    npm = shutil.which("npm")
+    if not npm:
+        die(f"npm is not on PATH, can't build the {target}", "install Node.js 20.19+")
+    if not (directory / "node_modules").is_dir():
+        if not run_step(f"{target}: npm install", [npm, "install", "--no-audit", "--no-fund"], directory):
+            return False
+    return run_step(f"{target}: npm run build", [npm, "run", "build"], directory)
+
+
+def cmd_build(args: argparse.Namespace) -> int:
+    repo_check()
+    targets = ("roles", "client", "extension") if args.target == "all" else (args.target,)
+    print(f"Building {args.target}")
+    results: dict[str, bool] = {}
+    for target in targets:
+        if target == "roles":
+            results[target] = run_step("roles → client/public/roles.json", python_cmd() + ["scripts/gen_roles.py"])
+        elif target == "client":
+            results[target] = build_node("client (web page)", REPO / "client")
+        else:
+            results[target] = build_node("extension", REPO / "extension")
+    failed = [name for name, ok in results.items() if not ok]
+    if failed:
+        die(f"build failed for: {', '.join(failed)}")
+    if any(target in results for target in ("client", "extension")):
+        where_block(extension="extension" in results)
+    if "extension" in results:
+        print(f"  {mark(True)} reload the Son card there to pick this build up")
+    return 0
+
+
+# --- commands: status / logs / open / doctor ----------------------------------
+
+
+def cmd_status(args: argparse.Namespace) -> int:
+    repo_check()
+    # The header goes out before any probe. Everything below can wait on the
+    # server, and a report that shows nothing for 12 s reads as a hang — which is
+    # exactly what a cold `/models` did: a fresh server probes every provider on
+    # that first call (8 s each, 120 s for Google's token) while the CLI sits in
+    # read-line waiting for the response status.
+    print("Son — status")
+    up = server_up()
+    # The live roster is opt-in: /models is the one expensive route here, and a
+    # status report must not start a provider sweep (or wait for one) unasked.
+    models = roster() if up and args.roster else None
+    processes_block(server_answering=up)
+    downloading = [
+        label for label, state in (get_json("/warming", timeout=2.0) or {}).get("warming", {}).items()
+        if state == "downloading"
+    ]
+    if up and downloading:
+        line("warming", f"{mark(False, warn=True)} fetching {', '.join(downloading)} — a first session waits for it")
+    if up:
+        session = last_session_line()
+        if session:
+            line("session", session)
+
+    values = env_values()
+    line("providers", "  ".join(f"{name.removesuffix('_API_KEY').lower()} {mark(bool(values.get(name)))}" for name in PROVIDER_KEYS))
+    if models:
+        line("roster", "  ".join(f"{cap} {len(models.get(cap) or [])}" for cap in ("llm", "stt", "tts")))
+    elif up and args.roster:
+        line("roster", f"{mark(False, warn=True)} still probing — the first call asks every provider, so it needs the network")
+    elif up:
+        line("roster", "not asked — `son status --roster` reads the live list (slow while the server is cold)")
+    line("caches", cache_summary())
+    line("sessions", session_summary())
+    line("extension", extension_summary())
+    print()
+    where_block()
+    return 0
+
+
+def cmd_logs(args: argparse.Namespace) -> int:
+    repo_check()
+    path = RUNTIME / f"{args.service}.log"
+    if not path.is_file():
+        die(f"no log at {path}", f"`son start {args.service if args.service != 'server' else 'server'}` writes one")
+    command = ["tail", "-n", str(args.lines)] + (["-f"] if args.follow else []) + [str(path)]
+    return subprocess.call(command)
+
+
+def open_page() -> None:
+    subprocess.run(["open", web_url()], check=False)
+    print(f"  {mark(True)} opened {web_url()}")
+
+
+def cmd_open(args: argparse.Namespace) -> int:
+    if args.target == "extensions":
+        url = "chrome://extensions"
+        subprocess.run(["open", "-a", "Google Chrome", url], check=False)
+        print(f"  {mark(True)} opened {url} — reload the Son card after a rebuild")
+        return 0
+    open_page()
+    return 0
+
+
+def venv_site_packages(venv: Path) -> Path | None:
+    """The venv's site-packages.
+
+    Globs the version rather than deriving it from the running interpreter: this
+    CLI is stdlib-only and deliberately runnable by any Python 3, while the venv's
+    is whatever `uv sync` created — assuming they match reports a synced venv as
+    broken.
+    """
+    candidates = sorted((venv / "lib").glob("python*/site-packages"))
+    return candidates[-1] if candidates else None
+
+
+def cmd_doctor(_args: argparse.Namespace) -> int:
+    repo_check()
+    print("Son — doctor")
+    problems = 0
+
+    uv = shutil.which("uv")
+    line("uv", uv or f"{mark(False)} not on PATH")
+    problems += 0 if uv else 1
+
+    venv = REPO / ".venv"
+    site = venv_site_packages(venv)
+    if site is None:
+        line("venv", f"{mark(False)} missing — run `uv sync`")
+        problems += 1
+    elif not (site / "piper").is_dir():
+        line("venv", f"{mark(False)} synced but the default voice's piper package is missing — run `uv sync`")
+        problems += 1
+    else:
+        line("venv", f"{mark(True)} {venv}")
+
+    piper_dir = Path(os.environ.get("PIPER_MODEL_DIR") or Path.home() / ".cache" / "son" / "piper")
+    line("piper", f"{mark(piper_dir.is_dir())} {piper_dir}" + ("" if piper_dir.is_dir() else "  (created on first use)"))
+    problems += 0 if piper_dir.is_dir() else 1
+
+    line("whisper", f"{mark(whisper_ready(), warn=True)} {WHISPER_DIR}" + ("" if whisper_ready() else "  (optional)"))
+
+    llama = s1_mini.server_installed()
+    line(
+        "cleanup",
+        f"{mark(bool(llama), warn=True)} llama-server {llama or 'not found — brew install llama.cpp'}",
+    )
+    problems += 0 if llama else 1
+    gguf = s1_mini.GGUF_PATH
+    line(
+        "s1-mini",
+        f"{mark(gguf.is_file(), warn=True)} {gguf}"
+        + ("" if gguf.is_file() else "  (fetched by `son start cleanup`)"),
+    )
+
+    env_file = REPO / ".env"
+    line(".env", f"{mark(env_file.is_file())} {env_file}" + ("" if env_file.is_file() else "  (cp .env.example .env)"))
+    problems += 0 if env_file.is_file() else 1
+
+    keyed = [name for name in PROVIDER_KEYS if env_values().get(name)]
+    line("keys", f"{mark(bool(keyed))} {', '.join(keyed) if keyed else 'none — put GROQ_API_KEY in .env'}")
+    problems += 0 if keyed else 1
+
+    for name, port in (
+        ("server", BOT_PORT),
+        ("whisper", WHISPER_PORT),
+        ("shim", SHIM_PORT),
+        ("cleanup", CLEANUP_PORT),
+    ):
+        holder = listeners(port)
+        state = "free" if not holder else f"held by pid {holder[0]} ({owner_of(holder[0])})"
+        line(f":{port}", f"{mark(not holder, warn=True)} {state}")
+
+    line("extension", extension_summary())
+
+    print()
+    if problems:
+        print(f"  {problems} thing(s) to fix before the stack runs cleanly")
+    else:
+        print(f"  {mark(True)} nothing to fix")
+    return 0 if not problems else 1
+
+
+# --- status details -----------------------------------------------------------
+
+
+def cache_summary() -> str:
+    """Which model caches exist. First use downloads them, and the STT/voice you
+    pick in the settings panel decides which one matters — with the paths the
+    services actually use (Kokoro's belongs to pipecat, not to this repo)."""
+    cache = Path.home() / ".cache"
+    caches = {
+        "piper": cache / "son" / "piper",
+        "parakeet": cache / "son" / "parakeet",
+        "s1-mini": cache / "son" / "s1-mini",
+        "kokoro": cache / "pipecat" / "kokoro-onnx",
+        "whisper.cpp": WHISPER_DIR,
+    }
+    return "  ".join(f"{name} {mark(path.exists())}" for name, path in caches.items())
+
+
+def session_summary() -> str:
+    db = REPO / "son.db"
+    if not db.is_file():
+        return "no son.db yet"
+    try:
+        with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as conn:
+            sessions = conn.execute("SELECT count(*) FROM sessions").fetchone()[0]
+            messages = conn.execute("SELECT count(*) FROM messages").fetchone()[0]
+            last = conn.execute("SELECT name FROM sessions ORDER BY updated_at DESC LIMIT 1").fetchone()
+    except sqlite3.Error as error:
+        return f"unreadable ({error})"
+    return f"{sessions} session(s), {messages} message(s)" + (f", last: {last[0]}" if last else "")
+
+
+def last_session_line() -> str:
+    """The bot's own "Session: role=… llm=… stt=… tts=…" line, when it has a log."""
+    path = RUNTIME / "server.log"
+    if not path.is_file():
+        return ""
+    for entry in reversed(path.read_text(errors="replace").splitlines()[-400:]):
+        if "Session: role=" in entry:
+            return entry.split("Session:", 1)[1].strip()
+    return ""
+
+
+def extension_summary() -> str:
+    """Built? current? — the two things that actually go wrong with an unpacked
+    extension, whose rebuild has to be followed by a reload in chrome://extensions."""
+    dist = REPO / "extension" / "dist"
+    if not (dist / "manifest.json").is_file():
+        return f"{mark(False)} not built — `son build extension`"
+    newest_artifact = max(file.stat().st_mtime for file in dist.rglob("*") if file.is_file())
+    sources = [file for folder in ("src", "public") for file in (REPO / "extension" / folder).rglob("*")]
+    newest_source = max((file.stat().st_mtime for file in sources), default=0)
+    stamp = time.strftime("%H:%M", time.localtime(newest_artifact))
+    if newest_source > newest_artifact:
+        return f"{mark(False)} dist is older than src ({stamp}) — `son build extension`, then reload the extension"
+    return f"{mark(True)} dist built {stamp}"
+
+
+# --- entry point --------------------------------------------------------------
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="son",
+        description=(
+            "Run, build and inspect the local Son stack. With no command it is `son start`: "
+            "the server (plus the local voice stack, when installed) and the web page."
+        ),
+        epilog=(
+            "examples:\n"
+            "  ./scripts/son install   put `son` on PATH (a symlink, so `git pull` updates it)\n"
+            "  son status              what's running, keyed, cached (add --roster for the live model list)\n"
+            "  son start server        just the bot — the browser extension needs nothing else\n"
+            "  son start cleanup       the local s1-mini transcript cleanup (llama.cpp)\n"
+            "  son start               server + voice stack, background, page opened\n"
+            "  son start server --foreground   watch its logs in this terminal\n"
+            "  son build extension     then reload it in chrome://extensions\n"
+            "  son stop --force        also free :7860/:8081/:8083/:8090 from anything holding them\n"
+            "\n"
+            "ports: SON_PORT / SON_WHISPER_PORT / SON_SHIM_PORT / SON_CLEANUP_PORT · whisper checkout: WHISPER_CPP · "
+            "repo: SON_REPO"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("--version", action="version", version="son 0.2.0")
+    subparsers = parser.add_subparsers(dest="command", metavar="<command>")
+
+    build = subparsers.add_parser("build", help="compile the web client / extension / role roster")
+    build.add_argument("target", nargs="?", choices=("all", "roles", "client", "extension"), default="all",
+                       help="what to build (default: all)")
+    build.set_defaults(func=cmd_build)
+
+    start = subparsers.add_parser("start", help="bring services up (background unless --foreground)")
+    start.add_argument("target", nargs="?", choices=TARGETS, default="all",
+                       help="server = the bot alone; voice = whisper.cpp + shim; all = both (default)")
+    start.add_argument("--foreground", action="store_true", help="keep it in this terminal instead of detaching")
+    start.add_argument("--open", action="store_true", help="open the web page once it answers")
+    start.set_defaults(func=cmd_start)
+
+    stop = subparsers.add_parser("stop", help="stop what son started")
+    stop.add_argument("target", nargs="?", choices=TARGETS, default="all", help="what to stop (default: all)")
+    stop.add_argument("--force", action="store_true", help="also kill whatever else holds the ports")
+    stop.set_defaults(func=cmd_stop)
+
+    restart = subparsers.add_parser("restart", help="stop then start (always detached)")
+    restart.add_argument("target", nargs="?", choices=TARGETS, default="all", help="what to restart (default: all)")
+    restart.add_argument("--force", action="store_true", help="handed to stop")
+    restart.set_defaults(func=cmd_restart, open=False)
+
+    status = subparsers.add_parser("status", help="what is running, keyed, cached, and where to go")
+    status.add_argument(
+        "--roster",
+        action="store_true",
+        help="also read the live model list (/models asks every provider — slow while the server is cold)",
+    )
+    status.set_defaults(func=cmd_status)
+
+    logs = subparsers.add_parser("logs", help="tail a service log")
+    logs.add_argument("service", nargs="?", choices=SERVICES, default="server", help="which service (default: server)")
+    logs.add_argument("-n", "--lines", type=int, default=40, help="lines to show (default: 40)")
+    logs.add_argument("-f", "--follow", action="store_true", help="keep following")
+    logs.set_defaults(func=cmd_logs)
+
+    open_cmd = subparsers.add_parser("open", help="open the web page (or chrome://extensions)")
+    open_cmd.add_argument("target", nargs="?", choices=("page", "extensions"), default="page",
+                          help="page = the web client at :7860 (default); extensions = chrome://extensions")
+    open_cmd.set_defaults(func=cmd_open)
+
+    install = subparsers.add_parser("install", help="link this script onto PATH as `son`")
+    install.add_argument("--force", action="store_true", help="replace an existing file/symlink there")
+    install.set_defaults(func=cmd_install)
+
+    subparsers.add_parser("doctor", help="check the environment").set_defaults(func=cmd_doctor)
+
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    if hasattr(signal, "SIGPIPE"):
+        # Behave like a Unix tool when the reader goes away — `son status | head`
+        # should stop quietly, not traceback through a broken pipe.
+        signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if not getattr(args, "command", None):
+        # No command: what the double-clickable app does, from a terminal.
+        args = parser.parse_args(["start", "--open"])
+    try:
+        return args.func(args)
+    except BrokenPipeError:
+        sys.stdout = open(os.devnull, "w")
+        return 0
+    except KeyboardInterrupt:
+        # Ctrl-C on a waiting probe: the traceback is noise for a report command.
+        print("\nson: interrupted", file=sys.stderr)
+        return 130
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

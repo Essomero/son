@@ -57,6 +57,9 @@ export function Dictate() {
   /** True between the recognizer's soundstart and soundend — what lights the ring. */
   const [soundActive, setSoundActive] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** What a manual Tidy reports when it changed nothing — information, not an
+   *  error: "nothing to fix" is a fine outcome, not a failure. */
+  const [note, setNote] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [tidyBusy, setTidyBusy] = useState(false);
   const [supported] = useState(webSpeechAvailable);
@@ -126,6 +129,7 @@ export function Dictate() {
 
   const toggle = (): void => {
     setError(null);
+    setNote(null);
     setListening((on) => !on);
     setSoundActive(false); // a lit ring must not outlive the listening
   };
@@ -143,21 +147,32 @@ export function Dictate() {
       if (!raw || tidyingRef.current) return;
       tidyingRef.current = true;
       setTidyBusy(true);
-      if (!silent) setError(null);
+      if (!silent) {
+        setError(null);
+        setNote(null);
+      }
       try {
-        const cleaned = (await cleanTranscript(raw)) || raw;
+        const answer = await cleanTranscript(raw);
         // Typing during the round trip wins: never replace newer text.
         if (textRef.current !== before) return;
-        if (cleaned.trim() === raw) {
+        // "" means the endpoint did not answer — it 503s when
+        // STT_CLEANUP_MODEL is unset, and timeouts (or a refused connection)
+        // land here too. Anything else is a real answer that may simply match
+        // what was already in the box.
+        if (!answer) {
           if (!silent) {
-            setError(
-              "Tidy left it alone — cleanup is off (STT_CLEANUP_MODEL) or found nothing to change.",
+            setNote(
+              "Cleanup didn't answer — check STT_CLEANUP_MODEL, and that `son start cleanup` is running.",
             );
           }
           return;
         }
-        setTextNow(cleaned);
-        void copy(cleaned);
+        if (answer.trim() === raw) {
+          if (!silent) setNote("Nothing to fix — the text came back unchanged.");
+          return;
+        }
+        setTextNow(answer);
+        void copy(answer);
       } finally {
         tidyingRef.current = false;
         setTidyBusy(false);
@@ -253,6 +268,11 @@ export function Dictate() {
             ? "Listening — talk normally; a pause ends the sentence."
             : "Recognition runs in this tab. With Chrome's on-device language pack installed the audio stays on this machine; otherwise it goes to Google."}
       </p>
+      {note && (
+        <p className="field-hint dictate-note" role="status">
+          {note}
+        </p>
+      )}
       {error && (
         <p className="reader-error" role="alert">
           {error}

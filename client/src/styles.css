@@ -1947,10 +1947,35 @@ code {
   box-shadow: none;
 }
 
+/* Inline messages — status and error — boxed, so neither reads as body copy. */
+.reader-error,
+.reader-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 10px 0 0;
+  padding: 9px 11px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--raised);
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+.reader-note {
+  color: var(--muted);
+}
+
 .reader-error {
   color: var(--danger);
-  font-size: 13px;
-  margin: 0;
+  border-color: rgba(224, 112, 90, 0.32);
+}
+
+/* Keep the glyph on the first line of a bounding message. */
+.reader-error > svg,
+.reader-note > svg {
+  flex: none;
+  margin-top: 1px;
 }
 
 /* --- Player bar ----------------------------------------------------------- */

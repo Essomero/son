@@ -7,7 +7,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Check, ClipboardCopy, Eraser, Loader2, Wand2 } from "lucide-react";
+import { Check, CircleAlert, ClipboardCopy, Eraser, Info, Loader2, Wand2 } from "lucide-react";
 
 import { useWebSpeech, webSpeechAvailable } from "../hooks/useWebSpeech";
 import { useAudioAnalyzer } from "../hooks/useAudioAnalyzer";
@@ -269,13 +269,15 @@ export function Dictate() {
             : "Recognition runs in this tab. With Chrome's on-device language pack installed the audio stays on this machine; otherwise it goes to Google."}
       </p>
       {note && (
-        <p className="field-hint dictate-note" role="status">
-          {note}
+        <p className="reader-note" role="status">
+          <Info size={13} aria-hidden />
+          <span>{note}</span>
         </p>
       )}
       {error && (
         <p className="reader-error" role="alert">
-          {error}
+          <CircleAlert size={13} aria-hidden />
+          <span>{error}</span>
         </p>
       )}
     </section>

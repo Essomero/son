@@ -140,17 +140,21 @@ export default function App() {
             it, so it cannot scroll away and needs no background of its own
             (which is what made it a black band over the page's glow). */}
         <div className="stage-col">
-          <Header
-            phase={s.phase}
-            status={s.status}
-            speaking={s.speaking}
-            role={s.role}
-            roles={s.roles}
-            view={view}
-            onSelectRole={s.selectRole}
-            onNewSession={goHome}
-            onEndSession={() => void s.disconnect()}
-          />
+          {/* The header is the chat's chrome — status, role chip, New/End. Read
+              and Speak are standalone pages with no session of their own, so
+              none of it means anything there: the rail is the frame instead. */}
+          {view === "chat" && (
+            <Header
+              phase={s.phase}
+              status={s.status}
+              speaking={s.speaking}
+              role={s.role}
+              roles={s.roles}
+              onSelectRole={s.selectRole}
+              onNewSession={goHome}
+              onEndSession={() => void s.disconnect()}
+            />
+          )}
 
           {/* The main area is the scroller — not the document (which took the
               header and the rail away with it) and not the inner column (which

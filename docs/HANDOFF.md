@@ -436,7 +436,9 @@ The built client is served by son.py itself — no second server:
 The rail's slider (its foot, above the ⚙) opens one of two pages: **Read** (text → speech, the original
 read-out page) and **Speak** (speech → text, new). They are separate actions, so each
 renders alone and switching unmounts the other — the clipboard is Speak's record, and
-Read's box is one **Paste & read** click away from refilling itself.
+Read's box is one **Paste & read** click away from refilling itself. Neither renders the chat's
+header (status, role chip, New/End): those speak for a session these pages don't have, and the
+rail is already the frame.
 
 - **Header control**: a two-segment pill — `Read | Speak` — with the highlight sliding
   between the labels (the Write/Preview construction, reused), wired as a `radiogroup`

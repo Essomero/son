@@ -463,9 +463,11 @@ Read's box is one **Paste & read** click away from refilling itself.
   "it can take seconds" reasoning obsolete. The automatic pass is silent (a disabled or
   unreachable normalizer must not complain about a fine dictation) and a guard means typing
   during the round trip wins rather than being replaced — plus `copyText` on every final, so the
-  clipboard tracks the transcript as you talk. The control is the chat's `MicButton`: no session
-  here, so no analyser, and `useAudioAnalyzer`'s `micPulse` (fed by `useWebSpeech`'s
-  soundstart/soundend) is what lights the ring — which is why the hook's `botAudio` is optional.
+  clipboard tracks the transcript as you talk. The control is the chat's `MicButton`, and the page
+  captures the mic itself while listening (`useMicTrack`) because Web Speech hands out no audio —
+  the same double-capture the chat runs with WebRTC — so the bars are the real spectrum. The
+  recognizer's sound events remain the fallback pulse (`useAudioAnalyzer`'s `micPulse`), which is
+  also why that hook's `botAudio` is optional: the Speak page has no bot to analyse.
   Muting pauses recognition and leaves the text; unmuting appends to it; **Clear** starts fresh.
   Interims render as a separate italic line, never in the editable box; a fatal
   reason (`not-allowed`, `audio-capture`, …) stops listening and prints the fix.

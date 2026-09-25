@@ -11,6 +11,7 @@ import { Check, ClipboardCopy, Eraser, Loader2, Wand2 } from "lucide-react";
 
 import { useWebSpeech, webSpeechAvailable } from "../hooks/useWebSpeech";
 import { useAudioAnalyzer } from "../hooks/useAudioAnalyzer";
+import { useMicTrack } from "../hooks/useMicTrack";
 import { MicButton } from "./MicButton";
 import { copyText } from "../lib/clipboard";
 import { cleanTranscript } from "../lib/son";
@@ -102,13 +103,16 @@ export function Dictate() {
 
   // This panel *is* the page while it is mounted, so the mic follows the
   // listening flag alone; leaving for the Read page unmounts it, which stops the
-  // recognizer in the hook's cleanup. The ring is the chat's mic visual: there
-  // is no session and so no analyser here, which is exactly the web-speech case
-  // that pulse exists for — it swells with the recognition's sound events and
-  // decays on silence.
+  // recognizer in the hook's cleanup. The ring is the chat's mic visual, and it
+  // wants the same thing the chat gives it: a real track, so the bars are the
+  // actual spectrum. Web Speech exposes no audio, so the page captures the mic
+  // itself while listening (released again on mute) — the same double-capture
+  // the chat runs with WebRTC. The recognizer's sound events stay wired as the
+  // fallback for when that capture is refused.
   useWebSpeech(onResult, listening && supported, setSoundActive, onError);
+  const micTrack = useMicTrack(listening && supported);
   const { subscribe } = useAudioAnalyzer({
-    micTrack: null,
+    micTrack,
     active: supported,
     micPulse: soundActive,
   });

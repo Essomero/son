@@ -17,6 +17,7 @@ import asyncio
 import base64
 import binascii
 import io
+import json
 import os
 import re
 import shutil
@@ -1016,6 +1017,272 @@ def build_ffmpeg_args(
     return args
 
 
+# --- Audio labelling / conversion (POST /tag/*) ------------------------------
+# Unlike /export, the source here is a file the user already owns: the browser
+# uploads it, ffprobe reads its container and current tags, and ffmpeg writes a
+# labelled (and optionally converted) copy into the chosen folder. The form
+# edits *every* tag the file carries — not a fixed title/album/artist trio —
+# so -map_metadata -1 drops the source's tags and the file ends up with exactly
+# what the form shows, never an invisible merge. Re-encoding is opt-in: when the
+# container is unchanged the audio stream is copied, so re-tagging is lossless
+# and instant.
+
+TAG_FORMATS = ("mp3", "m4a", "opus", "ogg", "flac", "wav")
+TAG_BITRATES = (64, 96, 128, 192, 256, 320)
+TAG_SAMPLE_RATES = (22050, 32000, 44100, 48000)
+TAG_CHANNELS = (1, 2)
+TAG_DEFAULT_BITRATE = 128  # kbps, when a re-encode doesn't name one
+TAG_MAX_BYTES = 512 * 1024 * 1024  # an upload cap: audiobooks fit, accidents don't
+TAG_MAX_TAGS = 64
+TAG_MAX_VALUE = 20_000  # lyrics are long; anything past this is not a tag
+
+# Container bookkeeping ffprobe reports as "tags" but that aren't labels:
+# MP4 brand/handler atoms, muxer time stamps and ffmpeg's own encoder stamp.
+# Left in, they would clutter the form and, re-emitted, some of them make
+# ffmpeg reject the run (brand atoms aren't metadata) — and `encoder` is
+# overwritten by ffmpeg on every write anyway, so offering it would be a lie.
+TAG_IGNORE = frozenset({
+    "major_brand", "minor_version", "compatible_brands", "creation_time",
+    "handler_name", "vendor_id", "language", "encoder", "copyright",
+})
+
+# Container → codec. wav/flac are lossless, so a bitrate is meaningless there.
+TAG_CODECS = {
+    "mp3": "libmp3lame",
+    "m4a": "aac",
+    "opus": "libopus",
+    "ogg": "libvorbis",
+    "flac": "flac",
+    "wav": "pcm_s16le",
+}
+TAG_LOSSLESS = ("flac", "wav")
+# Containers whose picture channel ffmpeg can attach cover art to.
+TAG_COVER_FORMATS = ("mp3", "m4a")
+
+# Canonical label fields, in the order the form shows them. ffprobe reports a
+# tag's key differently per container (ID3 "album_artist" vs Vorbis
+# "ALBUMARTIST" vs MP4 "album_artist"), so each field lists the spellings it
+# absorbs. Anything else the file carries is kept verbatim as an extra tag.
+TAG_FIELDS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
+    ("title", "Title", ("title",)),
+    ("artist", "Artist", ("artist",)),
+    ("album", "Album", ("album",)),
+    ("album_artist", "Album artist", ("album_artist", "albumartist", "album artist")),
+    ("grouping", "Grouping / season name", ("grouping", "contentgroup", "group")),
+    ("track", "Track", ("track", "tracknumber", "track_number")),
+    ("disc", "Disc", ("disc", "discnumber", "disc_number")),
+    ("date", "Year / date", ("date", "year", "originaldate")),
+    ("genre", "Genre", ("genre",)),
+    ("composer", "Composer", ("composer",)),
+    ("comment", "Comment", ("comment", "description")),
+    ("lyrics", "Lyrics", ("lyrics", "unsyncedlyrics", "unsynchronised_lyrics")),
+)
+_TAG_ALIASES = {alias: field for field, _, aliases in TAG_FIELDS for alias in aliases}
+
+
+class TagError(Exception):
+    """A user-facing failure in the Tag tool — a file ffprobe can't read, or an
+    ffmpeg run that failed. The routes turn it into a 400/500 with its text."""
+
+
+def normalize_tag_key(key: str) -> str:
+    """ffprobe tag key → canonical field name, or the lowercased key itself.
+    ffmpeg's -metadata takes a bare name, so fold it to that shape."""
+    folded = re.sub(r"[^a-z0-9_]+", "_", key.strip().lower()).strip("_")
+    return _TAG_ALIASES.get(key.strip().lower(), _TAG_ALIASES.get(folded, folded))
+
+
+def container_format(format_name: str | None, codec: str | None) -> str | None:
+    """ffprobe's format_name/codec_name → one of TAG_FORMATS, or None when the
+    container isn't one this tool writes. None makes the client require an
+    explicit output format (there is no safe "same container" default)."""
+    fmt = (format_name or "").lower()
+    name = (codec or "").lower()
+    if "mp3" in fmt or name.startswith("mp3"):
+        return "mp3"
+    if "flac" in fmt or name == "flac":
+        return "flac"
+    if name.startswith("pcm_"):
+        return "wav"
+    if "opus" in fmt or name == "opus":
+        return "opus"
+    if "ogg" in fmt or name in ("vorbis", "opus"):
+        return "ogg"
+    if any(k in fmt for k in ("mp4", "m4a", "mov", "3gp")) or name in ("aac", "alac"):
+        return "m4a"
+    if "wav" in fmt:
+        return "wav"
+    return None
+
+
+def probe_audio(path: Path) -> dict:
+    """ffprobe one audio file → container, stream facts and its current tags.
+    Raises TagError when the file has no readable audio stream."""
+    proc = subprocess.run(
+        [
+            "ffprobe", "-v", "error", "-print_format", "json",
+            "-show_format", "-show_streams", str(path),
+        ],
+        capture_output=True, text=True, timeout=120,
+    )
+    if proc.returncode != 0:
+        raise TagError(proc.stderr.strip()[-300:] or "ffprobe could not read that file.")
+    try:
+        data = json.loads(proc.stdout or "{}")
+    except json.JSONDecodeError:
+        raise TagError("ffprobe returned an unreadable report for that file.")
+    streams = data.get("streams") or []
+    audio = next((s for s in streams if s.get("codec_type") == "audio"), None)
+    if not audio:
+        raise TagError("No audio stream in that file.")
+    fmt = data.get("format") or {}
+
+    # Container tags first, then stream tags only where a key is still missing.
+    tags: dict[str, str] = {}
+    for source in (fmt.get("tags") or {}, audio.get("tags") or {}):
+        for key, value in source.items():
+            canon = normalize_tag_key(str(key))
+            if value and canon and canon not in tags and canon not in TAG_IGNORE:
+                tags[canon] = str(value)
+
+    def as_int(value) -> int:
+        try:
+            return int(float(value))
+        except (TypeError, ValueError):
+            return 0
+
+    return {
+        "name": path.name,
+        "size": path.stat().st_size,
+        "format": container_format(fmt.get("format_name"), audio.get("codec_name")),
+        "container": str(fmt.get("format_name") or ""),
+        "codec": str(audio.get("codec_name") or ""),
+        "duration": round(float(fmt.get("duration") or audio.get("duration") or 0), 2),
+        "bitrate": as_int(fmt.get("bit_rate") or audio.get("bit_rate")),
+        "sample_rate": as_int(audio.get("sample_rate")),
+        "channels": as_int(audio.get("channels")),
+        "cover": any((s.get("disposition") or {}).get("attached_pic") for s in streams),
+        "tags": tags,
+    }
+
+
+def sanitize_tags(raw) -> dict[str, str]:
+    """A client-supplied tag map → ffmpeg-safe metadata. Keys become simple
+    names ('-'/' ' fold to '_'); NULs are dropped because ffmpeg takes tags as
+    literal argv, and empty values are omitted (an omitted key is a dropped
+    tag — the form's blank field)."""
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, str] = {}
+    for key, value in raw.items():
+        if not isinstance(key, str) or value is None:
+            continue
+        name = normalize_tag_key(key)
+        if not name or name in TAG_IGNORE:
+            continue
+        text = str(value).replace("\x00", "").strip()[:TAG_MAX_VALUE]
+        if text:
+            out[name] = text
+        if len(out) >= TAG_MAX_TAGS:
+            break
+    return out
+
+
+def build_tag_args(
+    src: Path,
+    dst: Path,
+    fmt: str,
+    *,
+    tags: dict[str, str],
+    copy_audio: bool,
+    bitrate: int | None,
+    sample_rate: int | None,
+    channels: int | None,
+    new_cover: str | None,
+    keep_cover: bool,
+) -> list[str]:
+    """The exact ffmpeg arguments for one Tag save — executed as-is by the
+    server and echoed (with "ffmpeg" prepended) to the client for display.
+    `new_cover` is a path to a freshly picked image (a second input); otherwise
+    `keep_cover` re-attaches the picture already in the source."""
+    args = ["-y", "-i", str(src)]
+    # Only mp3/m4a have a picture channel ffmpeg will fill; the route rejects a
+    # new cover for any other container before we get here.
+    coverable = fmt in TAG_COVER_FORMATS
+    add_cover = coverable and (bool(new_cover) or keep_cover)
+    if new_cover and coverable:
+        args += ["-i", new_cover]
+    args += ["-map", "0:a"]
+    if add_cover:
+        if new_cover:
+            args += ["-map", "1:v", "-c:v", "copy", "-disposition:v", "attached_pic"]
+        else:
+            # The '?' makes a missing picture stream non-fatal (the source may
+            # have lost its art since the probe).
+            args += ["-map", "0:v?", "-c:v", "copy", "-disposition:v", "attached_pic"]
+    if copy_audio:
+        args += ["-c:a", "copy"]
+    else:
+        args += ["-c:a", TAG_CODECS[fmt]]
+        if fmt not in TAG_LOSSLESS and bitrate:
+            args += ["-b:a", f"{bitrate}k"]
+        if sample_rate:
+            args += ["-ar", str(sample_rate)]
+        if channels:
+            args += ["-ac", str(channels)]
+    args += ["-map_metadata", "-1"]
+    for key, value in tags.items():
+        if key == "copyright":
+            continue
+        args += ["-metadata", f"{key}={value}"]
+    if fmt == "m4a":
+        args += ["-movflags", "+faststart"]
+    if fmt == "mp3" and add_cover:
+        args += ["-id3v2_version", "3", "-metadata:s:v", "title=Album cover",
+                 "-metadata:s:v", "comment=Cover (front)"]
+    args.append(str(dst))
+    return args
+
+
+def write_upload(file, dst: Path) -> int:
+    """Spool an UploadFile to dst, refusing anything past TAG_MAX_BYTES.
+    Chunked, because an audiobook is not a JSON string and must not become
+    one. Raises TagError when the cap is crossed."""
+    size = 0
+    with dst.open("wb") as out:
+        while True:
+            chunk = file.file.read(1 << 20)
+            if not chunk:
+                break
+            size += len(chunk)
+            if size > TAG_MAX_BYTES:
+                raise TagError(f"File is too large (max {TAG_MAX_BYTES // (1 << 20)} MB).")
+            out.write(chunk)
+    if not size:
+        raise TagError("The file is empty.")
+    return size
+
+
+COVER_MAX_CHARS = 25_000_000  # ~18 MB decoded — a cover, not a wallpaper
+
+
+def decode_cover_b64(data, name) -> tuple[bytes, str]:
+    """A client-uploaded cover image (base64 payload + original file name) →
+    (bytes, suffix). Shared by /export and /tag/save: neither can learn a picked
+    file's path, so the image travels as data."""
+    if not isinstance(data, str) or not data.strip():
+        raise TagError("Cover image is empty.")
+    if len(data) > COVER_MAX_CHARS:
+        raise TagError("Cover image is too large (max ~18 MB).")
+    try:
+        blob = base64.b64decode(data, validate=True)
+    except (ValueError, binascii.Error):
+        raise TagError("Cover image data is not valid base64.")
+    if not blob:
+        raise TagError("Cover image is empty.")
+    return blob, (Path(name or "").suffix.lower() or ".jpg")
+
+
 def load_instruction(name: str | None) -> str:
     """Load an instruction file safely: basename only, inside instructions/.
 
@@ -2011,7 +2278,7 @@ def _fetch_models() -> dict:
 
 
 if __name__ == "__main__":
-    from fastapi import Body, HTTPException
+    from fastapi import Body, File, Form, HTTPException, UploadFile
     from fastapi.responses import Response
     from fastapi.staticfiles import StaticFiles
     from pipecat.runner.run import app, main
@@ -2200,10 +2467,16 @@ if __name__ == "__main__":
 
     @app.get("/export/defaults", include_in_schema=False)
     def export_defaults() -> dict:
-        """Download-folder detection + ffmpeg availability. Detection is
+        """Download-folder detection + ffmpeg/ffprobe availability. Detection is
         server-side — the browser can't see the filesystem, but the server is
-        the user's machine and knows its own home directory."""
-        return {"dir": detect_download_dir(), "ffmpeg": bool(shutil.which("ffmpeg"))}
+        the user's machine and knows its own home directory. The Tag page needs
+        the folder default and both binaries; the Read page's Export panel only
+        ffmpeg (adding a field is additive)."""
+        return {
+            "dir": detect_download_dir(),
+            "ffmpeg": bool(shutil.which("ffmpeg")),
+            "ffprobe": bool(shutil.which("ffprobe")),
+        }
 
     @app.post("/export", include_in_schema=False)
     def export(payload: dict = Body(...)) -> dict:
@@ -2242,17 +2515,10 @@ if __name__ == "__main__":
         cover_ext = ".jpg"
         cover_data = payload.get("cover_data")
         if cover_data is not None:
-            if not isinstance(cover_data, str) or not cover_data.strip():
-                raise HTTPException(status_code=400, detail="Cover image is empty.")
-            if len(cover_data) > 25_000_000:  # ~18 MB decoded
-                raise HTTPException(status_code=400, detail="Cover image is too large (max ~18 MB).")
             try:
-                cover_bytes = base64.b64decode(cover_data, validate=True)
-            except (ValueError, binascii.Error):
-                raise HTTPException(status_code=400, detail="Cover image data is not valid base64.")
-            if not cover_bytes:
-                raise HTTPException(status_code=400, detail="Cover image is empty.")
-            cover_ext = Path(payload.get("cover_name") or "").suffix.lower() or ".jpg"
+                cover_bytes, cover_ext = decode_cover_b64(cover_data, payload.get("cover_name"))
+            except TagError as e:
+                raise HTTPException(status_code=400, detail=str(e))
         elif cover:
             cover_path = Path(cover).expanduser().resolve()
             if not cover_path.is_file():
@@ -2301,6 +2567,153 @@ if __name__ == "__main__":
             "path": str(dst),
             "size": dst.stat().st_size,
             "format": fmt,
+            "command": "ffmpeg " + " ".join(shell_quote(a) for a in args),
+        }
+
+    # --- Tag page: label and convert an uploaded audio file ----------------
+    # Two multipart routes. /tag/inspect reads the file's container and every
+    # tag it carries (ffprobe); /tag/save writes the edited version with ffmpeg.
+    # The source is the user's own file, so it is spooled through a temp file
+    # rather than synthesized like /export's.
+
+    def require_binary(name: str) -> None:
+        if not shutil.which(name):
+            raise HTTPException(
+                status_code=503,
+                detail=f"{name} is not installed on the server — install ffmpeg "
+                "(e.g. `brew install ffmpeg`) to label and convert audio files.",
+            )
+
+    def store_upload(file: UploadFile, tmp: str) -> Path:
+        """Spool an upload into `tmp`, keeping its extension so ffmpeg can
+        sniff the container. TagError (too large / empty) becomes a 400."""
+        name = Path(file.filename or "").name
+        suffix = Path(name).suffix.lower()
+        if not re.fullmatch(r"\.[a-z0-9]{1,6}", suffix or ""):
+            suffix = ".audio"
+        src = Path(tmp) / f"source{suffix}"
+        try:
+            write_upload(file, src)
+        except TagError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        return src
+
+    @app.post("/tag/inspect", include_in_schema=False)
+    def tag_inspect(file: UploadFile = File(...)) -> dict:
+        """An uploaded audio file → its container, stream facts and all its
+        tags, so the Tag page can show — and edit — exactly what it carries.
+        Nothing is written; ffprobe only reads."""
+        require_binary("ffprobe")
+        with tempfile.TemporaryDirectory() as tmp:
+            src = store_upload(file, tmp)
+            try:
+                return probe_audio(src)
+            except TagError as e:
+                logger.warning(f"/tag/inspect failed: {e}")
+                raise HTTPException(status_code=400, detail=str(e))
+
+    @app.post("/tag/save", include_in_schema=False)
+    def tag_save(file: UploadFile = File(...), payload: str = Form("{}")) -> dict:
+        """Write a labelled (and optionally converted) copy of an uploaded
+        audio file into the folder of the user's choice. The multipart payload
+        is JSON: {format, bitrate, sample_rate, channels, reencode, dir,
+        filename, tags: {...}, cover_data, cover_name, keep_cover} →
+        {path, size, format, copied, command}. With the container unchanged and
+        `reencode` off the audio stream is copied, so re-tagging is lossless."""
+        require_binary("ffprobe")
+        try:
+            opts = json.loads(payload or "{}")
+        except json.JSONDecodeError:
+            raise HTTPException(status_code=400, detail="Options are not valid JSON.")
+        if not isinstance(opts, dict):
+            raise HTTPException(status_code=400, detail="Options must be a JSON object.")
+
+        fmt = str(opts.get("format") or "").lower()
+        if fmt not in TAG_FORMATS:
+            raise HTTPException(
+                status_code=400, detail=f"Format must be one of: {', '.join(TAG_FORMATS)}."
+            )
+
+        def pick_int(key: str, allowed: tuple[int, ...]) -> int | None:
+            raw = opts.get(key)
+            if raw in (None, ""):
+                return None
+            try:
+                value = int(raw)
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400, detail=f"{key} must be a number.")
+            if value not in allowed:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"{key} must be one of: {', '.join(str(a) for a in allowed)}.",
+                )
+            return value
+
+        bitrate = pick_int("bitrate", TAG_BITRATES)
+        sample_rate = pick_int("sample_rate", TAG_SAMPLE_RATES)
+        channels = pick_int("channels", TAG_CHANNELS)
+        reencode = bool(opts.get("reencode"))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            src = store_upload(file, tmp)
+            try:
+                info = probe_audio(src)
+            except TagError as e:
+                raise HTTPException(status_code=400, detail=str(e))
+            # Copy the stream only when the container is unchanged and the user
+            # didn't ask to re-encode; anything else is a fresh encode.
+            copy_audio = (not reencode) and info["format"] == fmt
+
+            keep_cover = bool(opts.get("keep_cover")) and bool(info["cover"])
+            new_cover: str | None = None
+            if opts.get("cover_data") is not None:
+                if fmt not in TAG_COVER_FORMATS:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Cover art is only supported in MP3 and M4A — pick one of those, or remove the image.",
+                    )
+                try:
+                    blob, suffix = decode_cover_b64(opts.get("cover_data"), opts.get("cover_name"))
+                except TagError as e:
+                    raise HTTPException(status_code=400, detail=str(e))
+                cover_path = Path(tmp) / f"cover{suffix}"
+                cover_path.write_bytes(blob)
+                new_cover = str(cover_path)
+                keep_cover = False
+            if fmt not in TAG_COVER_FORMATS:
+                keep_cover = False  # opus/ogg/flac/wav carry no picture channel here
+
+            stem = sanitize_stem(opts.get("filename") or info["name"])
+            out_dir = Path(opts.get("dir") or detect_download_dir()).expanduser()
+            out_dir.mkdir(parents=True, exist_ok=True)
+            dst = unique_path(out_dir / f"{stem}.{fmt}")
+            args = build_tag_args(
+                src,
+                dst,
+                fmt,
+                tags=sanitize_tags(opts.get("tags")),
+                copy_audio=copy_audio,
+                bitrate=bitrate or TAG_DEFAULT_BITRATE,
+                sample_rate=sample_rate,
+                channels=channels,
+                new_cover=new_cover,
+                keep_cover=keep_cover,
+            )
+            try:
+                proc = subprocess.run(
+                    ["ffmpeg", *args], capture_output=True, text=True, timeout=600
+                )
+            except subprocess.TimeoutExpired:
+                raise HTTPException(status_code=500, detail="ffmpeg timed out.")
+            if proc.returncode != 0:
+                logger.warning(f"/tag/save ffmpeg failed: {proc.stderr[-500:]}")
+                raise HTTPException(status_code=500, detail=f"ffmpeg failed: {proc.stderr.strip()[-300:]}")
+
+        return {
+            "path": str(dst),
+            "size": dst.stat().st_size,
+            "format": fmt,
+            "copied": copy_audio,
             "command": "ffmpeg " + " ".join(shell_quote(a) for a in args),
         }
 

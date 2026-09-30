@@ -740,13 +740,7 @@ export function Tagger({
             </div>
           </details>
 
-          <div
-            className={`export-field export-cover tagger-cover${coverDragging ? " dragging" : ""}`}
-            onDragEnter={onCoverDragEnter}
-            onDragOver={onCoverDragOver}
-            onDragLeave={onCoverDragLeave}
-            onDrop={onCoverDrop}
-          >
+          <div className="export-field export-cover tagger-cover">
             <span className="export-label">Cover art (all {tagMode === "music" ? "tracks" : "episodes"})</span>
             <input
               ref={coverRef}
@@ -758,48 +752,67 @@ export function Tagger({
                 e.target.value = ""; // allow re-picking the same file
               }}
             />
-            <div className="export-cover-row">
-              <button
-                type="button"
-                className={`btn ghost export-cover-btn${coverDragging ? " dragging" : ""}`}
-                onClick={() => coverRef.current?.click()}
-                disabled={!coverable}
-                title={
-                  coverable
-                    ? "Pick or drop an image from this computer"
-                    : "Cover art fits MP3 and M4A only"
+            <div
+              className={`tagger-cover-zone${coverDragging ? " dragging" : ""}${!coverable ? " disabled" : ""}`}
+              onDragEnter={onCoverDragEnter}
+              onDragOver={onCoverDragOver}
+              onDragLeave={onCoverDragLeave}
+              onDrop={onCoverDrop}
+              onClick={() => {
+                if (coverable) coverRef.current?.click();
+              }}
+              role="button"
+              tabIndex={coverable ? 0 : -1}
+              onKeyDown={(e) => {
+                if (coverable && (e.key === "Enter" || e.key === " ")) {
+                  e.preventDefault();
+                  coverRef.current?.click();
                 }
-              >
-                {coverPreview ? (
-                  <img src={coverPreview} alt="" className="export-cover-thumb" />
-                ) : (
-                  <ImagePlus size={14} aria-hidden />
-                )}
-                <span className="export-cover-name">
-                  {coverDragging
-                    ? "Drop image here"
-                    : coverFile
-                      ? coverFile.name
-                      : "Choose or drop image…"}
-                </span>
-              </button>
-              {coverFile && (
-                <button
-                  type="button"
-                  className="icon-btn"
-                  onClick={() => setCoverFile(null)}
-                  title="Remove cover art"
-                  aria-label="Remove cover art"
-                >
-                  <X size={14} />
-                </button>
+              }}
+              title={
+                coverable
+                  ? "Pick or drop an image from this computer"
+                  : "Cover art fits MP3 and M4A only"
+              }
+            >
+              {coverPreview ? (
+                <div className="tagger-cover-preview-row">
+                  <img src={coverPreview} alt="Cover preview" className="tagger-cover-preview-img" />
+                  <div className="tagger-cover-info">
+                    <span className="tagger-cover-filename">{coverFile?.name}</span>
+                    <span className="tagger-cover-subtext">
+                      {coverDragging
+                        ? "Drop to replace cover image"
+                        : "Click or drop an image to replace"}
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    className="icon-btn tagger-cover-remove"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setCoverFile(null);
+                    }}
+                    title="Remove cover art"
+                    aria-label="Remove cover art"
+                  >
+                    <X size={15} />
+                  </button>
+                </div>
+              ) : (
+                <div className="tagger-cover-prompt">
+                  <ImagePlus size={24} className="tagger-cover-icon" aria-hidden />
+                  <span className="tagger-cover-text">
+                    {coverDragging ? "Drop image here" : "Choose or drop cover image…"}
+                  </span>
+                  <span className="field-hint tagger-cover-hint">
+                    {coverable
+                      ? "Embedded in MP3 and M4A. Left empty, each file keeps the art it already has."
+                      : "Cover art fits MP3 and M4A — choose one of those formats to embed it."}
+                  </span>
+                </div>
               )}
             </div>
-            <span className="field-hint">
-              {coverable
-                ? "Embedded in MP3 and M4A. Drop an image or click to browse. Left empty, each file keeps the art it already has."
-                : "Cover art fits MP3 and M4A — choose one of those formats to embed it."}
-            </span>
           </div>
         </section>
       )}

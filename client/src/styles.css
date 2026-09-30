@@ -2488,7 +2488,7 @@ code {
 
 .tagger-ep {
   display: grid;
-  grid-template-columns: 64px minmax(0, 1fr) minmax(0, 1.2fr) 28px;
+  grid-template-columns: 64px minmax(0, 1fr) minmax(0, 1.2fr) 10px 28px;
   align-items: center;
   gap: 8px;
   height: 48px; /* TAG_ROW_H — the windowing math depends on it */
@@ -2497,6 +2497,30 @@ code {
   cursor: pointer;
   border-radius: var(--r-sm);
   transition: background 0.15s ease;
+}
+
+/* "This file has been changed and will be written." Held open when off so the
+   row's columns don't shift as files are edited. */
+.tagger-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: transparent;
+  flex: none;
+}
+
+.tagger-dot.on {
+  background: var(--amber);
+}
+
+.tagger-snapshot-tags {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.tagger-changed-count {
+  color: var(--amber);
 }
 
 .tagger-ep.selected {

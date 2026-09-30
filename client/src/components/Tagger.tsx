@@ -97,6 +97,10 @@ interface Episode {
   tags: Record<string, string>;
   info: TagInfo | null;
   error: string | null;
+  /** Set when an edit would change what this file carries, cleared once a save
+   *  has written it. A save only touches the flagged files — re-tagging three
+   *  tracks out of eighty-one must not rewrite the other seventy-eight. */
+  dirty: boolean;
 }
 
 interface SaveResult {
@@ -242,6 +246,7 @@ export function Tagger({
           tags: { ...tags },
           info,
           error: item.error || null,
+          dirty: false,
         };
       });
 
@@ -305,12 +310,32 @@ export function Tagger({
       list.map((e) => {
         if (e.id !== epId) return e;
         const nextTags = { ...(e.tags ?? {}), [key]: value };
-        const patch: Partial<Episode> = { tags: nextTags };
+        const patch: Partial<Episode> = { tags: nextTags, dirty: true };
         if (key === "title") patch.title = value;
         if (key === "track") patch.track = value;
         return { ...e, ...patch };
       }),
     );
+  };
+
+  /** Flag every file a shared-field or extra-tag edit would actually rewrite:
+   *  those whose own tag differs from the value being set. A blank value writes
+   *  nothing (the form's blank-means-leave-it-alone rule), so it flags none —
+   *  and a folder whose files already carry the value isn't rewritten. */
+  const markIfDiffers = (key: string, value: string) => {
+    const name = normalizeTagKey(key);
+    const next = value.trim();
+    if (!name || !next) return;
+    setEpisodes((list) =>
+      list.map((e) => ((e.info?.tags?.[name] ?? "").trim() === next ? e : { ...e, dirty: true })),
+    );
+  };
+
+  /** A picked cover image is embedded into every episode's file, so choosing
+   *  one makes every file a write. Clearing it does not unmark anything. */
+  const setCover = (file: File | null) => {
+    setCoverFile(file);
+    if (file) setEpisodes((list) => list.map((ep) => ({ ...ep, dirty: true })));
   };
 
   // The window: only the rows around the scroll offset are mounted, with
@@ -520,6 +545,7 @@ export function Tagger({
       tags: {},
       info: null,
       error: null,
+      dirty: false,
     }));
     // A second file turns the form into a season: the lone-file tags that
     // filled the shared fields are that file's, not the show's — clear them.
@@ -571,7 +597,7 @@ export function Tagger({
     setCoverDragging(false);
     if (!coverable) return;
     const file = Array.from(e.dataTransfer.files).find(isImageFile);
-    if (file) setCoverFile(file);
+    if (file) setCover(file);
   };
 
   const onPageDragEnter = (e: React.DragEvent) => {
@@ -618,17 +644,19 @@ export function Tagger({
       addFiles(effectiveAudio);
     }
     if (imageFiles.length > 0 && coverable) {
-      setCoverFile(imageFiles[0]);
+      setCover(imageFiles[0]);
     }
   };
 
+  /** A per-file edit (its number or title), so that file is now out of step
+   *  with what it carries. */
   const updateEpisode = (id: string, patch: Partial<Episode>) =>
-    setEpisodes((list) => list.map((e) => (e.id === id ? { ...e, ...patch } : e)));
-
+    setEpisodes((list) => list.map((e) => (e.id === id ? { ...e, ...patch, dirty: true } : e)));
 
   const setSharedField = (key: string, value: string) => {
     sharedTouched.current = true;
     setShared((prev) => ({ ...prev, [key]: value }));
+    markIfDiffers(key, value);
   };
 
   /** Every tag a save will write for one episode: the file's own tags, the
@@ -685,11 +713,12 @@ export function Tagger({
     });
 
   const save = async () => {
-    if (!episodes.length || saving) return;
+    const targets = episodes.filter((e) => e.dirty);
+    if (!targets.length || saving) return;
     setSaving(true);
     setError(null);
     setResults([]);
-    setProgress({ done: 0, total: episodes.length });
+    setProgress({ done: 0, total: targets.length });
     try {
       let coverData: string | undefined;
       if (coverFile) {
@@ -703,7 +732,7 @@ export function Tagger({
       }
 
       const out: SaveResult[] = [];
-      for (const ep of episodes) {
+      for (const ep of targets) {
         const fmt = formatFor(ep);
         const payload = {
           format: fmt,
@@ -740,6 +769,19 @@ export function Tagger({
             });
           } else {
             out.push({ name: ep.name, path: data?.path ?? "", size: data?.size ?? 0 });
+            // The file now carries exactly what we sent, so it is in step again
+            // and a second save has nothing to do.
+            setEpisodes((list) =>
+              list.map((e) =>
+                e.id === ep.id
+                  ? {
+                      ...e,
+                      dirty: false,
+                      info: e.info ? { ...e.info, tags: payload.tags, format: fmt } : e.info,
+                    }
+                  : e,
+              ),
+            );
           }
         } catch (e) {
           out.push({ name: ep.name, error: e instanceof Error ? e.message : "Save failed." });
@@ -756,7 +798,10 @@ export function Tagger({
   };
 
   const coverable = !format || TAG_COVER_FORMATS.includes(format);
-  const canSave = episodes.length > 0 && !saving && episodes.every((e) => e.info || e.error);
+  /** The files a save will write — the ones some edit put out of step. */
+  const changed = episodes.filter((e) => e.dirty);
+  const canSave =
+    changed.length > 0 && !saving && episodes.every((e) => e.info || e.error);
 
   return (
     <section
@@ -853,6 +898,11 @@ export function Tagger({
           <h3 className="export-heading">
             {tagMode === "music" ? "Tracks" : "Episodes"}{" "}
             <span className="tagger-count">{episodes.length}</span>
+            {changed.length > 0 && (
+              <span className="tagger-count tagger-changed-count">
+                · {changed.length} changed
+              </span>
+            )}
           </h3>
           <ul
             ref={listRef}
@@ -899,6 +949,11 @@ export function Tagger({
                     </>
                   )}
                 </span>
+                <span
+                  className={`tagger-dot${ep.dirty ? " on" : ""}`}
+                  aria-hidden
+                  title={ep.dirty ? "Changed — will be written" : undefined}
+                />
                 <button
                   type="button"
                   className="icon-btn"
@@ -971,18 +1026,21 @@ export function Tagger({
                     >
                       <div className="tagger-snapshot-head">
                         <span className="tagger-snapshot-badge">#{ep.track || idx + 1}</span>
-                        <button
-                          type="button"
-                          className="tagger-snapshot-del"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            removeEpisode(ep.id);
-                          }}
-                          title={`Remove ${ep.name} (won't be tagged/overwritten)`}
-                          aria-label={`Remove ${ep.name}`}
-                        >
-                          <X size={12} />
-                        </button>
+                        <span className="tagger-snapshot-tags">
+                          <span className={`tagger-dot${ep.dirty ? " on" : ""}`} aria-hidden />
+                          <button
+                            type="button"
+                            className="tagger-snapshot-del"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              removeEpisode(ep.id);
+                            }}
+                            title={`Remove ${ep.name} (won't be tagged/overwritten)`}
+                            aria-label={`Remove ${ep.name}`}
+                          >
+                            <X size={12} />
+                          </button>
+                        </span>
                       </div>
                       <div className="tagger-snapshot-body">
                         <span className="tagger-snapshot-title">{displayTitle}</span>
@@ -1096,14 +1154,20 @@ export function Tagger({
                   <input
                     className="text-input"
                     value={x.key}
-                    onChange={(e) => setExtras((list) => list.map((k) => (k.id === x.id ? { ...k, key: e.target.value } : k)))}
+                    onChange={(e) => {
+                      setExtras((list) => list.map((k) => (k.id === x.id ? { ...k, key: e.target.value } : k)));
+                      markIfDiffers(e.target.value, x.value);
+                    }}
                     placeholder="key"
                     aria-label="Tag name"
                   />
                   <input
                     className="text-input"
                     value={x.value}
-                    onChange={(e) => setExtras((list) => list.map((k) => (k.id === x.id ? { ...k, value: e.target.value } : k)))}
+                    onChange={(e) => {
+                      setExtras((list) => list.map((k) => (k.id === x.id ? { ...k, value: e.target.value } : k)));
+                      markIfDiffers(x.key, e.target.value);
+                    }}
                     placeholder="value"
                     aria-label="Tag value"
                   />
@@ -1137,7 +1201,7 @@ export function Tagger({
               accept="image/*"
               hidden
               onChange={(e) => {
-                setCoverFile(e.target.files?.[0] ?? null);
+                setCover(e.target.files?.[0] ?? null);
                 e.target.value = ""; // allow re-picking the same file
               }}
             />
@@ -1220,6 +1284,13 @@ export function Tagger({
                   setFormat(f);
                   onChangeSettings({ tagFormat: f });
                   if (f && !TAG_COVER_FORMATS.includes(f)) setCoverFile(null);
+                  // Only the files not already in the picked container get
+                  // rewritten; the rest keep their stream and need no save.
+                  if (f) {
+                    setEpisodes((list) =>
+                      list.map((e) => (e.info?.format === f ? e : { ...e, dirty: true })),
+                    );
+                  }
                 }}
                 label="Format"
               />
@@ -1322,7 +1393,13 @@ export function Tagger({
               <input
                 type="checkbox"
                 checked={reencode}
-                onChange={(e) => setReencode(e.target.checked)}
+                onChange={(e) => {
+                  setReencode(e.target.checked);
+                  // Forcing a fresh encode rewrites every file's audio.
+                  if (e.target.checked) {
+                    setEpisodes((list) => list.map((ep) => ({ ...ep, dirty: true })));
+                  }
+                }}
               />
               <span>
                 Re-encode audio
@@ -1354,10 +1431,23 @@ export function Tagger({
               {saving ? <Loader2 size={15} className="spin" aria-hidden /> : <Download size={15} aria-hidden />}
               {saving
                 ? `Saving ${progress.done + 1} of ${progress.total}…`
-                : episodes.length > 1
-                  ? `Save all ${episodes.length} episodes`
-                  : "Save to folder"}
+                : changed.length === 0
+                  ? "Nothing to save — no tags changed"
+                  : `Save ${changed.length} changed ${
+                      changed.length === 1
+                        ? tagMode === "music"
+                          ? "track"
+                          : "episode"
+                        : tagMode === "music"
+                          ? "tracks"
+                          : "episodes"
+                    }`}
             </button>
+            {!saving && changed.length > 0 && changed.length < episodes.length && (
+              <span className="field-hint">
+                {episodes.length - changed.length} unchanged of {episodes.length} — left as they are.
+              </span>
+            )}
           </div>
 
           {!probeOk && (

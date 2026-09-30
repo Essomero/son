@@ -2019,6 +2019,20 @@ code {
   margin-top: 1px;
 }
 
+/* A message carrying inline code is one wrapping text block, not several flex
+   items the box would lay out side by side (which split the sentence around
+   the <code>). */
+.reader-error > span,
+.reader-note > span {
+  flex: 1;
+  min-width: 0;
+}
+
+.reader-error code,
+.reader-note code {
+  overflow-wrap: anywhere;
+}
+
 /* --- Player bar ----------------------------------------------------------- */
 .player {
   margin-top: 8px;

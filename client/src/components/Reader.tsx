@@ -863,8 +863,10 @@ export function Reader({
 
           {!ffmpegOk && format !== "wav" && (
             <p className="reader-error">
-              ffmpeg isn't installed on the server — only WAV can be saved here. Install it (e.g.{" "}
-              <code>brew install ffmpeg</code>) to use MP3, M4A or Opus.
+              <span>
+                ffmpeg isn't installed on the server — only WAV can be saved here. Install it (e.g.{" "}
+                <code>brew install ffmpeg</code>) to use MP3, M4A or Opus.
+              </span>
             </p>
           )}
 

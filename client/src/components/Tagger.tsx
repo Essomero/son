@@ -15,7 +15,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Check, Copy, Download, ImagePlus, Loader2, Plus, Tags, Trash2, X } from "lucide-react";
 
-import type { Settings, TagFormat, TagInfo } from "../lib/types";
+import type { Settings, TagFormat, TagInfo, TagMode } from "../lib/types";
 import { EXPORT_DEFAULTS_URL, TAG_INSPECT_URL, TAG_SAVE_URL } from "../lib/son";
 import {
   TAG_BITRATES,
@@ -33,27 +33,56 @@ import {
 } from "../lib/audioFile";
 import { copyText } from "../lib/clipboard";
 import { OptionPicker } from "./OptionPicker";
-
-/** The season/show fields, in form order. Blank means "leave each file's own
- *  value alone" — a season-wide tag only overrides when it is filled. */
-const SHARED_FIELDS: { key: string; label: string; hint: string }[] = [
-  { key: "album", label: "Show", hint: "→ album" },
-  { key: "album_artist", label: "Show (sort)", hint: "→ album artist" },
-  { key: "artist", label: "Host / author", hint: "→ artist" },
-  { key: "grouping", label: "Season name", hint: "→ grouping" },
-  { key: "disc", label: "Season", hint: "→ disc" },
-  { key: "date", label: "Year", hint: "→ date" },
-  { key: "genre", label: "Genre", hint: "→ genre" },
-  { key: "composer", label: "Composer", hint: "→ composer" },
-];
-
-/** The two long shared fields, laid out full width. */
-const SHARED_WIDE: { key: string; label: string; hint: string; placeholder: string }[] = [
-  { key: "comment", label: "Show notes", hint: "→ comment", placeholder: "What this episode is about…" },
-  { key: "lyrics", label: "Transcript", hint: "→ lyrics", placeholder: "Paste the source text — it stays searchable in the file" },
-];
-
 const CURRENT_YEAR = String(new Date().getFullYear());
+
+/** Podcast fields in form order. */
+const PODCAST_FIELDS: { key: string; label: string; hint: string; placeholder?: string }[] = [
+  { key: "album", label: "Show", hint: "album", placeholder: "Show name…" },
+  { key: "artist", label: "Host / author", hint: "artist", placeholder: "Host or author…" },
+  { key: "album_artist", label: "Show (sort)", hint: "album_artist", placeholder: "Show sort or publisher…" },
+  { key: "grouping", label: "Season name", hint: "grouping", placeholder: "Season or series…" },
+  { key: "disc", label: "Season", hint: "disc", placeholder: "Season #" },
+  { key: "date", label: "Year", hint: "date", placeholder: CURRENT_YEAR },
+  { key: "genre", label: "Genre", hint: "genre", placeholder: "Podcast" },
+  { key: "composer", label: "Composer", hint: "composer", placeholder: "Theme composer…" },
+];
+
+const PODCAST_WIDE: { key: string; label: string; hint: string; placeholder: string }[] = [
+  { key: "comment", label: "Show notes", hint: "comment", placeholder: "What this episode is about…" },
+  { key: "lyrics", label: "Transcript", hint: "lyrics", placeholder: "Paste the source text — it stays searchable in the file" },
+];
+
+/** Music fields in form order. */
+const MUSIC_FIELDS: { key: string; label: string; hint: string; placeholder?: string }[] = [
+  { key: "album", label: "Album", hint: "album", placeholder: "Album name…" },
+  { key: "artist", label: "Artist", hint: "artist", placeholder: "Track or band artist…" },
+  { key: "album_artist", label: "Album artist", hint: "album_artist", placeholder: "Album artist (if different)…" },
+  { key: "date", label: "Year", hint: "date", placeholder: CURRENT_YEAR },
+  { key: "genre", label: "Genre", hint: "genre", placeholder: "e.g. Electronic, Rock, Classical…" },
+  { key: "disc", label: "Disc #", hint: "disc", placeholder: "1" },
+  { key: "composer", label: "Composer", hint: "composer", placeholder: "Songwriter or composer…" },
+  { key: "grouping", label: "Grouping", hint: "grouping", placeholder: "Work, movement, or set…" },
+];
+
+const MUSIC_WIDE: { key: string; label: string; hint: string; placeholder: string }[] = [
+  { key: "lyrics", label: "Lyrics", hint: "lyrics", placeholder: "Song lyrics…" },
+  { key: "comment", label: "Comment", hint: "comment", placeholder: "Liner notes, description, or comment…" },
+];
+const KNOWN_TAGS: Record<string, true> = {
+  album: true,
+  artist: true,
+  album_artist: true,
+  grouping: true,
+  disc: true,
+  date: true,
+  genre: true,
+  composer: true,
+  comment: true,
+  lyrics: true,
+  title: true,
+  track: true,
+};
+
 
 interface Episode {
   id: string;
@@ -94,8 +123,40 @@ export function Tagger({
   settings: Settings;
   onChangeSettings: (patch: Partial<Settings>) => void;
 }) {
+  const [tagMode, setTagMode] = useState<TagMode>(settings.tagMode ?? "podcast");
   const [episodes, setEpisodes] = useState<Episode[]>([]);
-  const [shared, setShared] = useState<Record<string, string>>({ genre: "Podcast", date: CURRENT_YEAR });
+  const [shared, setShared] = useState<Record<string, string>>(() =>
+    (settings.tagMode ?? "podcast") === "podcast"
+      ? { genre: "Podcast", date: CURRENT_YEAR }
+      : { date: CURRENT_YEAR },
+  );
+
+  const activeFields = tagMode === "music" ? MUSIC_FIELDS : PODCAST_FIELDS;
+  const activeWide = tagMode === "music" ? MUSIC_WIDE : PODCAST_WIDE;
+
+  const switchTagMode = (mode: TagMode) => {
+    if (mode === tagMode) return;
+    setTagMode(mode);
+    onChangeSettings({ tagMode: mode });
+    if (mode === "podcast") {
+      if (!shared.genre) {
+        setShared((prev) => ({ ...prev, genre: "Podcast" }));
+      }
+    } else {
+      if (shared.genre === "Podcast") {
+        setShared((prev) => {
+          const next = { ...prev };
+          const origGenre = episodes[0]?.info?.tags?.genre;
+          if (origGenre && origGenre !== "Podcast") {
+            next.genre = origGenre;
+          } else {
+            delete next.genre;
+          }
+          return next;
+        });
+      }
+    }
+  };
   const [extras, setExtras] = useState<{ id: string; key: string; value: string }[]>([]);
   const [coverFile, setCoverFile] = useState<File | null>(null);
   const [coverDragging, setCoverDragging] = useState(false);
@@ -185,16 +246,17 @@ export function Tagger({
     );
     if (episodesRef.current.length !== 1 || sharedTouched.current) return;
     const next: Record<string, string> = {};
-    for (const f of [...SHARED_FIELDS, ...SHARED_WIDE]) {
+    for (const f of [...activeFields, ...activeWide]) {
       if (tags[f.key]) next[f.key] = tags[f.key];
     }
-    if (!next.genre) next.genre = "Podcast";
+    if (tagMode === "podcast") {
+      if (!next.genre) next.genre = "Podcast";
+    }
     if (!next.date) next.date = CURRENT_YEAR;
     setShared(next);
-    const known = new Set([...SHARED_FIELDS, ...SHARED_WIDE].map((f) => f.key).concat(["title", "track"]));
     setExtras(
       Object.entries(tags)
-        .filter(([key]) => !known.has(normalizeTagKey(key)))
+        .filter(([key]) => !KNOWN_TAGS[normalizeTagKey(key)])
         .map(([key, value]) => ({ id: nextId(), key, value })),
     );
   };
@@ -240,7 +302,7 @@ export function Tagger({
     // A second file turns the form into a season: the lone-file tags that
     // filled the shared fields are that file's, not the show's — clear them.
     if (episodes.length > 0 && !sharedTouched.current) {
-      setShared({ genre: "Podcast", date: CURRENT_YEAR });
+      setShared(tagMode === "podcast" ? { genre: "Podcast", date: CURRENT_YEAR } : { date: CURRENT_YEAR });
       setExtras([]);
     }
     setEpisodes((prev) => [...prev, ...added]);
@@ -478,6 +540,29 @@ export function Tagger({
       onDragLeave={onPageDragLeave}
       onDrop={onPageDrop}
     >
+      <div className="reader-tabs tagger-tabs" role="tablist" aria-label="Tag mode" data-active={tagMode}>
+        <div className="reader-tabs-thumb" aria-hidden />
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tagMode === "podcast"}
+          className={`tab-btn${tagMode === "podcast" ? " active" : ""}`}
+          onClick={() => switchTagMode("podcast")}
+          title="Podcast mode: show, host, season, episode, show notes, transcript"
+        >
+          Podcast
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tagMode === "music"}
+          className={`tab-btn${tagMode === "music" ? " active" : ""}`}
+          onClick={() => switchTagMode("music")}
+          title="Music mode: album, artist, album artist, track, disc, lyrics, genre"
+        >
+          Music
+        </button>
+      </div>
       <div className="field">
         <label className="field-label" htmlFor="tagger-files">
           Audio files
@@ -501,15 +586,17 @@ export function Tagger({
           </button>
           <span className="field-hint">
             {coverFile && episodes.length === 0
-              ? `Cover art "${coverFile.name}" selected. Add audio files to assemble the season.`
-              : "One file is a single episode; several make a season. Drop audio files or images here."}
+              ? `Cover art "${coverFile.name}" selected. Add audio files to assemble the ${tagMode === "music" ? "album" : "season"}.`
+              : tagMode === "music"
+                ? "One file is a track; several make an album. Drop audio files or images here."
+                : "One file is a single episode; several make a season. Drop audio files or images here."}
           </span>
         </div>
       </div>
 
       {episodes.length > 0 && (
         <section className="export-panel">
-          <h3 className="export-heading">Episodes</h3>
+          <h3 className="export-heading">{tagMode === "music" ? "Tracks" : "Episodes"}</h3>
           <ul className="tagger-list">
             {episodes.map((ep) => (
               <li key={ep.id} className="tagger-ep">
@@ -518,7 +605,7 @@ export function Tagger({
                   value={ep.track}
                   onChange={(e) => updateEpisode(ep.id, { track: e.target.value })}
                   placeholder="#"
-                  aria-label={`Episode number for ${ep.file.name}`}
+                  aria-label={`${tagMode === "music" ? "Track" : "Episode"} number for ${ep.file.name}`}
                   inputMode="numeric"
                 />
                 <input
@@ -526,7 +613,7 @@ export function Tagger({
                   value={ep.title}
                   onChange={(e) => updateEpisode(ep.id, { title: e.target.value })}
                   placeholder={stemOf(ep.file.name)}
-                  aria-label={`Episode title for ${ep.file.name}`}
+                  aria-label={`${tagMode === "music" ? "Track" : "Episode"} title for ${ep.file.name}`}
                 />
                 <span className="tagger-ep-meta">
                   {ep.error ? (
@@ -560,15 +647,23 @@ export function Tagger({
 
       {episodes.length > 0 && (
         <section className="export-panel">
-          <h3 className="export-heading">{single ? "Tags" : "Season / show tags"}</h3>
+          <h3 className="export-heading">
+            {single
+              ? tagMode === "music"
+                ? "Track tags"
+                : "Episode tags"
+              : tagMode === "music"
+                ? "Album / artist tags"
+                : "Season / show tags"}
+          </h3>
           <p className="tagger-note">
             <Tags size={13} aria-hidden />
             {single
               ? "Prefilled from the file — edit anything."
-              : "Filled fields apply to every episode; blank ones leave each file's own tag alone."}
+              : `Filled fields apply to every ${tagMode === "music" ? "track" : "episode"}; blank ones leave each file's own tag alone.`}
           </p>
           <div className="export-grid tagger-grid">
-            {SHARED_FIELDS.map((f) => (
+            {activeFields.map((f) => (
               <label key={f.key} className="export-field">
                 <span className="export-label">
                   {f.label} <span className="tagger-tagkey">{f.key}</span>
@@ -577,14 +672,14 @@ export function Tagger({
                   className="text-input"
                   value={shared[f.key] ?? ""}
                   onChange={(e) => setSharedField(f.key, e.target.value)}
-                  placeholder={f.key === "genre" ? "Podcast" : "—"}
+                  placeholder={f.placeholder ?? "—"}
                   aria-label={f.label}
                 />
               </label>
             ))}
           </div>
           <div className="tagger-wide">
-            {SHARED_WIDE.map((f) => (
+            {activeWide.map((f) => (
               <label key={f.key} className="export-field">
                 <span className="export-label">
                   {f.label} <span className="tagger-tagkey">{f.key}</span>
@@ -652,7 +747,7 @@ export function Tagger({
             onDragLeave={onCoverDragLeave}
             onDrop={onCoverDrop}
           >
-            <span className="export-label">Cover art (all episodes)</span>
+            <span className="export-label">Cover art (all {tagMode === "music" ? "tracks" : "episodes"})</span>
             <input
               ref={coverRef}
               type="file"
@@ -864,8 +959,9 @@ export function Tagger({
       {!episodes.length && (
         <p className="reader-note">
           <Tags size={14} aria-hidden />
-          Add one recording to label it, or a season's worth to tag them together and convert them to
-          one format. Audio is copied, never re-encoded, unless you ask.
+          {tagMode === "music"
+            ? "Add one track to label it, or an album's worth to tag them together and convert them to one format. Audio is copied, never re-encoded, unless you ask."
+            : "Add one recording to label it, or a season's worth to tag them together and convert them to one format. Audio is copied, never re-encoded, unless you ask."}
         </p>
       )}
     </section>

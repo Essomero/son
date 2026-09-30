@@ -31,6 +31,9 @@ export type ExportFormat = "wav" | "mp3" | "m4a" | "opus";
 /** Output containers the Tag page can write (server-side ffmpeg). */
 export type TagFormat = "mp3" | "m4a" | "opus" | "ogg" | "flac" | "wav";
 
+/** Whether the Tag page shows podcast or music metadata fields. */
+export type TagMode = "podcast" | "music";
+
 /** What the Tag page's ffprobe pass reports about an uploaded file. */
 export interface TagInfo {
   name: string;
@@ -57,10 +60,11 @@ export interface Settings {
   exportBitrate?: number;
   exportArtist?: string;
   exportAlbum?: string;
-  /** Tag-page prefs: the folder a season is written to, and its format/rate. */
+  /** Tag-page prefs: the folder a season/album is written to, format, bitrate, and mode. */
   tagDir?: string;
   tagFormat?: TagFormat | "";
   tagBitrate?: number;
+  tagMode?: TagMode;
 }
 
 // The roster is keyed by capability only — export prefs above are not models.

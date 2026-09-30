@@ -2165,7 +2165,8 @@ code {
   transition: transform 0.18s ease;
   pointer-events: none;
 }
-.reader-tabs[data-active="preview"] .reader-tabs-thumb {
+.reader-tabs[data-active="preview"] .reader-tabs-thumb,
+.reader-tabs[data-active="music"] .reader-tabs-thumb {
   transform: translateX(calc(100% + 4px)); /* thumb width + the gap */
 }
 
@@ -2377,6 +2378,10 @@ code {
 }
 
 /* --- Tag page (label + convert a season of episodes) ---------------------- */
+.tagger-tabs {
+  margin-bottom: 12px;
+}
+
 .tagger-add {
   display: flex;
   align-items: center;

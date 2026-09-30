@@ -6,10 +6,11 @@
  */
 
 import { useState } from "react";
-import { Check, Copy, MessageSquare, Mic, PanelLeftClose, PanelLeftOpen, Server, Settings2, Trash2, Volume2 } from "lucide-react";
+import { Check, Copy, MessageSquare, Mic, PanelLeftClose, PanelLeftOpen, Server, Settings2, Tags, Trash2, Volume2 } from "lucide-react";
 
 import type { SessionMeta } from "../lib/types";
 import { ModeSlider } from "./ModeSlider";
+import type { ReaderMode } from "./ModeSlider";
 import { SESSIONS_URL } from "../lib/son";
 import { copyText } from "../lib/clipboard";
 
@@ -71,9 +72,9 @@ export function SessionsPanel({
   /** Which destination is on screen. */
   view: "chat" | "reader";
   /** Which reader page, when the destination is the reader. */
-  readerMode: "read" | "speak";
-  /** Open the Read or the Speak page (both set the mode and leave the chat). */
-  onReaderMode: (mode: "read" | "speak") => void;
+  readerMode: ReaderMode;
+  /** Open the Read, Speak or Tag page (all set the mode and leave the chat). */
+  onReaderMode: (mode: ReaderMode) => void;
   onResume: (s: SessionMeta) => void;
   onRename: (id: string, name: string) => void;
   onDelete: (id: string) => void;
@@ -107,6 +108,7 @@ export function SessionsPanel({
   const onChat = view === "chat";
   const onRead = view === "reader" && readerMode === "read";
   const onSpeak = view === "reader" && readerMode === "speak";
+  const onTag = view === "reader" && readerMode === "tag";
 
   return (
     <aside className={`sessions-panel${open ? "" : " closed"}`} aria-label="Sessions">
@@ -127,8 +129,8 @@ export function SessionsPanel({
         </a>
 
         {/* Chat is always there — it is the way home, and the way to a new one —
-            with Read | Speak at the foot, above settings. The collapsed strip
-            mirrors both. */}
+            with Read | Speak | Tag at the foot, above settings. The collapsed
+            strip mirrors both. */}
         <div className="sessions-nav">
           <button
             type="button"
@@ -226,7 +228,8 @@ export function SessionsPanel({
         )}
 
         {/* The foot of the rail: the destinations you switch between (Read |
-            Speak) above settings. The whole block pins, like the head does. */}
+            Speak | Tag) above settings. The whole block pins, like the head
+            does. */}
         <div className="sessions-foot">
           <ModeSlider mode={readerMode} onPick={onReaderMode} />
           <button
@@ -296,6 +299,16 @@ export function SessionsPanel({
             aria-current={onSpeak ? "page" : undefined}
           >
             <Mic size={16} aria-hidden />
+          </button>
+          <button
+            type="button"
+            className={`sessions-strip-btn${onTag ? " active" : ""}`}
+            onClick={() => onReaderMode("tag")}
+            title="Tag: label audio files and convert them into a podcast season"
+            aria-label="Tag: label audio files and convert them into a podcast season"
+            aria-current={onTag ? "page" : undefined}
+          >
+            <Tags size={16} aria-hidden />
           </button>
         </div>
         <button

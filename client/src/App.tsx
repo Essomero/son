@@ -18,6 +18,8 @@ import { StatusModal } from "./components/StatusModal";
 import { PersonaModal } from "./components/PersonaModal";
 import { Reader } from "./components/Reader";
 import { Dictate } from "./components/Dictate";
+import { Tagger } from "./components/Tagger";
+import type { ReaderMode } from "./components/ModeSlider";
 import type { Role } from "./lib/types";
 import { FALLBACK_MODELS, resolveChoice } from "./lib/settings";
 import { sessionIdFromPath } from "./lib/chatRoute";
@@ -31,8 +33,9 @@ export default function App() {
   const [personaOpen, setPersonaOpen] = useState(false);
   const [panelOpen, setPanelOpen] = useState(() => localStorage.getItem(PANEL_KEY) !== "0");
   const [view, setView] = useState<"chat" | "reader">("chat");
-  /** Which side of the reader page: text → speech, or speech → text. */
-  const [readerMode, setReaderMode] = useState<"read" | "speak">("read");
+  /** Which reader page: text → speech (read), speech → text (speak), or the
+   *  audio labeller/converter (tag). */
+  const [readerMode, setReaderMode] = useState<ReaderMode>("read");
 
   useEffect(() => {
     localStorage.setItem(PANEL_KEY, panelOpen ? "1" : "0");
@@ -169,6 +172,11 @@ export default function App() {
               {view === "reader" ? (
                 readerMode === "speak" ? (
                   <Dictate />
+                ) : readerMode === "tag" ? (
+                  <Tagger
+                    settings={s.settings}
+                    onChangeSettings={(patch) => s.updateSettings({ ...s.settings, ...patch })}
+                  />
                 ) : (
                   <Reader
                     models={models}

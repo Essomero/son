@@ -80,6 +80,12 @@ const nextId = () => `tag-${++uidCounter}`;
 function stemOf(fileName: string): string {
   return fileName.replace(/\.[^.]+$/, "");
 }
+function isImageFile(file: File): boolean {
+  return (
+    file.type.startsWith("image/") ||
+    /\.(jpe?g|png|webp|avif|gif|bmp|tiff|heic)$/i.test(file.name)
+  );
+}
 
 export function Tagger({
   settings,
@@ -92,6 +98,21 @@ export function Tagger({
   const [shared, setShared] = useState<Record<string, string>>({ genre: "Podcast", date: CURRENT_YEAR });
   const [extras, setExtras] = useState<{ id: string; key: string; value: string }[]>([]);
   const [coverFile, setCoverFile] = useState<File | null>(null);
+  const [coverDragging, setCoverDragging] = useState(false);
+  const [pageDragging, setPageDragging] = useState(false);
+  const coverDragCount = useRef(0);
+  const pageDragCount = useRef(0);
+  const [coverPreview, setCoverPreview] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!coverFile) {
+      setCoverPreview(null);
+      return;
+    }
+    const url = URL.createObjectURL(coverFile);
+    setCoverPreview(url);
+    return () => URL.revokeObjectURL(url);
+  }, [coverFile]);
 
   const [dir, setDir] = useState(settings.tagDir ?? settings.exportDir ?? "");
   const [format, setFormat] = useState<TagFormat | "">(settings.tagFormat ?? "");
@@ -205,7 +226,7 @@ export function Tagger({
     episodesRef.current = episodes;
   }, [episodes]);
 
-  const addFiles = (list: FileList | null) => {
+  const addFiles = (list: FileList | File[] | null | undefined) => {
     const files = Array.from(list ?? []);
     if (!files.length) return;
     const added: Episode[] = files.map((file) => ({
@@ -228,6 +249,93 @@ export function Tagger({
     void (async () => {
       for (const ep of added) await inspect(ep);
     })();
+  };
+
+  const onCoverDragEnter = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!coverable) return;
+    coverDragCount.current++;
+    if (coverDragCount.current === 1) {
+      setCoverDragging(true);
+    }
+  };
+
+  const onCoverDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!coverable) {
+      e.dataTransfer.dropEffect = "none";
+      return;
+    }
+    e.dataTransfer.dropEffect = "copy";
+  };
+
+  const onCoverDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    coverDragCount.current = Math.max(0, coverDragCount.current - 1);
+    if (coverDragCount.current === 0) {
+      setCoverDragging(false);
+    }
+  };
+
+  const onCoverDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    coverDragCount.current = 0;
+    setCoverDragging(false);
+    if (!coverable) return;
+    const file = Array.from(e.dataTransfer.files).find(isImageFile);
+    if (file) setCoverFile(file);
+  };
+
+  const onPageDragEnter = (e: React.DragEvent) => {
+    e.preventDefault();
+    if (!e.dataTransfer.types.includes("Files")) return;
+    pageDragCount.current++;
+    if (pageDragCount.current === 1) {
+      setPageDragging(true);
+    }
+  };
+
+  const onPageDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    if (e.dataTransfer.types.includes("Files")) {
+      e.dataTransfer.dropEffect = "copy";
+    }
+  };
+
+  const onPageDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    pageDragCount.current = Math.max(0, pageDragCount.current - 1);
+    if (pageDragCount.current === 0) {
+      setPageDragging(false);
+    }
+  };
+
+  const onPageDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    pageDragCount.current = 0;
+    setPageDragging(false);
+    const files = Array.from(e.dataTransfer.files);
+    if (!files.length) return;
+
+    const audioFiles = files.filter(
+      (f) =>
+        f.type.startsWith("audio/") ||
+        /\.(mp3|m4a|wav|flac|ogg|opus|aac|m4b|aiff|wma)$/i.test(f.name),
+    );
+    const imageFiles = files.filter(isImageFile);
+    const nonImages = files.filter((f) => !isImageFile(f));
+    const effectiveAudio = audioFiles.length > 0 ? audioFiles : nonImages;
+
+    if (effectiveAudio.length > 0) {
+      addFiles(effectiveAudio);
+    }
+    if (imageFiles.length > 0 && coverable) {
+      setCoverFile(imageFiles[0]);
+    }
   };
 
   const updateEpisode = (id: string, patch: Partial<Episode>) =>
@@ -363,7 +471,13 @@ export function Tagger({
   const canSave = episodes.length > 0 && !saving && episodes.every((e) => e.info || e.error);
 
   return (
-    <section className="reader tagger">
+    <section
+      className={`reader tagger${pageDragging ? " dragging" : ""}`}
+      onDragEnter={onPageDragEnter}
+      onDragOver={onPageDragOver}
+      onDragLeave={onPageDragLeave}
+      onDrop={onPageDrop}
+    >
       <div className="field">
         <label className="field-label" htmlFor="tagger-files">
           Audio files
@@ -380,14 +494,15 @@ export function Tagger({
             e.target.value = ""; // allow re-picking the same file
           }}
         />
-        <div className="tagger-add">
+        <div className={`tagger-add${pageDragging ? " dragging" : ""}`}>
           <button type="button" className="btn" onClick={() => fileRef.current?.click()}>
             <Plus size={15} aria-hidden />
             Add audio files
           </button>
           <span className="field-hint">
-            One file is a single episode; several make a season. Files are read on this machine by
-            the server — nothing leaves it.
+            {coverFile && episodes.length === 0
+              ? `Cover art "${coverFile.name}" selected. Add audio files to assemble the season.`
+              : "One file is a single episode; several make a season. Drop audio files or images here."}
           </span>
         </div>
       </div>
@@ -530,7 +645,13 @@ export function Tagger({
             </div>
           </details>
 
-          <label className="export-field export-cover tagger-cover">
+          <div
+            className={`export-field export-cover tagger-cover${coverDragging ? " dragging" : ""}`}
+            onDragEnter={onCoverDragEnter}
+            onDragOver={onCoverDragOver}
+            onDragLeave={onCoverDragLeave}
+            onDrop={onCoverDrop}
+          >
             <span className="export-label">Cover art (all episodes)</span>
             <input
               ref={coverRef}
@@ -539,19 +660,33 @@ export function Tagger({
               hidden
               onChange={(e) => {
                 setCoverFile(e.target.files?.[0] ?? null);
-                e.target.value = "";
+                e.target.value = ""; // allow re-picking the same file
               }}
             />
             <div className="export-cover-row">
               <button
                 type="button"
-                className="btn ghost export-cover-btn"
+                className={`btn ghost export-cover-btn${coverDragging ? " dragging" : ""}`}
                 onClick={() => coverRef.current?.click()}
                 disabled={!coverable}
-                title={coverable ? "Pick an image from this computer" : "Cover art fits MP3 and M4A only"}
+                title={
+                  coverable
+                    ? "Pick or drop an image from this computer"
+                    : "Cover art fits MP3 and M4A only"
+                }
               >
-                <ImagePlus size={14} aria-hidden />
-                <span className="export-cover-name">{coverFile ? coverFile.name : "Choose image…"}</span>
+                {coverPreview ? (
+                  <img src={coverPreview} alt="" className="export-cover-thumb" />
+                ) : (
+                  <ImagePlus size={14} aria-hidden />
+                )}
+                <span className="export-cover-name">
+                  {coverDragging
+                    ? "Drop image here"
+                    : coverFile
+                      ? coverFile.name
+                      : "Choose or drop image…"}
+                </span>
               </button>
               {coverFile && (
                 <button
@@ -567,10 +702,10 @@ export function Tagger({
             </div>
             <span className="field-hint">
               {coverable
-                ? "Embedded in MP3 and M4A. Left empty, each file keeps the art it already has."
+                ? "Embedded in MP3 and M4A. Drop an image or click to browse. Left empty, each file keeps the art it already has."
                 : "Cover art fits MP3 and M4A — choose one of those formats to embed it."}
             </span>
-          </label>
+          </div>
         </section>
       )}
 

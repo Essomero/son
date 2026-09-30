@@ -2263,6 +2263,13 @@ code {
   align-items: center;
   gap: 6px;
   max-width: 100%;
+  transition: border-color 0.15s ease, background 0.15s ease, color 0.15s ease;
+}
+
+.export-cover-btn.dragging {
+  border-color: var(--amber);
+  background: rgba(239, 159, 67, 0.1);
+  color: var(--amber);
 }
 
 .export-cover-btn .export-cover-name {
@@ -2275,6 +2282,14 @@ code {
 .export-cover-btn[disabled] {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+.export-cover-thumb {
+  width: 18px;
+  height: 18px;
+  border-radius: 3px;
+  object-fit: cover;
+  flex: none;
 }
 
 /* The Export panel's small option dropdowns reuse the picker chrome but
@@ -2367,6 +2382,17 @@ code {
   align-items: center;
   gap: 12px;
   flex-wrap: wrap;
+  padding: 10px 14px;
+  background: var(--panel);
+  border: 1px dashed var(--line);
+  border-radius: var(--r-md);
+  transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+
+.tagger-add.dragging,
+.tagger.dragging .tagger-add {
+  border-color: var(--amber);
+  background: rgba(239, 159, 67, 0.06);
 }
 
 .tagger-add .field-hint {
@@ -2478,6 +2504,21 @@ code {
 
 .tagger-cover {
   margin-top: 14px;
+  padding: 8px 10px;
+  border: 1px dashed transparent;
+  border-radius: var(--r-md);
+  transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+
+.tagger-cover.dragging {
+  border-color: var(--amber);
+  background: rgba(239, 159, 67, 0.05);
+}
+
+.tagger-cover.dragging .export-cover-btn {
+  border-color: var(--amber);
+  background: rgba(239, 159, 67, 0.1);
+  color: var(--amber);
 }
 
 .tagger-reencode {

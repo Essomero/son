@@ -2251,6 +2251,30 @@ code {
 .export-field .field-hint {
   margin: 0;
 }
+.export-folder-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.export-folder-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.export-folder-paste {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+
+.export-label-hint {
+  font-weight: 400;
+  color: var(--faint);
+  font-size: 11.5px;
+}
+
 
 .export-cover-row {
   display: flex;
@@ -2405,16 +2429,61 @@ code {
   flex: 1;
   min-width: 220px;
 }
+/* Folder loader at top of Tagger */
+.tagger-folder-loader {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.tagger-folder-input {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+}
+
+.tagger-folder-btn {
+  flex: none;
+  white-space: nowrap;
+}
+
 
 /* Episodes: number, title, facts, remove — the number and title are the
-   only per-file fields; everything above is the season's. */
+   only per-file fields; everything above is the season's. A loaded folder can
+   be 80 files deep, so the list is a fixed-height scroller and its rows are a
+   fixed height: the windowing math in Tagger.tsx counts in TAG_ROW_H units, so
+   the two must stay in step. No `gap` — the row's own height is the spacing. */
 .tagger-list {
   list-style: none;
   margin: 0;
-  padding: 0;
+  padding: 0 6px 0 0;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+}
+
+.tagger-list::-webkit-scrollbar {
+  width: 6px;
+}
+
+.tagger-list::-webkit-scrollbar-thumb {
+  background: var(--line);
+  border-radius: 3px;
+}
+
+.tagger-count {
+  font: 12px var(--font-mono);
+  color: var(--faint);
+}
+
+/* Stands in for the rows outside the window so the scrollbar spans them all.
+   Must not shrink, or the scroll geometry drifts. */
+.tagger-spacer {
+  flex: none;
+  pointer-events: none;
 }
 
 .tagger-ep {
@@ -2422,6 +2491,195 @@ code {
   grid-template-columns: 64px minmax(0, 1fr) minmax(0, 1.2fr) 28px;
   align-items: center;
   gap: 8px;
+  height: 48px; /* TAG_ROW_H — the windowing math depends on it */
+  box-sizing: border-box;
+  flex: none;
+  cursor: pointer;
+  border-radius: var(--r-sm);
+  transition: background 0.15s ease;
+}
+
+.tagger-ep.selected {
+  background: rgba(239, 159, 67, 0.08);
+}
+
+/* --- Song snapshots slider above Tag UI (matches user sketch) ------------- */
+.tagger-slider-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  margin-bottom: 16px;
+  position: relative;
+}
+
+.tagger-slider-arrow {
+  flex: none;
+  width: 32px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--r-sm);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  color: var(--ink);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.tagger-slider-arrow:hover:not(:disabled) {
+  border-color: var(--amber);
+  color: var(--amber);
+  background: var(--raised);
+}
+
+.tagger-slider-arrow:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+.tagger-slider-track {
+  display: flex;
+  align-items: stretch;
+  gap: 10px;
+  flex: 1;
+  overflow-x: auto;
+  padding: 6px 4px;
+  scroll-behavior: smooth;
+  scrollbar-width: thin;
+}
+
+.tagger-slider-track::-webkit-scrollbar {
+  height: 4px;
+}
+.tagger-slider-track::-webkit-scrollbar-thumb {
+  background: var(--line);
+  border-radius: 2px;
+}
+
+.tagger-snapshot {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  width: 115px;
+  min-width: 115px;
+  height: 96px;
+  padding: 8px 10px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  cursor: pointer;
+  box-sizing: border-box;
+  text-align: left;
+  transition: all 0.15s cubic-bezier(0.2, 0, 0, 1);
+  user-select: none;
+}
+
+.tagger-snapshot:hover {
+  border-color: var(--muted);
+  background: var(--raised);
+}
+
+/* Active snapshot has the outer outline / ring matching user's sketch! */
+.tagger-snapshot.active {
+  border-color: var(--amber);
+  background: var(--raised);
+  box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--amber);
+}
+
+.tagger-snapshot-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+}
+
+.tagger-snapshot-badge {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--amber);
+  background: rgba(239, 159, 67, 0.12);
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+
+.tagger-snapshot-icon {
+  color: var(--muted);
+}
+
+.tagger-snapshot-del {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--faint);
+  border-radius: 3px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.tagger-snapshot-del:hover {
+  color: var(--danger);
+  background: rgba(224, 76, 76, 0.15);
+}
+
+.tagger-snapshot-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  margin-top: 4px;
+}
+
+.tagger-snapshot-title {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: block;
+}
+
+.tagger-snapshot-sub {
+  font-size: 10.5px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: block;
+}
+
+.tagger-tags-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+
+.tagger-tags-head .export-heading {
+  margin: 0;
+}
+
+.tagger-copy-prev {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.tagger-copy-prev.copied {
+  color: var(--green, #4ade80);
+  border-color: var(--green, #4ade80);
 }
 
 .tagger-ep-num {

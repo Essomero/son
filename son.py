@@ -1115,7 +1115,7 @@ def container_format(format_name: str | None, codec: str | None) -> str | None:
     return None
 
 
-def probe_audio(path: Path) -> dict:
+def probe_audio(path: Path, original_name: str | None = None) -> dict:
     """ffprobe one audio file → container, stream facts and its current tags.
     Raises TagError when the file has no readable audio stream."""
     proc = subprocess.run(
@@ -1152,7 +1152,7 @@ def probe_audio(path: Path) -> dict:
             return 0
 
     return {
-        "name": path.name,
+        "name": original_name or path.name,
         "size": path.stat().st_size,
         "format": container_format(fmt.get("format_name"), audio.get("codec_name")),
         "container": str(fmt.get("format_name") or ""),
@@ -2598,6 +2598,60 @@ if __name__ == "__main__":
             raise HTTPException(status_code=400, detail=str(e))
         return src
 
+    @app.post("/tag/load", include_in_schema=False)
+    def tag_load(payload: dict = Body(...)) -> dict:
+        """Load audio files from a local filesystem folder or file path.
+        When loading from a folder, returns the files and folder path so
+        the client can set the save destination to that folder."""
+        require_binary("ffprobe")
+        raw_path = str(payload.get("path") or "").strip()
+        if not raw_path:
+            raise HTTPException(status_code=400, detail="Path is empty.")
+        p = Path(raw_path).expanduser().resolve()
+        if not p.exists():
+            raise HTTPException(status_code=404, detail=f"Path not found: {raw_path}")
+
+        files: list[Path] = []
+        if p.is_file():
+            folder = str(p.parent)
+            files.append(p)
+        elif p.is_dir():
+            folder = str(p)
+            for child in sorted(p.iterdir()):
+                if child.is_file() and not child.name.startswith("."):
+                    ext = child.suffix.lstrip(".").lower()
+                    if ext in TAG_FORMATS or ext in ("mp3", "m4a", "wav", "flac", "ogg", "opus", "aac"):
+                        files.append(child)
+        else:
+            raise HTTPException(status_code=400, detail="Path must be a file or directory.")
+
+        if not files:
+            raise HTTPException(status_code=404, detail="No supported audio files found at that path.")
+
+        items = []
+        for f in files:
+            try:
+                info = probe_audio(f, original_name=f.name)
+                items.append({
+                    "name": f.name,
+                    "path": str(f),
+                    "dir": str(f.parent),
+                    "size": f.stat().st_size,
+                    "info": info,
+                    "error": None,
+                })
+            except Exception as e:
+                items.append({
+                    "name": f.name,
+                    "path": str(f),
+                    "dir": str(f.parent),
+                    "size": f.stat().st_size,
+                    "info": None,
+                    "error": str(e),
+                })
+
+        return {"folder": folder, "files": items}
+
     @app.post("/tag/inspect", include_in_schema=False)
     def tag_inspect(file: UploadFile = File(...)) -> dict:
         """An uploaded audio file → its container, stream facts and all its
@@ -2613,7 +2667,7 @@ if __name__ == "__main__":
                 raise HTTPException(status_code=400, detail=str(e))
 
     @app.post("/tag/save", include_in_schema=False)
-    def tag_save(file: UploadFile = File(...), payload: str = Form("{}")) -> dict:
+    def tag_save(file: UploadFile = File(None), payload: str = Form("{}")) -> dict:
         """Write a labelled (and optionally converted) copy of an uploaded
         audio file into the folder of the user's choice. The multipart payload
         is JSON: {format, bitrate, sample_rate, channels, reencode, dir,
@@ -2654,12 +2708,17 @@ if __name__ == "__main__":
         channels = pick_int("channels", TAG_CHANNELS)
         reencode = bool(opts.get("reencode"))
 
+        local_path = str(opts.get("local_path") or "").strip()
         with tempfile.TemporaryDirectory() as tmp:
-            src = store_upload(file, tmp)
-            try:
-                info = probe_audio(src)
-            except TagError as e:
-                raise HTTPException(status_code=400, detail=str(e))
+            if local_path and Path(local_path).is_file():
+                src = Path(local_path).resolve()
+                info = probe_audio(src, original_name=src.name)
+            elif file:
+                src = store_upload(file, tmp)
+                original_name = Path(file.filename or "").name
+                info = probe_audio(src, original_name=original_name)
+            else:
+                raise HTTPException(status_code=400, detail="No audio file or local path provided.")
             # Copy the stream only when the container is unchanged and the user
             # didn't ask to re-encode; anything else is a fresh encode.
             copy_audio = (not reencode) and info["format"] == fmt
@@ -2684,9 +2743,25 @@ if __name__ == "__main__":
                 keep_cover = False  # opus/ogg/flac/wav carry no picture channel here
 
             stem = sanitize_stem(opts.get("filename") or info["name"])
-            out_dir = Path(opts.get("dir") or detect_download_dir()).expanduser()
+            raw_dir = str(opts.get("dir") or "").strip()
+            if raw_dir:
+                p_dir = Path(raw_dir).expanduser()
+                if p_dir.is_file() or (not p_dir.is_dir() and p_dir.suffix.lower() in [f".{f}" for f in TAG_FORMATS]):
+                    out_dir = p_dir.parent
+                else:
+                    out_dir = p_dir
+            elif local_path and Path(local_path).is_file():
+                out_dir = Path(local_path).resolve().parent
+            else:
+                out_dir = Path(detect_download_dir()).expanduser()
+
             out_dir.mkdir(parents=True, exist_ok=True)
-            dst = unique_path(out_dir / f"{stem}.{fmt}")
+            overwrite = bool(opts.get("overwrite", True))
+            target = out_dir / f"{stem}.{fmt}"
+            if overwrite:
+                dst = Path(tmp) / f"output_tagged.{fmt}"
+            else:
+                dst = unique_path(target)
             args = build_tag_args(
                 src,
                 dst,
@@ -2709,9 +2784,15 @@ if __name__ == "__main__":
                 logger.warning(f"/tag/save ffmpeg failed: {proc.stderr[-500:]}")
                 raise HTTPException(status_code=500, detail=f"ffmpeg failed: {proc.stderr.strip()[-300:]}")
 
+            if overwrite:
+                shutil.move(str(dst), str(target))
+                final_dst = target
+            else:
+                final_dst = dst
+
         return {
-            "path": str(dst),
-            "size": dst.stat().st_size,
+            "path": str(final_dst),
+            "size": final_dst.stat().st_size,
             "format": fmt,
             "copied": copy_audio,
             "command": "ffmpeg " + " ".join(shell_quote(a) for a in args),

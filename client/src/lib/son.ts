@@ -15,6 +15,8 @@ export const SESSIONS_URL = BOT_BASE + "/sessions";
 export const SPEAK_URL = BOT_BASE + "/speak";
 export const EXPORT_URL = BOT_BASE + "/export";
 export const EXPORT_DEFAULTS_URL = BOT_BASE + "/export/defaults";
+export const TAG_INSPECT_URL = BOT_BASE + "/tag/inspect";
+export const TAG_SAVE_URL = BOT_BASE + "/tag/save";
 export const CLEANUP_URL = BOT_BASE + "/cleanup";
 export const REWRITE_URL = BOT_BASE + "/rewrite";
 // Root-absolute like the others: the chat route /s/<id> puts the page at a

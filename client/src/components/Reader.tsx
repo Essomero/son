@@ -21,34 +21,13 @@ import { EXPORT_DEFAULTS_URL, EXPORT_URL, REWRITE_URL, SPEAK_URL } from "../lib/
 import { cleanText } from "../lib/clean";
 import { copyText, readClipboard } from "../lib/clipboard";
 import { AUDIO_PROMPT } from "../lib/audioPrompt";
+import { fmtSize, fmtTime, parseError, sanitizeStem, shq } from "../lib/audioFile";
 import { OptionPicker } from "./OptionPicker";
 import { Picker } from "./Picker";
 
 const MAX_CHARS = 8000; // mirrors _SPEAK_MAX_CHARS in son.py
 const SPEEDS = [0.75, 1, 1.5, 2];
 const EXPORT_BITRATES = [64, 96, 128, 192, 256]; // kbps — mirrors son.py
-
-/** Shell-quote for the displayed ffmpeg command — always quotes, even
- *  without spaces: the command is copied into a shell, and an unquoted
- *  stray space or ':' is a silent break. */
-function shq(s: string): string {
-  return '"' + s.replace(/\\/g, "\\\\").replace(/"/g, '\\"') + '"';
-}
-
-/** Same sanitize rule as son.py's sanitize_stem: ffmpeg reads a ':' in the
- *  output path as a protocol prefix, shell metacharacters break a copied
- *  command. ':' becomes '—', anything else that isn't letters/digits/space
- *  ._- folds to '-'. */
-function sanitizeStem(name: string): string {
-  const stem = name.replace(/\.[^.]+$/, ""); // drop a trailing extension
-  return (
-    stem
-      .replace(/[^A-Za-z0-9 ._:_-]+/g, "-")
-      .replace(/\s+/g, " ")
-      .replace(/:/g, "—")
-      .replace(/^[. ]+|[. ]+$/g, "") || "reading"
-  );
-}
 
 /** The command the server will run for this export (template: the WAV input
  *  is synthesized on the fly). Mirrors build_ffmpeg_args in son.py — keep
@@ -85,20 +64,6 @@ function buildFfmpegPreview(args: {
   }
   parts.push(out);
   return parts.map(shq).join(" ");
-}
-
-/** "26.4 MB" */
-function fmtSize(bytes: number): string {
-  if (bytes >= 1 << 20) return `${(bytes / (1 << 20)).toFixed(1)} MB`;
-  if (bytes >= 1 << 10) return `${(bytes / (1 << 10)).toFixed(1)} KB`;
-  return `${bytes} B`;
-}
-
-function fmtTime(sec: number): string {
-  if (!Number.isFinite(sec) || sec < 0) sec = 0;
-  const m = Math.floor(sec / 60);
-  const s = Math.floor(sec % 60);
-  return `${m}:${s.toString().padStart(2, "0")}`;
 }
 
 /**
@@ -899,17 +864,4 @@ export function Reader({
       />
     </section>
   );
-}
-
-/** FastAPI's HTTPException detail is JSON {"detail": ...}; the error text is
- *  usually in there. Strip JSON markers for a human-readable message. */
-function parseError(body: string): string | null {
-  if (!body) return null;
-  try {
-    const parsed = JSON.parse(body) as { detail?: unknown };
-    if (typeof parsed.detail === "string") return parsed.detail;
-  } catch {
-    /* not JSON — raw text */
-  }
-  return body.slice(0, 300);
 }

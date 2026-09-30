@@ -28,6 +28,25 @@ export interface Choice {
 /** Output formats for the read page's Export panel (server-side ffmpeg). */
 export type ExportFormat = "wav" | "mp3" | "m4a" | "opus";
 
+/** Output containers the Tag page can write (server-side ffmpeg). */
+export type TagFormat = "mp3" | "m4a" | "opus" | "ogg" | "flac" | "wav";
+
+/** What the Tag page's ffprobe pass reports about an uploaded file. */
+export interface TagInfo {
+  name: string;
+  size: number;
+  /** Container as one of TagFormat, or null when ffmpeg can't write it back. */
+  format: TagFormat | null;
+  container: string;
+  codec: string;
+  duration: number;
+  bitrate: number;
+  sample_rate: number;
+  channels: number;
+  cover: boolean;
+  tags: Record<string, string>;
+}
+
 export interface Settings {
   llm?: Choice;
   stt?: Choice;
@@ -38,6 +57,10 @@ export interface Settings {
   exportBitrate?: number;
   exportArtist?: string;
   exportAlbum?: string;
+  /** Tag-page prefs: the folder a season is written to, and its format/rate. */
+  tagDir?: string;
+  tagFormat?: TagFormat | "";
+  tagBitrate?: number;
 }
 
 // The roster is keyed by capability only — export prefs above are not models.

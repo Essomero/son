@@ -969,16 +969,21 @@ def detect_download_dir() -> str:
 
 
 def sanitize_stem(name: str) -> str:
-    """A file name that survives ffmpeg and the filesystem. ffmpeg treats a
-    ':' in the output path as a protocol prefix (e.g. "a:b.mp3" is protocol
-    'a'), and shell metacharacters make a copied command silently fail. Keep
-    letters, digits, spaces, dot, dash, underscore; a ':' becomes an em dash
-    '—', everything else folds to '-', then tidy the edges so the result
-    isn't empty, '.' or '..'."""
-    stem = Path(name or "").stem
-    # ':' survives this pass on purpose — swapped for the em dash just after.
-    stem = re.sub(r"[^A-Za-z0-9 ._:_-]+", "-", stem)
-    stem = re.sub(r"\s+", " ", stem).replace(":", "—").strip(" .")
+    """A file name that survives ffmpeg and the filesystem *without mangling the
+    title it came from*: a character goes only when it breaks something. ffmpeg
+    treats a ':' in the output path as a protocol prefix ("a:b.mp3" is protocol
+    'a'), so it becomes an em dash; path separators, quotes and globs, control
+    characters, and the four that expand inside a double-quoted shell word
+    ('$', backtick, '!', '"') fold to '-'. Brackets, commas, ampersands and
+    non-ASCII letters are legal in a name and literal inside the quotes the
+    copied command carries, so they survive. The result is then trimmed so a
+    replaced edge character doesn't leave a dangling '-'."""
+    # Separators fold rather than truncate: "AC/DC" is a title, not a path, and
+    # Path("AC/DC").stem would quietly keep only "DC".
+    raw = (name or "").replace("\\", "-").replace("/", "-")
+    stem = Path(raw).stem
+    stem = re.sub(r"[*?\"<>|!$`\x00-\x1f]+", "-", stem.replace(":", "—"))
+    stem = re.sub(r"\s+", " ", stem).strip(" .-")
     return stem or "reading"
 
 
@@ -1263,17 +1268,64 @@ def write_upload(file, dst: Path) -> int:
     return size
 
 
-COVER_MAX_CHARS = 25_000_000  # ~18 MB decoded — a cover, not a wallpaper
+COVER_MAX_BYTES = 18 * 1024 * 1024  # a cover, not a wallpaper
+COVER_MAX_CHARS = ((COVER_MAX_BYTES + 2) // 3) * 4  # the same image, as base64
+
+
+def read_cover_upload(upload) -> tuple[bytes, str]:
+    """A cover image sent as its own multipart part → (bytes, suffix). A file
+    part is spooled by the parser, so this cap is the only one that applies —
+    a form field could never have carried a photo of a sleeve, since Starlette
+    refuses any field past 1 MB before the route ever runs."""
+    blob = upload.file.read(COVER_MAX_BYTES + 1)
+    if not blob:
+        raise TagError("Cover image is empty.")
+    if len(blob) > COVER_MAX_BYTES:
+        raise TagError(f"Cover image is too large (max ~{COVER_MAX_BYTES // (1 << 20)} MB).")
+    return blob, (Path(upload.filename or "").suffix.lower() or ".jpg")
+
+
+COVER_SAFE_SUFFIXES = frozenset({".jpg", ".jpeg", ".png"})
+
+
+def normalize_cover(src: Path, suffix: str, tmp: Path) -> tuple[Path, str]:
+    """An image the target container can carry → (path, suffix). ffmpeg decodes
+    webp, avif and tiff happily, but neither the mp3 nor the m4a picture channel
+    takes a *copied* stream of those: the muxer fails with "Could not find tag
+    for codec webp" (m4a) or "Error muxing a packet" (mp3). So anything that
+    isn't already JPEG or PNG is encoded once here, to JPEG — the one format
+    every container and player agrees on."""
+    if suffix in COVER_SAFE_SUFFIXES:
+        return src, suffix
+    dst = tmp / "cover.jpg"
+    args = [
+        "-y", "-i", str(src), "-frames:v", "1",
+        "-c:v", "mjpeg", "-q:v", "3", "-pix_fmt", "yuvj420p",
+        str(dst),
+    ]
+    try:
+        proc = subprocess.run(["ffmpeg", *args], capture_output=True, text=True, timeout=120)
+    except subprocess.TimeoutExpired:
+        raise TagError("That cover image took too long to convert.")
+    except FileNotFoundError:
+        raise TagError("ffmpeg is not installed on the server — cover art can't be converted.")
+    if proc.returncode != 0 or not dst.is_file():
+        logger.warning(f"cover conversion failed ({suffix}): {proc.stderr[-300:]}")
+        raise TagError(
+            f"A {suffix.lstrip('.').upper()} image can't be embedded as cover art — use a JPEG or PNG."
+        )
+    return dst, ".jpg"
 
 
 def decode_cover_b64(data, name) -> tuple[bytes, str]:
-    """A client-uploaded cover image (base64 payload + original file name) →
-    (bytes, suffix). Shared by /export and /tag/save: neither can learn a picked
-    file's path, so the image travels as data."""
+    """A cover image sent as base64 inside a JSON body → (bytes, suffix). Used
+    by /export, whose request is JSON: the browser never reveals a picked
+    file's path, so the image travels as data. /tag/save takes the bytes as a
+    file part instead (see read_cover_upload)."""
     if not isinstance(data, str) or not data.strip():
         raise TagError("Cover image is empty.")
     if len(data) > COVER_MAX_CHARS:
-        raise TagError("Cover image is too large (max ~18 MB).")
+        raise TagError(f"Cover image is too large (max ~{COVER_MAX_BYTES // (1 << 20)} MB).")
     try:
         blob = base64.b64decode(data, validate=True)
     except (ValueError, binascii.Error):
@@ -2553,6 +2605,13 @@ if __name__ == "__main__":
                 cover_file = Path(tmp) / f"cover{cover_ext}"
                 cover_file.write_bytes(cover_bytes)
                 cover_arg = str(cover_file)
+            if cover_arg and fmt in TAG_COVER_FORMATS:
+                try:
+                    cover_arg = str(
+                        normalize_cover(Path(cover_arg), Path(cover_arg).suffix.lower(), Path(tmp))[0]
+                    )
+                except TagError as e:
+                    raise HTTPException(status_code=400, detail=str(e))
             args = build_ffmpeg_args(src, dst, fmt, bitrate, title, album, artist, cover_arg)
             try:
                 proc = subprocess.run(
@@ -2667,13 +2726,20 @@ if __name__ == "__main__":
                 raise HTTPException(status_code=400, detail=str(e))
 
     @app.post("/tag/save", include_in_schema=False)
-    def tag_save(file: UploadFile = File(None), payload: str = Form("{}")) -> dict:
+    def tag_save(
+        file: UploadFile = File(None),
+        cover: UploadFile = File(None),
+        payload: str = Form("{}"),
+    ) -> dict:
         """Write a labelled (and optionally converted) copy of an uploaded
         audio file into the folder of the user's choice. The multipart payload
         is JSON: {format, bitrate, sample_rate, channels, reencode, dir,
-        filename, tags: {...}, cover_data, cover_name, keep_cover} →
-        {path, size, format, copied, command}. With the container unchanged and
-        `reencode` off the audio stream is copied, so re-tagging is lossless."""
+        filename, tags: {...}, keep_cover} → {path, size, format, copied,
+        command}. Art, when there is any, travels as its own `cover` part —
+        NOT inside that JSON, where the multipart parser caps a field at 1 MB
+        and a normal sleeve photo would die before the route ran. With the
+        container unchanged and `reencode` off the audio stream is copied, so
+        re-tagging is lossless."""
         require_binary("ffprobe")
         try:
             opts = json.loads(payload or "{}")
@@ -2681,6 +2747,13 @@ if __name__ == "__main__":
             raise HTTPException(status_code=400, detail="Options are not valid JSON.")
         if not isinstance(opts, dict):
             raise HTTPException(status_code=400, detail="Options must be a JSON object.")
+        if opts.get("cover_data") is not None:
+            # A cached page from before this route took art as a part would
+            # otherwise have its image dropped in silence.
+            raise HTTPException(
+                status_code=400,
+                detail="This page sent cover art the old way — reload it (the Tag page changed).",
+            )
 
         fmt = str(opts.get("format") or "").lower()
         if fmt not in TAG_FORMATS:
@@ -2725,18 +2798,22 @@ if __name__ == "__main__":
 
             keep_cover = bool(opts.get("keep_cover")) and bool(info["cover"])
             new_cover: str | None = None
-            if opts.get("cover_data") is not None:
+            if cover is not None:
                 if fmt not in TAG_COVER_FORMATS:
                     raise HTTPException(
                         status_code=400,
                         detail="Cover art is only supported in MP3 and M4A — pick one of those, or remove the image.",
                     )
                 try:
-                    blob, suffix = decode_cover_b64(opts.get("cover_data"), opts.get("cover_name"))
+                    blob, suffix = read_cover_upload(cover)
                 except TagError as e:
                     raise HTTPException(status_code=400, detail=str(e))
                 cover_path = Path(tmp) / f"cover{suffix}"
                 cover_path.write_bytes(blob)
+                try:
+                    cover_path, _ = normalize_cover(cover_path, suffix, Path(tmp))
+                except TagError as e:
+                    raise HTTPException(status_code=400, detail=str(e))
                 new_cover = str(cover_path)
                 keep_cover = False
             if fmt not in TAG_COVER_FORMATS:

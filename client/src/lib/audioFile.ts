@@ -15,18 +15,22 @@ export function shq(s: string): string {
   return '"' + s.replace(/\\/g, "\\\\").replace(/"/g, '\\"') + '"';
 }
 
-/** Same sanitize rule as son.py's sanitize_stem: ffmpeg reads a ':' in the
- *  output path as a protocol prefix, shell metacharacters break a copied
- *  command. ':' becomes '—', anything else that isn't letters/digits/space
- *  ._- folds to '-'. */
+/** Same rule as son.py's sanitize_stem. A character is dropped only when it
+ *  actually breaks something: ffmpeg reads a ':' in the output path as a
+ *  protocol prefix ("a:b.mp3" is protocol 'a'), so it becomes an em dash, and
+ *  the characters that break a pasted command — path separators, quotes and
+ *  globs, control characters, and the four that expand inside a double-quoted
+ *  shell word ('$', backtick, '!', '"') — fold to '-'. Brackets, commas,
+ *  ampersands and non-ASCII letters are legal in a name and literal inside the
+ *  quotes the copied command carries, so they survive. */
 export function sanitizeStem(name: string): string {
   const stem = name.replace(/\.[^.]+$/, ""); // drop a trailing extension
   return (
     stem
-      .replace(/[^A-Za-z0-9 ._:_-]+/g, "-")
-      .replace(/\s+/g, " ")
       .replace(/:/g, "—")
-      .replace(/^[. ]+|[. ]+$/g, "") || "reading"
+      .replace(/[\\/*?"<>|!$`\u0000-\u001f]+/g, "-")
+      .replace(/\s+/g, " ")
+      .replace(/^[. -]+|[. -]+$/g, "") || "reading"
   );
 }
 

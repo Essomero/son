@@ -12,7 +12,7 @@
  * Re-encode is on, so re-tagging never costs a generation of quality.
  */
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Check, ChevronLeft, ChevronRight, Copy, Download, ImagePlus, Loader2, Plus, Tags, Trash2, X } from "lucide-react";
 
 import type { Settings, TagFormat, TagInfo, TagMode } from "../lib/types";
@@ -68,6 +68,19 @@ const MUSIC_WIDE: { key: string; label: string; hint: string; placeholder: strin
   { key: "lyrics", label: "Lyrics", hint: "lyrics", placeholder: "Song lyrics…" },
   { key: "comment", label: "Comment", hint: "comment", placeholder: "Liner notes, description, or comment…" },
 ];
+/** Tags the previous file's values are copied into when "Copy previous
+ *  track's tags" is used — the season-level ones, not the title or number. */
+const COPIED_TAGS = [
+  "album",
+  "artist",
+  "album_artist",
+  "date",
+  "genre",
+  "composer",
+  "grouping",
+  "disc",
+];
+
 const KNOWN_TAGS: Record<string, true> = {
   album: true,
   artist: true,
@@ -93,14 +106,21 @@ interface Episode {
   title: string;
   /** Episode number → the file's track tag. */
   track: string;
-  /** Per-song tags */
+  /** This file's own tag edits, laid over whatever it already carries. Never
+   *  holds a form default (a placeholder, the season's genre, a title built
+   *  from the file name): only values a person typed here. Whether a file is
+   *  "changed" is derived from this against the tags it was loaded with, so
+   *  undoing an edit undoes the marking — see `episodeChanged`. */
   tags: Record<string, string>;
+  /** This file's own cover art, when one was set while this file was the
+   *  selection. Null means "the release's art, if the ALL card has one". */
+  art: File | null;
+  /** The image the last save embedded in this file — the object itself, so a
+   *  fresh pick marks the file again while the write that just happened takes
+   *  the mark away. Undefined until this file is written with art at all. */
+  artWritten?: File | null;
   info: TagInfo | null;
   error: string | null;
-  /** Set when an edit would change what this file carries, cleared once a save
-   *  has written it. A save only touches the flagged files — re-tagging three
-   *  tracks out of eighty-one must not rewrite the other seventy-eight. */
-  dirty: boolean;
 }
 
 interface SaveResult {
@@ -135,6 +155,22 @@ function isImageFile(file: File): boolean {
   );
 }
 
+/** The image a clipboard holds, if it holds one: `files` covers a copied file
+ *  or a screenshot (⌘⇧4), `items` covers a copy taken inside another page,
+ *  where the bitmap arrives as a file item rather than a file. Anything else —
+ *  an `<img>` copied by reference — has no bytes to embed, so it is not one. */
+function clipboardImage(dt: DataTransfer | null): File | null {
+  if (!dt) return null;
+  const direct = Array.from(dt.files ?? []).find(isImageFile);
+  if (direct) return direct;
+  for (const item of Array.from(dt.items ?? [])) {
+    if (item.kind !== "file" || !item.type.startsWith("image/")) continue;
+    const file = item.getAsFile();
+    if (file) return file;
+  }
+  return null;
+}
+
 export function Tagger({
   settings,
   onChangeSettings,
@@ -144,11 +180,11 @@ export function Tagger({
 }) {
   const [tagMode, setTagMode] = useState<TagMode>(settings.tagMode ?? "podcast");
   const [episodes, setEpisodes] = useState<Episode[]>([]);
-  const [shared, setShared] = useState<Record<string, string>>(() =>
-    (settings.tagMode ?? "podcast") === "podcast"
-      ? { genre: "Podcast", date: CURRENT_YEAR }
-      : { date: CURRENT_YEAR },
-  );
+  /** Only values that mean something: a season field the user typed, or one a
+   *  lone file already carried. The mode's suggestions ("Podcast", the current
+   *  year) live in the fields' placeholders instead — a value sitting in a box
+   *  is a value that gets written, so a suggestion must not sit there. */
+  const [shared, setShared] = useState<Record<string, string>>({});
 
   const activeFields = tagMode === "music" ? MUSIC_FIELDS : PODCAST_FIELDS;
   const activeWide = tagMode === "music" ? MUSIC_WIDE : PODCAST_WIDE;
@@ -157,24 +193,15 @@ export function Tagger({
     if (mode === tagMode) return;
     setTagMode(mode);
     onChangeSettings({ tagMode: mode });
-    if (mode === "podcast") {
-      if (!shared.genre) {
-        setShared((prev) => ({ ...prev, genre: "Podcast" }));
-      }
-    } else {
-      if (shared.genre === "Podcast") {
-        setShared((prev) => {
-          const next = { ...prev };
-          const origGenre = episodes[0]?.info?.tags?.genre;
-          if (origGenre && origGenre !== "Podcast") {
-            next.genre = origGenre;
-          } else {
-            delete next.genre;
-          }
-          return next;
-        });
-      }
-    }
+    setEpisodes((list) =>
+      list.map((e, idx) => {
+        // If the track was authored by the user or already existed in the file's tags, keep it.
+        // Otherwise, only podcast mode auto-numbers unnumbered files; music leaves them unnumbered.
+        if (e.tags?.track !== undefined || e.info?.tags?.track) return e;
+        const nextTrack = mode === "podcast" ? String(idx + 1) : "";
+        return e.track === nextTrack ? e : { ...e, track: nextTrack };
+      }),
+    );
   };
   const [extras, setExtras] = useState<{ id: string; key: string; value: string }[]>([]);
   const [coverFile, setCoverFile] = useState<File | null>(null);
@@ -242,11 +269,14 @@ export function Tagger({
           localPath: item.path,
           name: item.name,
           title: tags.title || stemOf(item.name),
-          track: tags.track || String(idx + 1),
-          tags: { ...tags },
+          track: tags.track || (tagMode === "podcast" ? String(idx + 1) : ""),
+          // `tags` holds only what someone edits on this file: the file's own
+          // tags are read from `info`, so a season field can sit over them
+          // without the file's old value shadowing it.
+          tags: {},
+          art: null,
           info,
           error: item.error || null,
-          dirty: false,
         };
       });
 
@@ -310,7 +340,7 @@ export function Tagger({
       list.map((e) => {
         if (e.id !== epId) return e;
         const nextTags = { ...(e.tags ?? {}), [key]: value };
-        const patch: Partial<Episode> = { tags: nextTags, dirty: true };
+        const patch: Partial<Episode> = { tags: nextTags };
         if (key === "title") patch.title = value;
         if (key === "track") patch.track = value;
         return { ...e, ...patch };
@@ -318,25 +348,25 @@ export function Tagger({
     );
   };
 
-  /** Flag every file a shared-field or extra-tag edit would actually rewrite:
-   *  those whose own tag differs from the value being set. A blank value writes
-   *  nothing (the form's blank-means-leave-it-alone rule), so it flags none —
-   *  and a folder whose files already carry the value isn't rewritten. */
-  const markIfDiffers = (key: string, value: string) => {
-    const name = normalizeTagKey(key);
-    const next = value.trim();
-    if (!name || !next) return;
-    setEpisodes((list) =>
-      list.map((e) => ((e.info?.tags?.[name] ?? "").trim() === next ? e : { ...e, dirty: true })),
-    );
-  };
+  /** The art a file will be written with: its own if it has one, else the
+   *  release's. */
+  const artFor = (ep: Episode): File | null => ep.art ?? coverFile;
 
-  /** A picked cover image is embedded into every episode's file, so choosing
-   *  one makes every file a write. Clearing it does not unmark anything. */
-  const setCover = (file: File | null) => {
-    setCoverFile(file);
-    if (file) setEpisodes((list) => list.map((ep) => ({ ...ep, dirty: true })));
-  };
+  /** Where a picked, dropped or pasted image lands: on the file the form is
+   *  showing, or — on the "ALL" card — on the release, which a save then
+   *  embeds in every file that can carry one. Every other field here follows
+   *  the selection; art was the one that did not. */
+  const artScopeId = selectedEp?.id ?? null;
+  const setScopedCover = useCallback(
+    (file: File | null) => {
+      if (artScopeId) {
+        setEpisodes((list) => list.map((e) => (e.id === artScopeId ? { ...e, art: file } : e)));
+        return;
+      }
+      setCoverFile(file);
+    },
+    [artScopeId],
+  );
 
   // The window: only the rows around the scroll offset are mounted, with
   // spacer rows standing in for the rest so the scrollbar still spans all of
@@ -372,26 +402,17 @@ export function Tagger({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedEpId]);
 
+  /** Copy the tags the previous file ends up carrying onto this one, as this
+   *  file's own edits — the previous track's album/artist/year are what make
+   *  the two sound like one record. */
   const copyFromPreviousSong = () => {
     if (!selectedEp || currentSongIndex <= 0) return;
     const prevEp = episodes[currentSongIndex - 1];
-    const prevTags = { ...(prevEp.tags ?? {}) };
-    const curTitle = selectedEp.title;
-    const curTrack = selectedEp.track;
-    const nextTags: Record<string, string> = {
-      ...prevTags,
-      ...(selectedEp.tags ?? {}),
-      album: prevTags.album || shared.album || "",
-      artist: prevTags.artist || shared.artist || "",
-      album_artist: prevTags.album_artist || shared.album_artist || "",
-      date: prevTags.date || shared.date || "",
-      genre: prevTags.genre || shared.genre || "",
-      composer: prevTags.composer || shared.composer || "",
-      grouping: prevTags.grouping || shared.grouping || "",
-      disc: prevTags.disc || shared.disc || "",
-    };
-    if (curTitle) nextTags.title = curTitle;
-    if (curTrack) nextTags.track = curTrack;
+    const nextTags: Record<string, string> = { ...(selectedEp.tags ?? {}) };
+    for (const key of COPIED_TAGS) {
+      const value = effectiveTag(prevEp, key);
+      if (value) nextTags[key] = value;
+    }
 
     setEpisodes((list) =>
       list.map((e) => (e.id === selectedEp.id ? { ...e, tags: nextTags } : e)),
@@ -408,15 +429,18 @@ export function Tagger({
     }
   }, [selectedEpId]);
 
+  /** The preview follows the scope: this file's art, or the release's. */
+  const scopedArt = selectedEp ? artFor(selectedEp) : coverFile;
+
   useEffect(() => {
-    if (!coverFile) {
+    if (!scopedArt) {
       setCoverPreview(null);
       return;
     }
-    const url = URL.createObjectURL(coverFile);
+    const url = URL.createObjectURL(scopedArt);
     setCoverPreview(url);
     return () => URL.revokeObjectURL(url);
-  }, [coverFile]);
+  }, [scopedArt]);
 
   const [dir, setDir] = useState(settings.tagDir ?? settings.exportDir ?? "");
   const [format, setFormat] = useState<TagFormat | "">(settings.tagFormat ?? "");
@@ -482,8 +506,11 @@ export function Tagger({
               // Prefer what the file already says, then the file name — and
               // number an unnumbered episode by its place in the season.
               title: e.title || tags.title || stemOf(e.name),
-              track: e.track || tags.track || String(list.findIndex((x) => x.id === ep.id) + 1),
-              tags: { ...tags, ...(e.tags ?? {}) },
+              track:
+                e.track ||
+                tags.track ||
+                (tagMode === "podcast" ? String(list.findIndex((x) => x.id === ep.id) + 1) : ""),
+              tags: { ...(e.tags ?? {}) },
             }
           : e,
       ),
@@ -493,10 +520,6 @@ export function Tagger({
     for (const f of [...activeFields, ...activeWide]) {
       if (tags[f.key]) next[f.key] = tags[f.key];
     }
-    if (tagMode === "podcast") {
-      if (!next.genre) next.genre = "Podcast";
-    }
-    if (!next.date) next.date = CURRENT_YEAR;
     setShared(next);
     setExtras(
       Object.entries(tags)
@@ -543,14 +566,14 @@ export function Tagger({
       title: "",
       track: "",
       tags: {},
+      art: null,
       info: null,
       error: null,
-      dirty: false,
     }));
     // A second file turns the form into a season: the lone-file tags that
     // filled the shared fields are that file's, not the show's — clear them.
     if (episodes.length > 0 && !sharedTouched.current) {
-      setShared(tagMode === "podcast" ? { genre: "Podcast", date: CURRENT_YEAR } : { date: CURRENT_YEAR });
+      setShared({});
       setExtras([]);
     }
     setEpisodes((prev) => [...prev, ...added]);
@@ -597,7 +620,7 @@ export function Tagger({
     setCoverDragging(false);
     if (!coverable) return;
     const file = Array.from(e.dataTransfer.files).find(isImageFile);
-    if (file) setCover(file);
+    if (file) setScopedCover(file);
   };
 
   const onPageDragEnter = (e: React.DragEvent) => {
@@ -644,19 +667,14 @@ export function Tagger({
       addFiles(effectiveAudio);
     }
     if (imageFiles.length > 0 && coverable) {
-      setCover(imageFiles[0]);
+      setScopedCover(imageFiles[0]);
     }
   };
 
-  /** A per-file edit (its number or title), so that file is now out of step
-   *  with what it carries. */
-  const updateEpisode = (id: string, patch: Partial<Episode>) =>
-    setEpisodes((list) => list.map((e) => (e.id === id ? { ...e, ...patch, dirty: true } : e)));
-
+  /** A season field: applies to every file whose own tag differs from it. */
   const setSharedField = (key: string, value: string) => {
     sharedTouched.current = true;
     setShared((prev) => ({ ...prev, [key]: value }));
-    markIfDiffers(key, value);
   };
 
   /** Every tag a save will write for one episode: the file's own tags, the
@@ -683,6 +701,73 @@ export function Tagger({
   const formatFor = (ep: Episode): TagFormat =>
     format || (isTagFormat(ep.info?.format) ? (ep.info!.format as TagFormat) : "mp3");
 
+  /** The art a save would send for this file. Only MP3 and M4A carry a picture
+   *  channel, so a file being written as anything else gets none — and the
+   *  route rejects art for those containers outright. */
+  const artForWrite = (ep: Episode): File | null =>
+    TAG_COVER_FORMATS.includes(formatFor(ep)) ? artFor(ep) : null;
+
+  /** One tag's effective value for one file — what a save writes there, and so
+   *  what that file's field must show: this file's own edit first, then the
+   *  extra rows, then the season's fill, and finally whatever the file already
+   *  carries. A blank renders as blank; the fields' placeholders carry the
+   *  suggestions. */
+  const effectiveTag = (ep: Episode, key: string): string => {
+    const own = (ep.tags?.[key] ?? "").trim();
+    if (own) return own;
+    for (const x of extras) {
+      if (normalizeTagKey(x.key) === key && x.value.trim()) return x.value.trim();
+    }
+    const season = (shared[key] ?? "").trim();
+    if (season) return season;
+    return (ep.info?.tags?.[key] ?? "").trim();
+  };
+
+  /** The values this file's write carries because someone chose them: the
+   *  season fields that were filled, the extra rows that were added, and this
+   *  file's own edits. Placeholders, mode suggestions and a lone file's
+   *  prefilled tags are not among them — those belong to the form. */
+  const authoredTags = (ep: Episode): Record<string, string> => {
+    const out: Record<string, string> = {};
+    for (const [key, value] of Object.entries(shared)) {
+      if (value.trim()) out[key] = value.trim();
+    }
+    for (const x of extras) {
+      const key = normalizeTagKey(x.key);
+      if (key && x.value.trim()) out[key] = x.value.trim();
+    }
+    for (const [key, value] of Object.entries(ep.tags ?? {})) {
+      if (value.trim()) out[key] = value.trim();
+    }
+    return out;
+  };
+
+  const sameTag = (a: string | undefined, b: string | undefined): boolean =>
+    (a ?? "").trim().toLocaleLowerCase() === (b ?? "").trim().toLocaleLowerCase();
+
+  /** Would saving this file change anything it carries? Every authored value is
+   *  compared with the tag the file was loaded with, so a value typed and then
+   *  typed back — or a field left alone — is not a change. The cross-file
+   *  choices are honest about their reach: cover art is embedded in every file
+   *  saved, a chosen format rewrites the files not already in it, and
+   *  re-encoding rewrites all of them. Editing one file's title never touches
+   *  its neighbours. */
+  const episodeChanged = (ep: Episode): boolean => {
+    if (!ep.info) return false; // still being read: nothing to claim about it
+    if (reencode) return true;
+    if (format && ep.info.format !== format) return true;
+    // Art counts where it can land, and only until the file carrying it is the
+    // one that was written: a container that holds no picture is not rewritten
+    // for art, and a write that just embedded it is not a change again.
+    const art = artForWrite(ep);
+    if (art && art !== ep.artWritten) return true;
+    const current = ep.info.tags ?? {};
+    for (const [key, value] of Object.entries(authoredTags(ep))) {
+      if (!sameTag(value, current[key])) return true;
+    }
+    return false;
+  };
+
   // The command preview stands in for the first episode; the server echoes the
   // real one per file after a save.
   const preview = useMemo(() => {
@@ -691,6 +776,7 @@ export function Tagger({
     const fmt = formatFor(ep);
     const copyAudio = !reencode && ep.info?.format === fmt;
     const stem = sanitizeStem(ep.title || ep.name);
+    const art = artFor(ep);
     return buildTagPreview({
       srcName: ep.localPath || ep.name,
       dst: `${(dir.trim() || "~/Downloads").replace(/\/+$/, "")}/${stem}.${fmt}`,
@@ -700,8 +786,8 @@ export function Tagger({
       bitrate: bitrate || null,
       sampleRate: sampleRate === "" ? null : sampleRate,
       channels: channels === "" ? null : channels,
-      newCoverName: coverFile ? coverFile.name : "",
-      keepCover: !coverFile && Boolean(ep.info?.cover) && TAG_COVER_FORMATS.includes(fmt),
+      newCoverName: art ? art.name : "",
+      keepCover: !art && Boolean(ep.info?.cover) && TAG_COVER_FORMATS.includes(fmt),
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [episodes, shared, extras, coverFile, dir, format, bitrate, sampleRate, channels, reencode]);
@@ -713,27 +799,17 @@ export function Tagger({
     });
 
   const save = async () => {
-    const targets = episodes.filter((e) => e.dirty);
+    const targets = episodes.filter(episodeChanged);
     if (!targets.length || saving) return;
     setSaving(true);
     setError(null);
     setResults([]);
     setProgress({ done: 0, total: targets.length });
     try {
-      let coverData: string | undefined;
-      if (coverFile) {
-        coverData = await new Promise<string>((resolve, reject) => {
-          const r = new FileReader();
-          r.onload = () => resolve(String(r.result).split(",")[1] ?? "");
-          r.onerror = () => reject(r.error ?? new Error("Could not read the cover image."));
-          r.readAsDataURL(coverFile);
-        });
-        if (!coverData) throw new Error("The cover image could not be read.");
-      }
-
       const out: SaveResult[] = [];
       for (const ep of targets) {
         const fmt = formatFor(ep);
+        const art = artForWrite(ep);
         const payload = {
           format: fmt,
           filename: sanitizeStem(ep.title || ep.name),
@@ -745,13 +821,19 @@ export function Tagger({
           sample_rate: sampleRate === "" ? undefined : sampleRate,
           channels: channels === "" ? undefined : channels,
           reencode,
-          keep_cover: Boolean(ep.info?.cover),
-          cover_data: coverData,
-          cover_name: coverFile?.name,
+          // No art for this file means "keep whatever it carries" — the same
+          // blank-leaves-it-alone rule the tag fields follow.
+          keep_cover: !art && Boolean(ep.info?.cover),
         };
         const fd = new FormData();
         if (ep.file) {
           fd.append("file", ep.file);
+        }
+        // The image is its own part, not base64 inside the JSON: a multipart
+        // field is capped at 1 MB, and a sleeve photo is not. A part without a
+        // filename is a *field*, which would hit that cap again.
+        if (art) {
+          fd.append("cover", art, art.name || "cover.png");
         }
         fd.append("payload", JSON.stringify(payload));
         try {
@@ -776,8 +858,21 @@ export function Tagger({
                 e.id === ep.id
                   ? {
                       ...e,
-                      dirty: false,
-                      info: e.info ? { ...e.info, tags: payload.tags, format: fmt } : e.info,
+                      // `artWritten` is what takes the file back off the
+                      // changed list: it now carries this image.
+                      artWritten: art,
+                      info: e.info
+                        ? {
+                            ...e.info,
+                            tags: payload.tags,
+                            format: fmt,
+                            cover: art
+                              ? true
+                              : TAG_COVER_FORMATS.includes(fmt)
+                                ? Boolean(e.info.cover)
+                                : false,
+                          }
+                        : e.info,
                     }
                   : e,
               ),
@@ -798,8 +893,38 @@ export function Tagger({
   };
 
   const coverable = !format || TAG_COVER_FORMATS.includes(format);
-  /** The files a save will write — the ones some edit put out of step. */
-  const changed = episodes.filter((e) => e.dirty);
+  const artNoun = tagMode === "music" ? "track" : "episode";
+  /** The art this scope owns — what "Remove" clears. A file showing the
+   *  release's art owns nothing of its own. */
+  const scopedOwnArt = selectedEp ? selectedEp.art : coverFile;
+
+  /** Cover art arrives three ways: the picker, a drop, and the clipboard. The
+   *  paste listener is on the document because a clipboard has no target of
+   *  its own — you paste from wherever focus happens to be, and nothing else
+   *  on this page wants a bitmap. A text box being typed in keeps its own
+   *  paste whenever the clipboard also carries text, so a copied image that
+   *  drags its filename along cannot overwrite a field's paste. */
+  useEffect(() => {
+    const onPaste = (e: ClipboardEvent) => {
+      if (!coverable) return;
+      // A modal owns the page while it is open: the persona editor takes
+      // markdown, and focus can be outside the dialog, so ask the document.
+      if (document.querySelector('[role="dialog"]')) return;
+      const file = clipboardImage(e.clipboardData);
+      if (!file) return;
+      const target = e.target instanceof HTMLElement ? e.target : null;
+      if (target?.closest("input, textarea") && e.clipboardData?.getData("text")) return;
+      e.preventDefault();
+      setScopedCover(file);
+    };
+    document.addEventListener("paste", onPaste);
+    return () => document.removeEventListener("paste", onPaste);
+  }, [coverable, setScopedCover]);
+
+  /** The files a save will write: every one whose own tags, art or container
+   *  the form has actually moved. Nothing here is remembered between renders,
+   *  so the count always answers "what would Save do now". */
+  const changed = episodes.filter(episodeChanged);
   const canSave =
     changed.length > 0 && !saving && episodes.every((e) => e.info || e.error);
 
@@ -921,7 +1046,7 @@ export function Tagger({
                   className="text-input tagger-ep-num"
                   value={ep.track}
                   onClick={(e) => e.stopPropagation()}
-                  onChange={(e) => updateEpisode(ep.id, { track: e.target.value })}
+                  onChange={(e) => setSongTag(ep.id, "track", e.target.value)}
                   placeholder="#"
                   aria-label={`${tagMode === "music" ? "Track" : "Episode"} number for ${ep.name}`}
                   inputMode="numeric"
@@ -930,7 +1055,7 @@ export function Tagger({
                   className="text-input"
                   value={ep.title}
                   onClick={(e) => e.stopPropagation()}
-                  onChange={(e) => updateEpisode(ep.id, { title: e.target.value })}
+                  onChange={(e) => setSongTag(ep.id, "title", e.target.value)}
                   placeholder={stemOf(ep.name)}
                   aria-label={`${tagMode === "music" ? "Track" : "Episode"} title for ${ep.name}`}
                 />
@@ -950,9 +1075,9 @@ export function Tagger({
                   )}
                 </span>
                 <span
-                  className={`tagger-dot${ep.dirty ? " on" : ""}`}
+                  className={`tagger-dot${episodeChanged(ep) ? " on" : ""}`}
                   aria-hidden
-                  title={ep.dirty ? "Changed — will be written" : undefined}
+                  title={episodeChanged(ep) ? "Changed — will be written" : undefined}
                 />
                 <button
                   type="button"
@@ -1008,7 +1133,7 @@ export function Tagger({
                 {episodes.map((ep, idx) => {
                   const isActive = selectedEp?.id === ep.id;
                   const displayTitle = ep.title || stemOf(ep.name);
-                  const displayArtist = ep.tags.artist || shared.artist || (tagMode === "music" ? "Unknown artist" : "Unknown host");
+                  const displayArtist = effectiveTag(ep, "artist") || (tagMode === "music" ? "Unknown artist" : "Unknown host");
                   return (
                     <div
                       key={ep.id}
@@ -1022,12 +1147,20 @@ export function Tagger({
                           setSelectedEpId(ep.id);
                         }
                       }}
-                      title={`Track ${ep.track || idx + 1}: ${displayTitle}`}
+                      title={
+                        tagMode === "music"
+                          ? ep.track
+                            ? `Track ${ep.track}: ${displayTitle}`
+                            : displayTitle
+                          : `Episode ${ep.track || idx + 1}: ${displayTitle}`
+                      }
                     >
                       <div className="tagger-snapshot-head">
-                        <span className="tagger-snapshot-badge">#{ep.track || idx + 1}</span>
+                        <span className="tagger-snapshot-badge">
+                          {ep.track ? `#${ep.track}` : tagMode === "podcast" ? `#${idx + 1}` : "—"}
+                        </span>
                         <span className="tagger-snapshot-tags">
-                          <span className={`tagger-dot${ep.dirty ? " on" : ""}`} aria-hidden />
+                          <span className={`tagger-dot${episodeChanged(ep) ? " on" : ""}`} aria-hidden />
                           <button
                             type="button"
                             className="tagger-snapshot-del"
@@ -1100,7 +1233,7 @@ export function Tagger({
 
           <div className="export-grid tagger-grid">
             {activeFields.map((f) => {
-              const val = selectedEp ? (selectedEp.tags[f.key] ?? shared[f.key] ?? "") : (shared[f.key] ?? "");
+              const val = selectedEp ? effectiveTag(selectedEp, f.key) : (shared[f.key] ?? "");
               return (
                 <label key={f.key} className="export-field">
                   <span className="export-label">
@@ -1122,7 +1255,7 @@ export function Tagger({
           </div>
           <div className="tagger-wide">
             {activeWide.map((f) => {
-              const val = selectedEp ? (selectedEp.tags[f.key] ?? shared[f.key] ?? "") : (shared[f.key] ?? "");
+              const val = selectedEp ? effectiveTag(selectedEp, f.key) : (shared[f.key] ?? "");
               return (
                 <label key={f.key} className="export-field">
                   <span className="export-label">
@@ -1156,7 +1289,6 @@ export function Tagger({
                     value={x.key}
                     onChange={(e) => {
                       setExtras((list) => list.map((k) => (k.id === x.id ? { ...k, key: e.target.value } : k)));
-                      markIfDiffers(e.target.value, x.value);
                     }}
                     placeholder="key"
                     aria-label="Tag name"
@@ -1166,7 +1298,6 @@ export function Tagger({
                     value={x.value}
                     onChange={(e) => {
                       setExtras((list) => list.map((k) => (k.id === x.id ? { ...k, value: e.target.value } : k)));
-                      markIfDiffers(x.key, e.target.value);
                     }}
                     placeholder="value"
                     aria-label="Tag value"
@@ -1194,14 +1325,16 @@ export function Tagger({
           </details>
 
           <div className="export-field export-cover tagger-cover">
-            <span className="export-label">Cover art (all {tagMode === "music" ? "tracks" : "episodes"})</span>
+            <span className="export-label">
+              Cover art ({selectedEp ? `this ${artNoun}` : `all ${episodes.length} ${artNoun}s`})
+            </span>
             <input
               ref={coverRef}
               type="file"
               accept="image/*"
               hidden
               onChange={(e) => {
-                setCover(e.target.files?.[0] ?? null);
+                setScopedCover(e.target.files?.[0] ?? null);
                 e.target.value = ""; // allow re-picking the same file
               }}
             />
@@ -1224,7 +1357,9 @@ export function Tagger({
               }}
               title={
                 coverable
-                  ? "Pick or drop an image from this computer"
+                  ? selectedEp
+                    ? `Pick, drop, or paste art for this ${artNoun}`
+                    : `Pick, drop, or paste art for all ${episodes.length} ${artNoun}s`
                   : "Cover art fits MP3 and M4A only"
               }
             >
@@ -1232,35 +1367,45 @@ export function Tagger({
                 <div className="tagger-cover-preview-row">
                   <img src={coverPreview} alt="Cover preview" className="tagger-cover-preview-img" />
                   <div className="tagger-cover-info">
-                    <span className="tagger-cover-filename">{coverFile?.name}</span>
+                    <span className="tagger-cover-filename">{scopedArt?.name}</span>
                     <span className="tagger-cover-subtext">
                       {coverDragging
                         ? "Drop to replace cover image"
-                        : "Click or drop an image to replace"}
+                        : selectedEp && !selectedEp.art
+                          ? "the release's art — pick, drop, or paste to give this one its own"
+                          : "Click, drop, or paste to replace"}
                     </span>
                   </div>
-                  <button
-                    type="button"
-                    className="icon-btn tagger-cover-remove"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setCoverFile(null);
-                    }}
-                    title="Remove cover art"
-                    aria-label="Remove cover art"
-                  >
-                    <X size={15} />
-                  </button>
+                  {scopedOwnArt && (
+                    <button
+                      type="button"
+                      className="icon-btn tagger-cover-remove"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setScopedCover(null);
+                      }}
+                      title={
+                        selectedEp
+                          ? `Remove this ${artNoun}'s art`
+                          : `Remove cover art from all ${episodes.length} ${artNoun}s`
+                      }
+                      aria-label="Remove cover art"
+                    >
+                      <X size={15} />
+                    </button>
+                  )}
                 </div>
               ) : (
                 <div className="tagger-cover-prompt">
                   <ImagePlus size={24} className="tagger-cover-icon" aria-hidden />
                   <span className="tagger-cover-text">
-                    {coverDragging ? "Drop image here" : "Choose or drop cover image…"}
+                    {coverDragging ? "Drop image here" : "Choose, drop, or paste cover image…"}
                   </span>
                   <span className="field-hint tagger-cover-hint">
                     {coverable
-                      ? "Embedded in MP3 and M4A. Left empty, each file keeps the art it already has."
+                      ? `Embedded in MP3 and M4A. ⌘V (Ctrl+V) works anywhere on this page. Left empty, ${
+                          selectedEp ? `this ${artNoun} keeps the art it has` : "each file keeps the art it already has"
+                        }.`
                       : "Cover art fits MP3 and M4A — choose one of those formats to embed it."}
                   </span>
                 </div>
@@ -1284,13 +1429,8 @@ export function Tagger({
                   setFormat(f);
                   onChangeSettings({ tagFormat: f });
                   if (f && !TAG_COVER_FORMATS.includes(f)) setCoverFile(null);
-                  // Only the files not already in the picked container get
-                  // rewritten; the rest keep their stream and need no save.
-                  if (f) {
-                    setEpisodes((list) =>
-                      list.map((e) => (e.info?.format === f ? e : { ...e, dirty: true })),
-                    );
-                  }
+                  // Files already in that container are not marked: the format
+                  // is compared per file in `episodeChanged`.
                 }}
                 label="Format"
               />
@@ -1395,10 +1535,8 @@ export function Tagger({
                 checked={reencode}
                 onChange={(e) => {
                   setReencode(e.target.checked);
-                  // Forcing a fresh encode rewrites every file's audio.
-                  if (e.target.checked) {
-                    setEpisodes((list) => list.map((ep) => ({ ...ep, dirty: true })));
-                  }
+                  // Marking is derived: `episodeChanged` counts every file as
+                  // changed while this is on, and stops the moment it is off.
                 }}
               />
               <span>

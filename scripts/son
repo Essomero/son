@@ -171,8 +171,8 @@ def wait_for(predicate, timeout: float, label: str) -> bool:
 
 
 def env_values() -> dict[str, str]:
-    """Environment plus .env, with .env winning — the same precedence son.py
-    uses (load_dotenv(override=True))."""
+    """Environment plus the repo .env — the environment wins, matching
+    son.py (load_dotenv(override=False))."""
     values = dict(os.environ)
     env_file = REPO / ".env"
     if env_file.is_file():
@@ -181,7 +181,9 @@ def env_values() -> dict[str, str]:
             if not entry or entry.startswith("#") or "=" not in entry:
                 continue
             key, _, value = entry.partition("=")
-            values[key.strip()] = value.strip().strip('"').strip("'")
+            key = key.strip()
+            if key and key not in values:
+                values[key] = value.strip().strip('"').strip("'")
     return values
 
 
@@ -375,7 +377,10 @@ def start_server(background: bool) -> None:
             f"port {BOT_PORT} is held by pid {occupied[0]} ({owner_of(occupied[0])}) but /models doesn't answer",
             "a stale or halfway run: `son stop --force` frees it",
         )
-    command = python_cmd() + ["son.py"]
+    # Loopback-only on purpose: the HTTP surface has no auth by default (see
+    # SON_TOKEN), so it must never listen on a LAN interface. pipecat's own
+    # default is localhost; this makes it explicit and survives default drift.
+    command = python_cmd() + ["son.py", "--host", "127.0.0.1", "--port", str(BOT_PORT)]
     if background:
         pid = spawn("server", command)
         if not wait_for(server_up, START_TIMEOUT, "server"):

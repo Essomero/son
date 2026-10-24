@@ -713,14 +713,18 @@ export function Tagger({
    *  carries. A blank renders as blank; the fields' placeholders carry the
    *  suggestions. */
   const effectiveTag = (ep: Episode, key: string): string => {
-    const own = (ep.tags?.[key] ?? "").trim();
-    if (own) return own;
+    // Raw, not trimmed: the input is controlled, so a trimmed display eats
+    // spaces while typing — a leading space (or a trailing one) vanishes and
+    // the key looks dead. Emptiness is still judged trimmed, and the save
+    // path (mergedTags/authoredTags) keeps trimming before writing.
+    const own = ep.tags?.[key];
+    if (own !== undefined && own !== "") return own;
     for (const x of extras) {
-      if (normalizeTagKey(x.key) === key && x.value.trim()) return x.value.trim();
+      if (normalizeTagKey(x.key) === key && x.value.trim()) return x.value;
     }
-    const season = (shared[key] ?? "").trim();
-    if (season) return season;
-    return (ep.info?.tags?.[key] ?? "").trim();
+    const season = shared[key] ?? "";
+    if (season.trim()) return season;
+    return ep.info?.tags?.[key] ?? "";
   };
 
   /** The values this file's write carries because someone chose them: the

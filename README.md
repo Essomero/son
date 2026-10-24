@@ -64,6 +64,22 @@ Prefer a double-click? `scripts/make_son_app.sh` builds **Son.app** in `~/Applic
 
 During client development, `cd client && npm run dev` serves the page with hot reload at <http://localhost:5173> (it still talks to the bot on :7860). `npm start` (build + preview on :8000) also still works if you want the page served separately.
 
+## What It Costs Your Machine
+
+No GPU needed. Everything below is CPU and one-time downloads that cache on disk.
+
+| Piece | Size on disk | RAM while in use | Required? |
+|---|---|---|---|
+| Kokoro TTS voices | ~354 MB, first launch | Small, per synthesis | Yes for voice replies (default voice) |
+| Piper TTS voice | ~61 MB | Small, streams first audio fast | No, alternative to Kokoro |
+| s1-mini cleanup model | ~462 MB GGUF | ~1 GB while cleaning utterances | No, raw transcripts work without it |
+| Parakeet TDT STT | ~660 MB in `~/.cache/son/parakeet` | ~600 MB per active session, released after | No, only if picked in settings |
+| whisper-small-son | via whisper.cpp checkout | Per transcription server | No, only if picked in settings |
+| llama.cpp binary | `brew install llama.cpp` | Negligible idle | Only for local s1-mini cleanup |
+| ffmpeg + ffprobe | `brew install ffmpeg` | During Tag conversions | Only for the Tag (audio labeling) page |
+
+Default path (browser Web Speech for STT, Kokoro for voice) downloads only the Kokoro files and holds no STT model on the server.
+
 ## CLI
 
 `scripts/son` is part of the repo — `git pull` updates it, and `son install` only

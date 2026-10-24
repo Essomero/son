@@ -15,11 +15,16 @@ function MarkdownImpl({ children }: { children: string }) {
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={{
-          a: ({ href, children: c }: ComponentPropsWithoutRef<"a">) => (
-            <a href={href} target="_blank" rel="noreferrer">
-              {c}
-            </a>
-          ),
+          // Assistant text is model output: never let it mint javascript: or
+          // data: links. Non-web schemes render as inert text.
+          a: ({ href, children: c }: ComponentPropsWithoutRef<"a">) =>
+            href != null && /^(https?:|mailto:)/i.test(href) ? (
+              <a href={href} target="_blank" rel="noreferrer noopener">
+                {c}
+              </a>
+            ) : (
+              <span>{c}</span>
+            ),
         }}
       >
         {children}

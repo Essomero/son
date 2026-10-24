@@ -11,7 +11,7 @@ import { Check, Copy, MessageSquare, Mic, PanelLeftClose, PanelLeftOpen, Server,
 import type { SessionMeta } from "../lib/types";
 import { ModeSlider } from "./ModeSlider";
 import type { ReaderMode } from "./ModeSlider";
-import { SESSIONS_URL } from "../lib/son";
+import { SESSIONS_URL, sonFetch } from "../lib/son";
 import { copyText } from "../lib/clipboard";
 
 function relativeTime(iso: string): string {
@@ -28,7 +28,7 @@ function relativeTime(iso: string): string {
 /** Fetch a session's stored messages and format them as plain text. */
 async function copyTranscript(s: SessionMeta): Promise<boolean> {
   try {
-    const res = await fetch(`${SESSIONS_URL}/${s.id}`);
+    const res = await sonFetch(`${SESSIONS_URL}/${s.id}`);
     if (!res.ok) return false;
     const detail = (await res.json()) as {
       messages: { role: string; text: string }[];

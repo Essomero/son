@@ -16,7 +16,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Check, ChevronLeft, ChevronRight, Copy, Download, ImagePlus, Loader2, Plus, Tags, Trash2, X } from "lucide-react";
 
 import type { Settings, TagFormat, TagInfo, TagMode } from "../lib/types";
-import { EXPORT_DEFAULTS_URL, TAG_INSPECT_URL, TAG_LOAD_URL, TAG_SAVE_URL } from "../lib/son";
+import { EXPORT_DEFAULTS_URL, TAG_INSPECT_URL, TAG_LOAD_URL, TAG_SAVE_URL, sonFetch } from "../lib/son";
 import {
   TAG_BITRATES,
   TAG_CHANNELS,
@@ -245,7 +245,7 @@ export function Tagger({
     setLoadingFolder(true);
     setLoadFolderError(null);
     try {
-      const res = await fetch(TAG_LOAD_URL, {
+      const res = await sonFetch(TAG_LOAD_URL, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ path: targetPath }),
@@ -469,7 +469,7 @@ export function Tagger({
   // whether the ffmpeg tools exist. Mount-only, like the Read page's panel.
   useEffect(() => {
     let live = true;
-    void fetch(EXPORT_DEFAULTS_URL)
+    void sonFetch(EXPORT_DEFAULTS_URL)
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => {
         if (!live || !d) return;
@@ -533,7 +533,7 @@ export function Tagger({
     const fd = new FormData();
     fd.append("file", ep.file);
     try {
-      const res = await fetch(TAG_INSPECT_URL, { method: "POST", body: fd });
+      const res = await sonFetch(TAG_INSPECT_URL, { method: "POST", body: fd });
       if (!res.ok) {
         const body = await res.text().catch(() => "");
         throw new Error(
@@ -841,7 +841,7 @@ export function Tagger({
         }
         fd.append("payload", JSON.stringify(payload));
         try {
-          const res = await fetch(TAG_SAVE_URL, { method: "POST", body: fd });
+          const res = await sonFetch(TAG_SAVE_URL, { method: "POST", body: fd });
           const data = (await res.json().catch(() => null)) as
             | { detail?: string; path?: string; size?: number }
             | null;

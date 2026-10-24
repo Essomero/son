@@ -9,6 +9,30 @@ import type { Msg } from "./types";
 const params = new URLSearchParams(location.search);
 export const BOT_ENDPOINT = params.get("endpoint") || "http://localhost:7860/start";
 export const BOT_BASE = BOT_ENDPOINT.replace(/\/start$/, "");
+// Optional bearer token for SON_TOKEN-protected servers (?token= persists it
+// to localStorage once; empty = none, the localhost-only default).
+try {
+  const t = params.get("token");
+  if (t) localStorage.setItem("son.token", t);
+} catch {
+  /* storage unavailable — token stays unset */
+}
+export function serverToken(): string {
+  try {
+    return localStorage.getItem("son.token") ?? "";
+  } catch {
+    return "";
+  }
+}
+/** fetch with `Authorization: Bearer` when a token is stored. Use for every
+ *  server call so SON_TOKEN works without touching each site twice. */
+export function sonFetch(input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> {
+  const token = serverToken();
+  if (!token) return fetch(input, init);
+  const headers = new Headers(init.headers);
+  headers.set("Authorization", `Bearer ${token}`);
+  return fetch(input, { ...init, headers });
+}
 export const MODELS_URL = BOT_BASE + "/models";
 export const WARMING_URL = BOT_BASE + "/warming";
 export const SESSIONS_URL = BOT_BASE + "/sessions";
@@ -25,6 +49,7 @@ export const REWRITE_URL = BOT_BASE + "/rewrite";
 // 404. Every fetch must use these, not a bare relative path.
 export const ROLES_URL = BOT_BASE + "/roles.json";
 export const DEBUG = params.has("debug");
+
 
 let uidCounter = 0;
 export function uid(): string {
@@ -47,7 +72,7 @@ export async function cleanTranscript(text: string): Promise<string> {
     // cap silently degraded every first turn to raw text.
     const timer = window.setTimeout(() => ctl.abort(), 10000);
     try {
-      const r = await fetch(CLEANUP_URL, {
+      const r = await sonFetch(CLEANUP_URL, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text }),

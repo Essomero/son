@@ -26,6 +26,7 @@ import {
   DEBUG,
   uid,
   errorMessage,
+  sonFetch,
 } from "../lib/son";
 import { readSettings, saveSettings } from "../lib/settings";
 import { useBrowserSpeech } from "./useBrowserSpeech";
@@ -50,7 +51,7 @@ async function loadRoles(): Promise<Role[]> {
     // no-store: python -m http.server sends no cache headers, so browsers
     // heuristically cache roles.json and a new role never shows up on a
     // plain reload.
-    const res = await fetch(ROLES_URL, { cache: "no-store" });
+    const res = await sonFetch(ROLES_URL, { cache: "no-store" });
     return await res.json();
   } catch {
     return [];
@@ -59,7 +60,7 @@ async function loadRoles(): Promise<Role[]> {
 
 async function loadModels(): Promise<{ models: Models | null; cleanup: boolean }> {
   try {
-    const res = await fetch(MODELS_URL, { signal: AbortSignal.timeout(6000) });
+    const res = await sonFetch(MODELS_URL, { signal: AbortSignal.timeout(6000) });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = (await res.json()) as Models & { cleanup?: boolean };
     // cleanup: the server's transcript-cleanup stage is on (STT_CLEANUP_MODEL
@@ -668,7 +669,7 @@ export function useSonSession() {
       }
       let stored: Msg[] = [];
       try {
-        const res = await fetch(`${SESSIONS_URL}/${meta.id}`);
+        const res = await sonFetch(`${SESSIONS_URL}/${meta.id}`);
         if (res.ok) {
           const data = (await res.json()) as { messages: { role: string; text: string }[] };
           stored = (data.messages ?? []).map((m) => ({

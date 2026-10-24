@@ -17,7 +17,7 @@ import "katex/dist/katex.min.css";
 
 import type { Choice, ExportFormat, Models, Settings } from "../lib/types";
 import { resolveChoice } from "../lib/settings";
-import { EXPORT_DEFAULTS_URL, EXPORT_URL, REWRITE_URL, SPEAK_URL } from "../lib/son";
+import { EXPORT_DEFAULTS_URL, EXPORT_URL, REWRITE_URL, SPEAK_URL, sonFetch } from "../lib/son";
 import { cleanText } from "../lib/clean";
 import { copyText, readClipboard } from "../lib/clipboard";
 import { AUDIO_PROMPT } from "../lib/audioPrompt";
@@ -183,7 +183,7 @@ export function Reader({
   // means "use the server default" on the next load.
   useEffect(() => {
     let live = true;
-    void fetch(EXPORT_DEFAULTS_URL)
+    void sonFetch(EXPORT_DEFAULTS_URL)
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => {
         if (!live || !d) return;
@@ -239,7 +239,7 @@ export function Reader({
     setBusy(true);
     setError(null);
     try {
-      const res = await fetch(SPEAK_URL, {
+      const res = await sonFetch(SPEAK_URL, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text: t, voice }),
@@ -301,7 +301,7 @@ export function Reader({
     setAiBusy(true);
     setError(null);
     try {
-      const res = await fetch(REWRITE_URL, {
+      const res = await sonFetch(REWRITE_URL, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -386,7 +386,7 @@ export function Reader({
         });
         if (!coverData) throw new Error("The cover image could not be read.");
       }
-      const res = await fetch(EXPORT_URL, {
+      const res = await sonFetch(EXPORT_URL, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -488,7 +488,21 @@ export function Reader({
         </>
       ) : (
         <div className="reader-preview">
-          <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex]}>
+          <ReactMarkdown
+            remarkPlugins={[remarkGfm, remarkMath]}
+            rehypePlugins={[rehypeKatex]}
+            components={{
+              // Pasted articles can carry javascript: links — inert text only.
+              a: ({ href, children }) =>
+                href != null && /^(https?:|mailto:)/i.test(href) ? (
+                  <a href={href} target="_blank" rel="noreferrer noopener">
+                    {children}
+                  </a>
+                ) : (
+                  <span>{children}</span>
+                ),
+            }}
+          >
             {normalizeMath(text)}
           </ReactMarkdown>
         </div>

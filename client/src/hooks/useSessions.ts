@@ -9,7 +9,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import type { SessionMeta } from "../lib/types";
-import { SESSIONS_URL } from "../lib/son";
+import { SESSIONS_URL, sonFetch } from "../lib/son";
 
 export function useSessions({
   activeId,
@@ -27,7 +27,7 @@ export function useSessions({
 
   const refresh = useCallback(async () => {
     try {
-      const res = await fetch(SESSIONS_URL);
+      const res = await sonFetch(SESSIONS_URL);
       if (res.ok) {
         setList((await res.json()) as SessionMeta[]);
         setLoaded(true);
@@ -56,7 +56,7 @@ export function useSessions({
   const rename = useCallback(
     async (id: string, name: string) => {
       try {
-        const res = await fetch(`${SESSIONS_URL}/${id}`, {
+        const res = await sonFetch(`${SESSIONS_URL}/${id}`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ name }),
@@ -73,7 +73,7 @@ export function useSessions({
   const remove = useCallback(
     async (id: string) => {
       try {
-        const res = await fetch(`${SESSIONS_URL}/${id}`, { method: "DELETE" });
+        const res = await sonFetch(`${SESSIONS_URL}/${id}`, { method: "DELETE" });
         if (res.ok) setList((prev) => prev.filter((m) => m.id !== id));
         else void refresh();
       } catch (e) {

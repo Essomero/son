@@ -12,7 +12,7 @@ import { useCallback, useEffect, useState } from "react";
 import { RefreshCw } from "lucide-react";
 
 import type { Models } from "../lib/types";
-import { BOT_BASE, WARMING_URL } from "../lib/son";
+import { BOT_BASE, WARMING_URL, sonFetch } from "../lib/son";
 
 /** ok — answering; warn — answering but degraded, or expected but silent;
  *  off — deliberately not running. */
@@ -52,7 +52,7 @@ export function StatusModal({
   const check = useCallback(async (): Promise<void> => {
     setChecking(true);
     try {
-      const res = await fetch(WARMING_URL, { signal: AbortSignal.timeout(6000) });
+      const res = await sonFetch(WARMING_URL, { signal: AbortSignal.timeout(6000) });
       const data = (await res.json()) as { warming?: Record<string, string> };
       setWarming(data.warming ?? {});
     } catch {

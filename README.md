@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="icon-son.png" alt="Son icon" width="128" />
+</p>
+
 # Son ·
 
 A personal real-time voice agent. Pick a role (instruction file), talk to it in your browser, hear it answer — with live speech, barge-in, and near-conversational latency.

@@ -36,9 +36,10 @@ uv sync
 
 # 2. API key
 cp .env.example .env      # then edit .env and set GROQ_API_KEY
-
 # 3. The CLI (once) — symlinks scripts/son into ~/.local/bin
 ./scripts/son install     # then: son doctor, son start, son status, …
+# If `son` is not found afterwards, ~/.local/bin is not on your PATH.
+# Add it once: export PATH="$HOME/.local/bin:$PATH"   (then restart your shell)
 
 # 4. Web client, browser extension, role roster
 son build                 # or narrow it: son build client / extension / roles

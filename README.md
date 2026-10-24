@@ -156,7 +156,7 @@ uv run scripts/gen_roles.py && cd client && npm run build && cd ..
 | `CEREBRAS_API_KEY` | — | Optional. Enables Cerebras brains (`gpt-oss-120b`, `zai-glm-4.7`) — cloud.cerebras.ai |
 | `DEEPSEEK_API_KEY` | — | Optional. Enables DeepSeek brains (e.g. `deepseek-v4-flash`) |
 | `GEMINI_API_KEY` | — | Optional. Enables Gemini brains, Google speech-to-text, and Gemini voices |
-| `OPENROUTER_API_KEY` | — | Optional. Enables the curated OpenRouter brains (Claude, GPT, Grok…) and speech-to-text |
+| `GOOGLE_APPLICATION_CREDENTIALS` | — | Optional. Path to a GCP service-account JSON (or `gcloud auth application-default login`). Only needed for Google Cloud Speech-to-Text V2, which has no API-key auth. The Gemini key does not cover it. |
 | `LMSTUDIO_API_KEY` | — | Optional. Enables local brains served by [LM Studio](https://lmstudio.ai) — any value if server auth is disabled |
 | `LMSTUDIO_BASE_URL` | `http://127.0.0.1:1234/v1` | OpenAI-compatible root of the LM Studio server (use a tailnet IP to reach a remote machine) |
 | `LMSTUDIO_MODEL` | `ornith-1.5-9b-mlx` | Default local LLM model |

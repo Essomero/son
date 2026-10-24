@@ -6,6 +6,8 @@
 
 A personal real-time voice agent. Pick a role (instruction file), talk to it in your browser, hear it answer — with live speech, barge-in, and near-conversational latency.
 
+Son runs fully standalone: it needs none of the Essomero sister repos. Soma (the learning platform) can use Son as an oral exam voice, but neither depends on the other.
+
 **Stack (Tier 3 — hybrid, ~$0/month):**
 
 | Piece | Tool (default) | Where it runs |

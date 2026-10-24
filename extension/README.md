@@ -128,8 +128,7 @@ Worth knowing:
 | Permission | Used for |
 |---|---|
 | `sidePanel`, `tabs`, `contextMenus`, `storage`, `scripting` | the panel itself, knowing which tab you're on, the right-click entry, saved settings, reading the page |
-| `audioCapture` | the microphone, in the panel |
-| host `*://*/*` | reading the page you're on, and (as an extension page) calling `localhost:7860` without CORS |
+| host `*://*/*` (http/https page reads + `localhost:7860` fetch without CORS) | reading the page you're on — injection also fires on tab-switch/navigation with no user gesture, which `activeTab` can't cover, so the broad host entry is the product, not laziness. No `audioCapture`: the mic is plain `getUserMedia`, which needs no permission. |
 
 Nothing is sent anywhere except your own bot: capture stays local until the panel
 POSTs the text to `localhost:7860`, which is where the page text already has to go

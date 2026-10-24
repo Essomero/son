@@ -10,8 +10,7 @@
     "scripting",
     "tabs",
     "storage",
-    "contextMenus",
-    "audioCapture"
+    "contextMenus"
   ],
   "host_permissions": ["*://*/*"],
   "background": {

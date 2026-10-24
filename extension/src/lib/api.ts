@@ -4,20 +4,36 @@ import type { Choice, ContextSource, Models, Role } from "./types";
  * Thin REST client for the Son server, used by the side panel (never by a
  * content script).
  *
- * The manifest asks for host permissions on every site, which is what makes
- * these cross-origin calls work: an extension page fetching a host it holds a
- * permission for skips CORS entirely, so the server needs no CORS middleware
- * and no chrome-extension:// allowlist.
+ * Page reads need the manifest's host entries (scripting fires on tab events
+ * with no user gesture, which activeTab can't cover). Server fetches from an
+ * extension page skip CORS for hosts the manifest allows, so the server needs
+ * no CORS middleware and no chrome-extension:// allowlist — but POSTs still
+ * carry an Origin, so the server's origin guard applies. When SON_TOKEN is set
+ * server-side, pass it as Settings.serverToken (entered once in the panel's
+ * settings); it travels as `Authorization: Bearer`.
  */
 export class SonApi {
-  constructor(readonly base: string) {}
+  constructor(
+    readonly base: string,
+    readonly token: string = "",
+  ) {}
+
+  private headers(extra?: HeadersInit): HeadersInit | undefined {
+    if (!this.token) return extra;
+    const merged = new Headers(extra);
+    merged.set("Authorization", `Bearer ${this.token}`);
+    return merged;
+  }
 
   private get root(): string {
     return this.base.replace(/\/+$/, "");
   }
 
   private async json<T>(path: string, init?: RequestInit): Promise<T> {
-    const res = await fetch(this.root + path, init);
+    const res = await fetch(this.root + path, {
+      ...init,
+      headers: this.headers(init?.headers),
+    });
     if (!res.ok) throw new Error(`HTTP ${res.status} ${path}`);
     return (await res.json()) as T;
   }
@@ -123,7 +139,7 @@ export class SonApi {
   async speak(text: string, voice?: Choice): Promise<Blob> {
     const res = await fetch(this.root + "/speak", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: this.headers({ "Content-Type": "application/json" }),
       body: JSON.stringify({ text, voice: voice ? { provider: voice.provider, id: voice.id, voice: voice.voice } : undefined }),
     });
     if (!res.ok) {

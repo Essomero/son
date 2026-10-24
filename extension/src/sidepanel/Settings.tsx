@@ -121,6 +121,17 @@ export function SettingsPanel({
         />
         <span className="field-hint">Where son.py is running (default http://localhost:7860)</span>
       </label>
+      <label className="field">
+        <span className="field-label">Server token</span>
+        <input
+          type="password"
+          value={draft.serverToken ?? ""}
+          spellCheck={false}
+          autoComplete="off"
+          onChange={(event) => update({ serverToken: event.target.value.trim() })}
+        />
+        <span className="field-hint">Only needed when SON_TOKEN is set in the server .env</span>
+      </label>
 
       <label className="field">
         <span className="field-label">Role</span>

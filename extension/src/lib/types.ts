@@ -103,6 +103,8 @@ export interface ContextState {
 
 export interface Settings {
   serverUrl: string;
+  /** SON_TOKEN value, sent as `Authorization: Bearer`. Empty = none (localhost-only default). */
+  serverToken: string;
   /** Instruction file from the server's instructions/ (shown as a role). */
   role: string;
   choices: Choices;

@@ -41,9 +41,9 @@ const PAUSE_SEND_MS = 900;
 /** What a Web Speech failure means in terms a user can act on — the raw codes
  *  are the API's own `error` values (see lib/webSpeech.ts). Web Speech *is*
  *  available in an extension page (the side panel is a secure context and the
- *  manifest asks for `audioCapture`), so a failure here is environment, not
- *  policy: a denied mic, a missing device, or Chrome's speech service being
- *  unreachable. */
+ *  mic comes from getUserMedia, no special permission needed), so a failure
+ *  here is environment, not policy: a denied mic, a missing device, or
+ *  Chrome's speech service being unreachable. */
 const SPEECH_FAILURE_HINT: Record<string, string> = {
   "not-allowed": "microphone access is blocked — allow the mic for this extension in chrome://extensions",
   "service-not-allowed": "microphone access is blocked — allow the mic for this extension in chrome://extensions",
@@ -207,7 +207,8 @@ export function useSon(audioRef: RefObject<HTMLAudioElement | null>) {
   const flushingRef = useRef(false);
 
   const api = useCallback((): SonApi => {
-    return new SonApi(settingsRef.current?.serverUrl ?? DEFAULT_SETTINGS.serverUrl);
+    const current = settingsRef.current;
+    return new SonApi(current?.serverUrl ?? DEFAULT_SETTINGS.serverUrl, current?.serverToken ?? "");
   }, []);
 
   /** The STT pick this session must ask for: the fallback override when browser
@@ -845,7 +846,7 @@ export function useSon(audioRef: RefObject<HTMLAudioElement | null>) {
       setSessionId(id);
       detachedRef.current = await loadDetached();
       await seedTranscript();
-      const client = new SonApi(loaded.serverUrl);
+      const client = new SonApi(loaded.serverUrl, loaded.serverToken ?? "");
       setModelsLoading(true);
       const [roster, roleList] = await Promise.all([client.models(), client.roles()]);
       applyRoster(roster);

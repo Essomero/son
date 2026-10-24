@@ -13,6 +13,7 @@ const DETACHED_KEY = "son:detached";
 
 export const DEFAULT_SETTINGS: Settings = {
   serverUrl: "http://localhost:7860",
+  serverToken: "",
   role: "default.md",
   // STT is pinned to browser Web Speech — the *default* on the server too, but
   // this half is the one that runs recognition, so it must know which provider
